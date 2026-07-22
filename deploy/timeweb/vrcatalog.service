@@ -1,0 +1,15 @@
+[Unit]
+Description=VR Catalog FastAPI backend
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/vrcatalog/backend
+EnvironmentFile=/var/www/vrcatalog/backend/.env
+ExecStart=/var/www/vrcatalog/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
