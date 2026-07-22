@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -33,13 +35,13 @@ class Product(Base):
     country: Mapped[str | None] = mapped_column(String(255), index=True)
     material: Mapped[str | None] = mapped_column(String(255), index=True)
     color: Mapped[str | None] = mapped_column(String(255), index=True)
+    certificate: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[str | None] = mapped_column(Text)
     search_text: Mapped[str] = mapped_column(Text, default="")
 
     prices: Mapped[list["Price"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     stocks: Mapped[list["Stock"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     properties: Mapped[list["ProductProperty"]] = relationship(cascade="all, delete-orphan", back_populates="product")
-    images: Mapped[list["ProductImage"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     analogs: Mapped[list["Analog"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     barcodes: Mapped[list["Barcode"]] = relationship(cascade="all, delete-orphan", back_populates="product")
 
@@ -70,14 +72,6 @@ class ProductProperty(Base):
     name: Mapped[str] = mapped_column(String(255), index=True)
     value: Mapped[str | None] = mapped_column(Text)
     product: Mapped[Product] = relationship(back_populates="properties")
-
-
-class ProductImage(Base):
-    __tablename__ = "product_images"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
-    url: Mapped[str] = mapped_column(Text)
-    product: Mapped[Product] = relationship(back_populates="images")
 
 
 class Analog(Base):

@@ -3,7 +3,7 @@ import tempfile
 from io import StringIO, BytesIO
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from sqlalchemy.orm import Session, selectinload
@@ -38,7 +38,7 @@ def products(db: Session = Depends(get_db), limit: int = 60, offset: int = 0, se
 
 @router.get("/products/{product_id}", response_model=ProductDetailOut)
 def product_detail(product_id: int, db: Session = Depends(get_db)):
-    product = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.images), selectinload(Product.analogs), selectinload(Product.barcodes)).get(product_id)
+    product = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.analogs), selectinload(Product.barcodes)).get(product_id)
     if not product:
         raise HTTPException(404, "Товар не найден")
     db.add(ViewHistory(product_id=product_id)); db.commit()

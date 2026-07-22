@@ -1,13 +1,12 @@
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.catalog import Barcode, ImportRun, Price, Product, ProductProperty, Stock
+from app.models.catalog import ImportRun, Price, Product, Stock
 
 FILTER_FIELDS = ["section", "manufacturer", "brand", "manager", "country", "material", "color"]
-PROPERTY_FILTERS = {"material": "Материал", "color": "Цвет"}
 
 def product_query(db: Session, params):
-    q = db.query(Product).options(selectinload(Product.prices), selectinload(Product.images), selectinload(Product.stocks))
+    q = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks))
     if search := params.get("search"):
         term = f"%{search.lower()}%"
         q = q.filter(func.lower(Product.search_text).like(term))
@@ -38,6 +37,5 @@ def meta(db: Session):
 def decorate(product: Product):
     retail = next((p.value for p in product.prices if "рознич" in p.price_type.lower()), product.prices[0].value if product.prices else None)
     product.retail_price = retail
-    product.image = product.images[0].url if product.images else None
     product.quantity = sum(s.quantity for s in product.stocks) if product.stocks else product.quantity
     return product

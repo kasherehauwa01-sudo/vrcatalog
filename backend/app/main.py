@@ -3,7 +3,6 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.core.config import settings
@@ -14,7 +13,6 @@ logging.basicConfig(level=logging.INFO)
 Base.metadata.create_all(bind=engine)
 
 Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
-Path(settings.image_dir).mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
     title=settings.app_name,
@@ -24,5 +22,4 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.mount("/images", StaticFiles(directory=settings.image_dir), name="images")
 app.include_router(router, prefix="/api")

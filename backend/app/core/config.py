@@ -8,7 +8,6 @@ class Settings(BaseSettings):
     app_name: str = "VR Catalog"
     port: int = 8000
     upload_dir: str = "/app/uploads"
-    image_dir: str = "/app/images"
     secret_key: str = "change-me"
     base_path: str = "/vr/catalog"
 
