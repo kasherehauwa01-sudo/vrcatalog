@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { alpha, AppBar, Avatar, Box, Button, Card, CardContent, Chip, Container, CssBaseline, Divider, Drawer, IconButton, InputAdornment, LinearProgress, List, Paper, Stack, Tab, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tabs, TextField, ThemeProvider, Toolbar, Typography, createTheme } from '@mui/material';
+import { alpha, AppBar, Box, Button, Card, CardContent, Chip, Container, CssBaseline, Divider, Drawer, IconButton, InputAdornment, LinearProgress, List, Paper, Stack, Tab, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tabs, TextField, ThemeProvider, Toolbar, Typography, createTheme } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import FavoriteBorderIcon from '@mui/icons-material/FavoriteBorder';
 import SearchIcon from '@mui/icons-material/Search';
@@ -41,10 +41,11 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<ProductDetail | null>(null);
   const [tab, setTab] = useState<'catalog' | 'settings'>('catalog');
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const params = useMemo(() => { const p = new URLSearchParams({ search }); Object.entries(active).forEach(([k,v]) => v && p.set(k,v)); return p; }, [search, active]);
   const reload = () => { api.products(params).then(setProducts); api.meta().then(setMeta); api.filters().then(setFilters); };
   useEffect(reload, [params]);
-  const upload = async (file?: File) => { if (!file) return; setLoading(true); try { setMeta(await api.upload(file)); reload(); } finally { setLoading(false); } };
+  const upload = async (file?: File) => { if (!file) return; setLoading(true); setUploadError(null); try { setMeta(await api.upload(file)); reload(); } catch (error) { setUploadError(error instanceof Error ? error.message : 'Не удалось загрузить XML'); } finally { setLoading(false); } };
   const copy = (value?: string) => value && navigator.clipboard.writeText(value);
 
   return <ThemeProvider theme={theme}><CssBaseline />
@@ -58,12 +59,7 @@ function App() {
       </AppBar>
 
       <Container maxWidth="xl" sx={{ py: { xs: 2, md: 4 } }}>
-        <Paper sx={{ p: { xs: 2, md: 4 }, mb: 3, overflow: 'hidden', background: 'linear-gradient(135deg, #bae6fd 0%, #f0f9ff 55%, #ffffff 100%)', border: '1px solid rgba(2,132,199,.16)' }} elevation={0}>
-          <Stack direction={{ xs:'column', md:'row' }} justifyContent="space-between" spacing={2}>
-            <Box><Typography variant="h4">Современный каталог товаров</Typography><Typography color="text.secondary" sx={{ mt: 1 }}>Импортируйте XML и работайте с быстрым поиском, фильтрами и экспортом из базы данных.</Typography></Box>
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Chip label={`Товаров: ${meta.product_count}`} color="primary" /><Chip label={`Загрузка: ${meta.last_import ? new Date(meta.last_import).toLocaleString() : 'нет'}`} variant="outlined" />{meta.imported_count !== undefined && <Chip label={`Импортировано: ${meta.imported_count}`} />}</Stack>
-          </Stack>
-        </Paper>
+        {uploadError && <Card sx={{ mb: 3 }}><CardContent><Typography color="error">{uploadError}</Typography></CardContent></Card>}
 
         <Paper sx={{ mb: 3, px: 1, bgcolor: alpha('#ffffff', .78), border: '1px solid rgba(2,132,199,.14)' }} elevation={0}>
           <Tabs value={tab} onChange={(_, value) => setTab(value)} textColor="primary" indicatorColor="primary" variant="scrollable">

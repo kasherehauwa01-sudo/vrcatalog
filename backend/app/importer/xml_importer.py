@@ -64,10 +64,10 @@ class XMLCatalogImporter:
         try:
             root = ET.parse(path).getroot()
             products = root.findall(".//Товар") or root.findall(".//product") or list(root)
-            db.query(Product).delete()
             for item in products:
                 try:
-                    product = self._parse_product(item)
+                    parsed_product = self._parse_product(item)
+                    product = self._upsert_product(db, parsed_product)
                     db.add(product)
                     imported += 1
                 except Exception as exc:  # noqa: BLE001 - ошибки одной позиции не должны ронять весь импорт
@@ -91,6 +91,37 @@ class XMLCatalogImporter:
             db.commit()
             raise
         return run
+
+
+    def _upsert_product(self, db: Session, parsed_product: Product) -> Product:
+        existing = db.query(Product).filter(Product.code == parsed_product.code).one_or_none()
+        if existing is None:
+            return parsed_product
+        existing.name = parsed_product.name
+        existing.article = parsed_product.article
+        existing.section = parsed_product.section
+        existing.description = parsed_product.description
+        existing.quantity = parsed_product.quantity
+        existing.manufacturer = parsed_product.manufacturer
+        existing.brand = parsed_product.brand
+        existing.manager = parsed_product.manager
+        existing.country = parsed_product.country
+        existing.material = parsed_product.material
+        existing.color = parsed_product.color
+        existing.certificate = parsed_product.certificate
+        existing.tags = parsed_product.tags
+        existing.search_text = parsed_product.search_text
+        existing.prices.clear()
+        existing.stocks.clear()
+        existing.properties.clear()
+        existing.analogs.clear()
+        existing.barcodes.clear()
+        existing.prices.extend(parsed_product.prices)
+        existing.stocks.extend(parsed_product.stocks)
+        existing.properties.extend(parsed_product.properties)
+        existing.analogs.extend(parsed_product.analogs)
+        existing.barcodes.extend(parsed_product.barcodes)
+        return existing
 
     def _parse_product(self, item: ET.Element) -> Product:
         values = {field: _child_text(item, xml_name) for xml_name, field in KNOWN_FIELDS.items()}
