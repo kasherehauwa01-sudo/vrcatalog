@@ -3,7 +3,8 @@ WORKDIR /app
 ARG VITE_BASE_PATH=/vr/catalog/
 ENV VITE_BASE_PATH=$VITE_BASE_PATH
 COPY package*.json ./
-RUN npm install
+COPY types ./types
+RUN npm ci
 COPY . .
 RUN npm run build
 
