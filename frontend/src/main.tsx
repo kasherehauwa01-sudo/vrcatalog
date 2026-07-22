@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
 import { AppBar, Box, Button, Card, CardContent, CardMedia, Chip, Container, CssBaseline, Drawer, Grid, IconButton, LinearProgress, List, ListItemButton, Stack, TextField, ThemeProvider, Toolbar, Typography, createTheme } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import FavoriteBorderIcon from '@mui/icons-material/FavoriteBorder';
@@ -36,4 +37,8 @@ function App() {
   </ThemeProvider>;
 }
 
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(
+  <BrowserRouter basename="/vr/catalog/">
+    <App />
+  </BrowserRouter>,
+);

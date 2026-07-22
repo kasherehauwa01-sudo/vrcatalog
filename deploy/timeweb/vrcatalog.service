@@ -1,15 +1,14 @@
 [Unit]
-Description=VR Catalog FastAPI backend
-After=network.target
+Description=VR Catalog Docker Compose stack
+After=docker.service network.target
+Requires=docker.service
 
 [Service]
-User=www-data
-Group=www-data
-WorkingDirectory=/var/www/vrcatalog/backend
-EnvironmentFile=/var/www/vrcatalog/backend/.env
-ExecStart=/var/www/vrcatalog/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
-Restart=always
-RestartSec=5
+Type=oneshot
+WorkingDirectory=/var/www/vrcatalog
+ExecStart=/usr/bin/docker compose up -d --build
+ExecStop=/usr/bin/docker compose down
+RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target

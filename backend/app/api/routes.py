@@ -16,6 +16,10 @@ from app.services.catalog import decorate, list_filters, meta, product_query
 
 router = APIRouter()
 
+@router.get("/health")
+def health():
+    return {"status": "ok"}
+
 @router.post("/import", response_model=MetaOut)
 def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
     if not file.filename.lower().endswith(".xml"):
