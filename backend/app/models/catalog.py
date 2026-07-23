@@ -52,7 +52,7 @@ class Price(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
     price_type: Mapped[str] = mapped_column(String(255), index=True)
-    price_value: Mapped[float] = mapped_column(Float, default=0)
+    price_value: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     product: Mapped[Product] = relationship(back_populates="prices")
 
     @property
