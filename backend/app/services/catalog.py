@@ -37,5 +37,4 @@ def meta(db: Session):
 def decorate(product: Product):
     retail = next((p.value for p in product.prices if "рознич" in p.price_type.lower()), product.prices[0].value if product.prices else None)
     product.retail_price = retail
-    product.quantity = sum(s.quantity for s in product.stocks) if product.stocks else product.quantity
     return product

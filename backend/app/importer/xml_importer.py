@@ -151,7 +151,7 @@ class XMLCatalogImporter:
         self._parse_stocks(item, product)
         self._parse_analogs(item, product)
         self._parse_barcodes(item, product, properties)
-        # Пересобираем поиск после применения специальных свойств, включая уточненное наименование.
+        # Пересобираем поиск после применения специальных свойств.
         search_bits = [product.name, product.code, product.article, product.description, product.brand, product.manufacturer, product.manager, product.tags, product.certificate, product.material, product.color]
         search_bits.extend(b.value for b in product.barcodes)
         search_bits.extend(p.value for p in product.properties if p.value)
@@ -198,7 +198,6 @@ class XMLCatalogImporter:
             value = prop["value"]
             if not value:
                 continue
-            if name in {"Наименование", "Название", "Полное наименование"} and product.name == product.code: product.name = value
             if name == "Артикул": product.article = value
             if name == "Производитель": product.manufacturer = value
             if name == "Менеджер": product.manager = value
