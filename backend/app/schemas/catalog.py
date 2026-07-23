@@ -43,3 +43,12 @@ class ServiceLogOut(BaseModel):
     message: str
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+class NotificationOut(BaseModel):
+    id: int
+    type: str
+    title: str
+    message: str
+    created_at: datetime
+    is_read: bool
+    model_config = ConfigDict(from_attributes=True)

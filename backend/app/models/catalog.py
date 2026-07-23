@@ -51,8 +51,12 @@ class Price(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
     price_type: Mapped[str] = mapped_column(String(255), index=True)
-    value: Mapped[float] = mapped_column(Float, default=0)
+    price_value: Mapped[float] = mapped_column(Float, default=0)
     product: Mapped[Product] = relationship(back_populates="prices")
+
+    @property
+    def value(self) -> float:
+        return self.price_value
 
 
 class Stock(Base):
@@ -111,3 +115,13 @@ class ServiceLog(Base):
     event: Mapped[str] = mapped_column(String(255), index=True)
     message: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    type: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)

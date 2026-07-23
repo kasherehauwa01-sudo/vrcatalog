@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.services.logging import add_log
+from app.services.notifications import add_notification
 
 from app.models.catalog import Analog, Barcode, ImportRun, Price, Product, ProductProperty, Stock
 
@@ -55,6 +56,15 @@ def _normalize_price_type(raw: str) -> str:
     return PRICE_NAMES.get(raw, raw.replace("Цена", "", 1) or raw)
 
 
+def _parse_xml_root(path: Path) -> ET.Element:
+    raw = path.read_bytes()
+    try:
+        return ET.fromstring(raw)
+    except ET.ParseError:
+        text = raw.decode("windows-1251")
+        return ET.fromstring(text.encode("utf-8"))
+
+
 class XMLCatalogImporter:
     """Независимый сервис импорта: XML читается только здесь, API работает уже с БД."""
 
@@ -66,7 +76,7 @@ class XMLCatalogImporter:
         imported = 0
         try:
             add_log(db, "xml_import_start", f"Начато чтение XML: {filename}")
-            root = ET.parse(path).getroot()
+            root = _parse_xml_root(path)
             products = root.findall(".//Товар") or root.findall(".//product") or list(root)
             for item in products:
                 try:
@@ -82,11 +92,12 @@ class XMLCatalogImporter:
                 except Exception as exc:  # noqa: BLE001 - ошибки одной позиции не должны ронять весь импорт
                     logger.exception("Ошибка импорта товара")
                     errors.append(str(exc))
+                    add_notification(db, "import_error", "Ошибка обработки товара XML", f"Файл:\n{filename}\n\nПричина:\n{exc}")
             run.status = "completed" if not errors else "completed_with_errors"
-            add_log(db, "xml_import_finish", f"Импорт XML завершен: {filename}; товаров: {imported}; ошибок: {len(errors)}", "warning" if errors else "info")
             run.imported_count = imported
-            run.errors = "\n".join(errors) or None
+            run.errors = "\n".join(errors) if errors else None
             run.finished_at = datetime.utcnow()
+            add_log(db, "xml_import_finish", f"Импорт XML завершен: {filename}; товаров: {imported}; ошибок: {len(errors)}")
             # Храним последние 10 загрузок как основу версионирования и отката.
             old_runs = db.query(ImportRun).order_by(ImportRun.created_at.desc()).offset(10).all()
             for old in old_runs:
@@ -99,6 +110,7 @@ class XMLCatalogImporter:
             run.finished_at = datetime.utcnow()
             db.add(run)
             add_log(db, "xml_import_error", f"Ошибка импорта XML {filename}: {exc}", "error")
+            add_notification(db, "import_error", "Ошибка загрузки XML", f"Файл:\n{filename}\n\nПричина:\n{exc}")
             db.commit()
             raise
         return run
@@ -170,7 +182,7 @@ class XMLCatalogImporter:
             price_value = _float(value)
             key = (price_type, price_value)
             if key not in seen:
-                product.prices.append(Price(price_type=price_type, value=price_value))
+                product.prices.append(Price(price_type=raw_type, price_value=price_value))
                 seen.add(key)
 
     def _parse_stocks(self, item: ET.Element, product: Product) -> None:

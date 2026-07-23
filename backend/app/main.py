@@ -6,13 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.core.config import settings
-from app.db.schema_migrations import ensure_product_columns
+from app.db.schema_migrations import ensure_price_columns, ensure_product_columns
 from app.db.session import Base, engine
 from app.models import catalog  # noqa: F401
 
 logging.basicConfig(level=logging.INFO)
 Base.metadata.create_all(bind=engine)
 ensure_product_columns(engine)
+ensure_price_columns(engine)
 
 Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 

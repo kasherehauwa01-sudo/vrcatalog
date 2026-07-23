@@ -41,3 +41,20 @@ def ensure_product_columns(engine: Engine) -> None:
                 sql = f'ALTER TABLE products ADD COLUMN "{name}" {sql_type}'
             logger.info("Добавляю отсутствующую колонку products.%s", name)
             connection.execute(text(sql))
+
+
+def ensure_price_columns(engine: Engine) -> None:
+    """Добавляет универсальную колонку prices.price_value и переносит старые значения value."""
+    inspector = inspect(engine)
+    if "prices" not in inspector.get_table_names():
+        return
+    existing_columns = {column["name"] for column in inspector.get_columns("prices")}
+    if "price_value" in existing_columns:
+        return
+    dialect = engine.dialect.name
+    with engine.begin() as connection:
+        sql = 'ALTER TABLE prices ADD COLUMN IF NOT EXISTS "price_value" FLOAT DEFAULT 0' if dialect == "postgresql" else 'ALTER TABLE prices ADD COLUMN "price_value" FLOAT DEFAULT 0'
+        logger.info("Добавляю отсутствующую колонку prices.price_value")
+        connection.execute(text(sql))
+        if "value" in existing_columns:
+            connection.execute(text('UPDATE prices SET price_value = value WHERE price_value IS NULL OR price_value = 0'))

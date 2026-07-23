@@ -6,7 +6,7 @@ import FavoriteBorderIcon from '@mui/icons-material/FavoriteBorder';
 import SearchIcon from '@mui/icons-material/Search';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import { api } from './api/client';
-import type { Meta, Product, ProductDetail, ServiceLog } from './types/catalog';
+import type { Meta, Notification, Product, ProductDetail, ServiceLog } from './types/catalog';
 
 const theme = createTheme({
   palette: {
@@ -40,14 +40,16 @@ function App() {
   const [meta, setMeta] = useState<Meta>({ product_count: 0 });
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<ProductDetail | null>(null);
-  const [tab, setTab] = useState<'catalog' | 'settings'>('catalog');
+  const [tab, setTab] = useState<'catalog' | 'settings' | 'notifications'>('catalog');
   const [settingsTab, setSettingsTab] = useState<'settings' | 'logs'>('settings');
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [filteredCount, setFilteredCount] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const params = useMemo(() => { const p = new URLSearchParams({ search }); Object.entries(active).forEach(([k,v]) => v.length && p.set(k,v.join(','))); return p; }, [search, active]);
-  const reload = () => { api.products(params).then(items => { setProducts(items); setSelectedIds([]); }); api.productCount(params).then(result => setFilteredCount(result.count)); api.meta().then(setMeta); api.filters().then(setFilters); };
+  const reload = () => { api.products(params).then(items => { setProducts(items); setSelectedIds([]); }); api.productCount(params).then(result => setFilteredCount(result.count)); api.meta().then(setMeta); api.filters().then(setFilters); api.unreadNotifications().then(result => setUnreadNotifications(result.count)); };
   useEffect(reload, [params]);
   const upload = async (file?: File) => { if (!file) return; setLoading(true); setUploadError(null); try { setMeta(await api.upload(file)); reload(); } catch (error) { setUploadError(error instanceof Error ? error.message : 'Не удалось загрузить XML'); } finally { setLoading(false); } };
   const copy = (value?: string) => value && navigator.clipboard.writeText(value);
@@ -58,7 +60,9 @@ function App() {
   const toggleAll = () => setSelectedIds(allSelected ? [] : products.map(product => product.id));
   const deleteSelected = async () => { if (!selectedIds.length) return; await api.deleteProducts(selectedIds); reload(); };
   const openLogs = async () => { setSettingsTab('logs'); setLogs(await api.logs()); };
-  const visiblePrices = (product: Product) => product.prices.filter(price => ['Оптовая', 'Корпоративная', 'Розничная'].includes(price.price_type));
+  const visiblePrices = (product: Product) => product.prices;
+  const openNotifications = async () => { setTab('notifications'); setNotifications(await api.notifications()); api.unreadNotifications().then(result => setUnreadNotifications(result.count)); };
+  const readNotification = async (id: number) => { await api.markNotificationRead(id); setNotifications(await api.notifications()); api.unreadNotifications().then(result => setUnreadNotifications(result.count)); };
 
   return <ThemeProvider theme={theme}><CssBaseline />
     <Box sx={{ minHeight: '100vh', background: 'radial-gradient(circle at top left, #e0f2fe 0, #f0f9ff 42%, #ffffff 100%)' }}>
@@ -76,9 +80,11 @@ function App() {
         <Paper sx={{ mb: 3, px: 1, bgcolor: alpha('#ffffff', .78), border: '1px solid rgba(2,132,199,.14)' }} elevation={0}>
           <Tabs value={tab} onChange={(_, value) => setTab(value)} textColor="primary" indicatorColor="primary" variant="scrollable">
             <Tab value="catalog" label="Каталог" />
-            <Tab value="settings" label="Настройки" />
+            <Tab value="settings" label="Настройки" /><Tab value="notifications" label={<Box component="span" sx={{ position: 'relative' }}>Уведомления{unreadNotifications > 0 && <Box component="span" sx={{ position: 'absolute', right: -10, top: 0, width: 8, height: 8, bgcolor: 'error.main', borderRadius: '50%' }} />}</Box>} onClick={openNotifications} />
           </Tabs>
         </Paper>
+
+        {tab === 'notifications' && <Card><CardContent><Typography variant="h6" sx={{ mb: 2 }}>Уведомления</Typography><TableContainer><Table><TableHead><TableRow><TableCell>Дата</TableCell><TableCell>Заголовок</TableCell><TableCell>Описание</TableCell><TableCell>Статус</TableCell></TableRow></TableHead><TableBody>{notifications.map(notification => <TableRow hover key={notification.id} onClick={() => readNotification(notification.id)} sx={{ cursor: 'pointer', bgcolor: notification.is_read ? 'inherit' : 'rgba(239,68,68,.08)', fontWeight: notification.is_read ? 400 : 800 }}><TableCell>{new Date(notification.created_at).toLocaleString()}</TableCell><TableCell><Typography fontWeight={notification.is_read ? 400 : 800}>{notification.title}</Typography></TableCell><TableCell sx={{ whiteSpace: 'pre-line' }}>{notification.message}</TableCell><TableCell>{notification.is_read ? 'прочитано' : 'новое'}</TableCell></TableRow>)}</TableBody></Table></TableContainer></CardContent></Card>}
 
         {tab === 'settings' && <Card sx={{ maxWidth: 1000 }}><CardContent><Tabs value={settingsTab} onChange={(_, value) => value === 'logs' ? openLogs() : setSettingsTab(value)} sx={{ mb: 2 }}><Tab value="settings" label="Настройки" /><Tab value="logs" label="Логи" /></Tabs>{settingsTab === 'settings' && <Box><Typography variant="h6">Настройки</Typography><Typography color="text.secondary" sx={{ mt: 1, mb: 2 }}>Путь к скрипту обновления каталога на сервере. Нажмите на иконку, чтобы скопировать значение.</Typography><TextField fullWidth label="Скрипт обновления" value={updateScriptPath} InputProps={{ readOnly: true, endAdornment: <InputAdornment position="end"><IconButton aria-label="Скопировать путь к скрипту обновления" onClick={() => copy(updateScriptPath)}><ContentCopyIcon /></IconButton></InputAdornment> }} /></Box>}{settingsTab === 'logs' && <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Дата</TableCell><TableCell>Уровень</TableCell><TableCell>Событие</TableCell><TableCell>Сообщение</TableCell></TableRow></TableHead><TableBody>{logs.map(log => <TableRow key={log.id}><TableCell>{new Date(log.created_at).toLocaleString()}</TableCell><TableCell><Chip size="small" color={log.level === 'error' ? 'error' : log.level === 'warning' ? 'warning' : 'primary'} label={log.level} /></TableCell><TableCell>{log.event}</TableCell><TableCell>{log.message}</TableCell></TableRow>)}</TableBody></Table></TableContainer>}</CardContent></Card>}
 

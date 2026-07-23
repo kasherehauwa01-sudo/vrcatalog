@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.importer.xml_importer import XMLCatalogImporter
-from app.models.catalog import Favorite, Product, ServiceLog, ViewHistory
-from app.schemas.catalog import MetaOut, ProductDetailOut, ProductListOut, ServiceLogOut
+from app.models.catalog import Favorite, Notification, Product, ServiceLog, ViewHistory
+from app.schemas.catalog import MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ServiceLogOut
 from app.services.catalog import decorate, list_filters, meta, product_query
 from app.services.logging import add_log
 
@@ -28,7 +28,11 @@ def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xml") as tmp:
         tmp.write(file.file.read())
         path = Path(tmp.name)
-    XMLCatalogImporter().import_file(db, path, file.filename)
+    try:
+        XMLCatalogImporter().import_file(db, path, file.filename)
+    except Exception as exc:
+        path.unlink(missing_ok=True)
+        raise HTTPException(400, f"Ошибка импорта XML. Файл: {file.filename}. Причина: {exc}") from exc
     path.unlink(missing_ok=True)
     return meta(db)
 
@@ -72,6 +76,24 @@ def toggle_favorite(product_id: int, db: Session = Depends(get_db)):
     if favorite: db.delete(favorite); active = False
     else: db.add(Favorite(product_id=product_id)); active = True
     db.commit(); return {"favorite": active}
+
+
+@router.get("/notifications", response_model=list[NotificationOut])
+def notifications(db: Session = Depends(get_db), limit: int = 200):
+    return db.query(Notification).order_by(Notification.created_at.desc()).limit(limit).all()
+
+@router.get("/notifications/unread-count")
+def notifications_unread_count(db: Session = Depends(get_db)):
+    return {"count": db.query(Notification).filter(Notification.is_read.is_(False)).count()}
+
+@router.post("/notifications/{notification_id}/read")
+def notification_read(notification_id: int, db: Session = Depends(get_db)):
+    notification = db.get(Notification, notification_id)
+    if not notification:
+        raise HTTPException(404, "Уведомление не найдено")
+    notification.is_read = True
+    db.commit()
+    return {"ok": True}
 
 @router.get("/logs", response_model=list[ServiceLogOut])
 def logs(db: Session = Depends(get_db), limit: int = 200):

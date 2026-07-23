@@ -21,8 +21,8 @@ def product_query(db: Session, params):
         q = q.filter(Product.quantity > 0)
     if params.get("price_min") or params.get("price_max"):
         q = q.join(Price)
-        if params.get("price_min"): q = q.filter(Price.value >= float(params["price_min"]))
-        if params.get("price_max"): q = q.filter(Price.value <= float(params["price_max"]))
+        if params.get("price_min"): q = q.filter(Price.price_value >= float(params["price_min"]))
+        if params.get("price_max"): q = q.filter(Price.price_value <= float(params["price_max"]))
     if params.get("stock_min") or params.get("stock_max"):
         q = q.join(Stock)
         if params.get("stock_min"): q = q.filter(Stock.quantity >= float(params["stock_min"]))
