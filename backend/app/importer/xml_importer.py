@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models.catalog import Analog, Barcode, ImportRun, Price, Product, ProductProperty, Stock
@@ -70,6 +71,8 @@ class XMLCatalogImporter:
                     product = self._upsert_product(db, parsed_product)
                     db.add(product)
                     imported += 1
+                except SQLAlchemyError:
+                    raise
                 except Exception as exc:  # noqa: BLE001 - ошибки одной позиции не должны ронять весь импорт
                     logger.exception("Ошибка импорта товара")
                     errors.append(str(exc))
