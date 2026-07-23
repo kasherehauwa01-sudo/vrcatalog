@@ -206,16 +206,16 @@ class XMLCatalogImporter:
         return existing
 
     def _copy_product_relations(self, existing: Product, parsed_product: Product) -> Product:
-        existing.prices.clear()
-        existing.stocks.clear()
-        existing.properties.clear()
-        existing.analogs.clear()
-        existing.barcodes.clear()
-        existing.prices.extend(parsed_product.prices)
-        existing.stocks.extend(parsed_product.stocks)
-        existing.properties.extend(parsed_product.properties)
-        existing.analogs.extend(parsed_product.analogs)
-        existing.barcodes.extend(parsed_product.barcodes)
+        # Создаем новые ORM-объекты связей, а не переносим их с временного parsed_product.
+        # Иначе SQLAlchemy может каскадно добавить временный Product и снова выполнить INSERT в products.
+        existing.prices = [Price(price_type=price.price_type, price_value=price.price_value) for price in parsed_product.prices]
+        existing.stocks = [Stock(warehouse=stock.warehouse, quantity=stock.quantity) for stock in parsed_product.stocks]
+        existing.properties = [
+            ProductProperty(property_code=prop.property_code, name=prop.name, value=prop.value)
+            for prop in parsed_product.properties
+        ]
+        existing.analogs = [Analog(code=analog.code, name=analog.name) for analog in parsed_product.analogs]
+        existing.barcodes = [Barcode(value=barcode.value) for barcode in parsed_product.barcodes]
         return existing
 
     def _parse_product(self, item: ET.Element) -> Product:
