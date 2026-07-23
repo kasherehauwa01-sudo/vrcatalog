@@ -151,6 +151,7 @@ class XMLCatalogImporter:
         self._parse_stocks(item, product)
         self._parse_analogs(item, product)
         self._parse_barcodes(item, product, properties)
+        # Пересобираем поиск после применения специальных свойств, включая уточненное наименование.
         search_bits = [product.name, product.code, product.article, product.description, product.brand, product.manufacturer, product.manager, product.tags, product.certificate, product.material, product.color]
         search_bits.extend(b.value for b in product.barcodes)
         search_bits.extend(p.value for p in product.properties if p.value)
@@ -158,11 +159,19 @@ class XMLCatalogImporter:
         return product
 
     def _parse_prices(self, item: ET.Element, product: Product) -> None:
+        price_nodes = [child for child in item if _tag_name(child).lower() in {"цена", "price"}]
         for price_root in _children_by_names(item, ["Цены", "prices"]):
-            for price in list(price_root):
-                raw_type = price.get("ТипЦены") or price.get("Тип") or price.get("type") or _tag_name(price)
-                value = _text(price) or price.get("Значение") or price.get("value")
-                product.prices.append(Price(price_type=_normalize_price_type(raw_type), value=_float(value)))
+            price_nodes.extend(list(price_root))
+        seen: set[tuple[str, float]] = set()
+        for price in price_nodes:
+            raw_type = price.get("ТипЦены") or price.get("Тип") or price.get("type") or _tag_name(price)
+            value = _text(price) or price.get("Значение") or price.get("value")
+            price_type = _normalize_price_type(raw_type)
+            price_value = _float(value)
+            key = (price_type, price_value)
+            if key not in seen:
+                product.prices.append(Price(price_type=price_type, value=price_value))
+                seen.add(key)
 
     def _parse_stocks(self, item: ET.Element, product: Product) -> None:
         for stock_root in _children_by_names(item, ["Склады", "Остатки", "stocks"]):
@@ -189,6 +198,7 @@ class XMLCatalogImporter:
             value = prop["value"]
             if not value:
                 continue
+            if name in {"Наименование", "Название", "Полное наименование"} and product.name == product.code: product.name = value
             if name == "Артикул": product.article = value
             if name == "Производитель": product.manufacturer = value
             if name == "Менеджер": product.manager = value
