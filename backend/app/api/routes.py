@@ -3,16 +3,17 @@ import tempfile
 from io import StringIO, BytesIO
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.importer.xml_importer import XMLCatalogImporter
-from app.models.catalog import Favorite, Product, ViewHistory
-from app.schemas.catalog import MetaOut, ProductDetailOut, ProductListOut
+from app.models.catalog import Favorite, Product, ServiceLog, ViewHistory
+from app.schemas.catalog import MetaOut, ProductDetailOut, ProductListOut, ServiceLogOut
 from app.services.catalog import decorate, list_filters, meta, product_query
+from app.services.logging import add_log
 
 router = APIRouter()
 
@@ -35,6 +36,13 @@ def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
 def products(db: Session = Depends(get_db), limit: int = 60, offset: int = 0, search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None):
     params = locals(); params.pop("db"); params.pop("limit"); params.pop("offset")
     return [decorate(p) for p in product_query(db, params).offset(offset).limit(limit).all()]
+
+@router.delete("/products")
+def delete_products(product_ids: list[int] = Body(...), db: Session = Depends(get_db)):
+    deleted = db.query(Product).filter(Product.id.in_(product_ids)).delete(synchronize_session=False)
+    add_log(db, "products_delete", f"Удалено товаров: {deleted}")
+    db.commit()
+    return {"deleted": deleted}
 
 @router.get("/products/{product_id}", response_model=ProductDetailOut)
 def product_detail(product_id: int, db: Session = Depends(get_db)):
@@ -59,14 +67,22 @@ def toggle_favorite(product_id: int, db: Session = Depends(get_db)):
     else: db.add(Favorite(product_id=product_id)); active = True
     db.commit(); return {"favorite": active}
 
+@router.get("/logs", response_model=list[ServiceLogOut])
+def logs(db: Session = Depends(get_db), limit: int = 200):
+    return db.query(ServiceLog).order_by(ServiceLog.created_at.desc()).limit(limit).all()
+
 @router.get("/export.csv")
 def export_csv(db: Session = Depends(get_db), search: str | None = None):
+    add_log(db, "export_csv", f"Экспорт CSV; поиск: {search or ''}")
+    db.commit()
     output = StringIO(); writer = csv.writer(output); writer.writerow(["Код", "Артикул", "Название", "Раздел", "Остаток"])
     for p in product_query(db, {"search": search}).all(): writer.writerow([p.code, p.article, p.name, p.section, p.quantity])
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=products.csv"})
 
 @router.get("/export.xlsx")
 def export_xlsx(db: Session = Depends(get_db), search: str | None = None):
+    add_log(db, "export_xlsx", f"Экспорт Excel; поиск: {search or ''}")
+    db.commit()
     wb = Workbook(); ws = wb.active; ws.append(["Код", "Артикул", "Название", "Раздел", "Остаток"])
     for p in product_query(db, {"search": search}).all(): ws.append([p.code, p.article, p.name, p.section, p.quantity])
     stream = BytesIO(); wb.save(stream); stream.seek(0)

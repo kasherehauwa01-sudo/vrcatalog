@@ -7,6 +7,8 @@ from typing import Iterable
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.services.logging import add_log
+
 from app.models.catalog import Analog, Barcode, ImportRun, Price, Product, ProductProperty, Stock
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,7 @@ class XMLCatalogImporter:
         errors: list[str] = []
         imported = 0
         try:
+            add_log(db, "xml_import_start", f"Начато чтение XML: {filename}")
             root = ET.parse(path).getroot()
             products = root.findall(".//Товар") or root.findall(".//product") or list(root)
             for item in products:
@@ -80,6 +83,7 @@ class XMLCatalogImporter:
                     logger.exception("Ошибка импорта товара")
                     errors.append(str(exc))
             run.status = "completed" if not errors else "completed_with_errors"
+            add_log(db, "xml_import_finish", f"Импорт XML завершен: {filename}; товаров: {imported}; ошибок: {len(errors)}", "warning" if errors else "info")
             run.imported_count = imported
             run.errors = "\n".join(errors) or None
             run.finished_at = datetime.utcnow()
@@ -94,6 +98,7 @@ class XMLCatalogImporter:
             run.errors = str(exc)
             run.finished_at = datetime.utcnow()
             db.add(run)
+            add_log(db, "xml_import_error", f"Ошибка импорта XML {filename}: {exc}", "error")
             db.commit()
             raise
         return run

@@ -34,3 +34,11 @@ class MetaOut(BaseModel):
     import_status: str | None = None
     imported_count: int | None = None
     errors: str | None = None
+
+class ServiceLogOut(BaseModel):
+    id: int
+    level: str
+    event: str
+    message: str
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)

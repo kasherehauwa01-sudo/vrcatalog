@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { alpha, AppBar, Box, Button, Card, CardContent, Chip, Container, CssBaseline, Divider, Drawer, IconButton, InputAdornment, LinearProgress, List, Paper, Stack, Tab, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tabs, TextField, ThemeProvider, Toolbar, Typography, createTheme } from '@mui/material';
+import { alpha, AppBar, Box, Button, Card, CardContent, Checkbox, Chip, Container, CssBaseline, Divider, Drawer, IconButton, InputAdornment, LinearProgress, List, Paper, Stack, Tab, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tabs, TextField, ThemeProvider, Toolbar, Typography, createTheme } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import FavoriteBorderIcon from '@mui/icons-material/FavoriteBorder';
 import SearchIcon from '@mui/icons-material/Search';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import { api } from './api/client';
-import type { Meta, Product, ProductDetail } from './types/catalog';
+import type { Meta, Product, ProductDetail, ServiceLog } from './types/catalog';
 
 const theme = createTheme({
   palette: {
@@ -41,12 +41,20 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<ProductDetail | null>(null);
   const [tab, setTab] = useState<'catalog' | 'settings'>('catalog');
+  const [settingsTab, setSettingsTab] = useState<'settings' | 'logs'>('settings');
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const params = useMemo(() => { const p = new URLSearchParams({ search }); Object.entries(active).forEach(([k,v]) => v && p.set(k,v)); return p; }, [search, active]);
-  const reload = () => { api.products(params).then(setProducts); api.meta().then(setMeta); api.filters().then(setFilters); };
+  const reload = () => { api.products(params).then(items => { setProducts(items); setSelectedIds([]); }); api.meta().then(setMeta); api.filters().then(setFilters); };
   useEffect(reload, [params]);
   const upload = async (file?: File) => { if (!file) return; setLoading(true); setUploadError(null); try { setMeta(await api.upload(file)); reload(); } catch (error) { setUploadError(error instanceof Error ? error.message : 'Не удалось загрузить XML'); } finally { setLoading(false); } };
   const copy = (value?: string) => value && navigator.clipboard.writeText(value);
+  const allSelected = products.length > 0 && selectedIds.length === products.length;
+  const toggleSelected = (id: number) => setSelectedIds(ids => ids.includes(id) ? ids.filter(item => item !== id) : [...ids, id]);
+  const toggleAll = () => setSelectedIds(allSelected ? [] : products.map(product => product.id));
+  const deleteSelected = async () => { if (!selectedIds.length) return; await api.deleteProducts(selectedIds); reload(); };
+  const openLogs = async () => { setSettingsTab('logs'); setLogs(await api.logs()); };
 
   return <ThemeProvider theme={theme}><CssBaseline />
     <Box sx={{ minHeight: '100vh', background: 'radial-gradient(circle at top left, #e0f2fe 0, #f0f9ff 42%, #ffffff 100%)' }}>
@@ -68,15 +76,15 @@ function App() {
           </Tabs>
         </Paper>
 
-        {tab === 'settings' && <Card sx={{ maxWidth: 900 }}><CardContent><Typography variant="h6">Настройки</Typography><Typography color="text.secondary" sx={{ mt: 1, mb: 2 }}>Путь к скрипту обновления каталога на сервере. Нажмите на иконку, чтобы скопировать значение.</Typography><TextField fullWidth label="Скрипт обновления" value={updateScriptPath} InputProps={{ readOnly: true, endAdornment: <InputAdornment position="end"><IconButton aria-label="Скопировать путь к скрипту обновления" onClick={() => copy(updateScriptPath)}><ContentCopyIcon /></IconButton></InputAdornment> }} /></CardContent></Card>}
+        {tab === 'settings' && <Card sx={{ maxWidth: 1000 }}><CardContent><Tabs value={settingsTab} onChange={(_, value) => value === 'logs' ? openLogs() : setSettingsTab(value)} sx={{ mb: 2 }}><Tab value="settings" label="Настройки" /><Tab value="logs" label="Логи" /></Tabs>{settingsTab === 'settings' && <Box><Typography variant="h6">Настройки</Typography><Typography color="text.secondary" sx={{ mt: 1, mb: 2 }}>Путь к скрипту обновления каталога на сервере. Нажмите на иконку, чтобы скопировать значение.</Typography><TextField fullWidth label="Скрипт обновления" value={updateScriptPath} InputProps={{ readOnly: true, endAdornment: <InputAdornment position="end"><IconButton aria-label="Скопировать путь к скрипту обновления" onClick={() => copy(updateScriptPath)}><ContentCopyIcon /></IconButton></InputAdornment> }} /></Box>}{settingsTab === 'logs' && <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Дата</TableCell><TableCell>Уровень</TableCell><TableCell>Событие</TableCell><TableCell>Сообщение</TableCell></TableRow></TableHead><TableBody>{logs.map(log => <TableRow key={log.id}><TableCell>{new Date(log.created_at).toLocaleString()}</TableCell><TableCell><Chip size="small" color={log.level === 'error' ? 'error' : log.level === 'warning' ? 'warning' : 'primary'} label={log.level} /></TableCell><TableCell>{log.event}</TableCell><TableCell>{log.message}</TableCell></TableRow>)}</TableBody></Table></TableContainer>}</CardContent></Card>}
 
         {tab === 'catalog' && <Stack direction={{ xs:'column', md:'row' }} spacing={3} alignItems="flex-start">
           <Card sx={{ width:{ xs:'100%', md:304 }, flexShrink:0, position: { md: 'sticky' }, top: 96 }}><CardContent><Typography variant="h6">Фильтры</Typography>{meta.errors && <Typography sx={{ mt: 1 }} color="error">Ошибки импорта: {meta.errors}</Typography>}<Divider sx={{ my: 2 }} />
             <List disablePadding>{Object.entries(labels).map(([key,label]) => <Box key={key} sx={{ mb: 2 }}><Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>{label}</Typography><Stack direction="row" flexWrap="wrap" gap={1}>{(filters[key] ?? []).slice(0,24).map(v => <Chip clickable color={active[key]===v ? 'primary' : 'default'} variant={active[key]===v ? 'filled' : 'outlined'} key={v} label={v} onClick={()=>setActive(a=>({...a,[key]:a[key]===v?'':v}))} />)}</Stack></Box>)}</List>
-            <Divider sx={{ my: 2 }} /><Button href={api.exportUrl('xlsx', search)}>Экспорт Excel</Button>
+            <Divider sx={{ my: 2 }} /><Stack spacing={1}><Button href={api.exportUrl('xlsx', search)}>Экспорт Excel</Button><Button color="error" variant="outlined" disabled={!selectedIds.length} onClick={deleteSelected}>Удалить выбранные</Button></Stack>
           </CardContent></Card>
 
-          <TableContainer component={Card} sx={{ flex: 1 }}><Table><TableHead><TableRow><TableCell>Наименование</TableCell><TableCell>Артикул</TableCell><TableCell>Код</TableCell><TableCell>Раздел</TableCell><TableCell align="right">Розничная цена</TableCell><TableCell align="right">Остаток</TableCell><TableCell /></TableRow></TableHead><TableBody>{products.map(p => <TableRow hover key={p.id} onClick={()=>api.product(p.id).then(setDetail)} sx={{ cursor: 'pointer' }}><TableCell><Typography fontWeight={800}>{p.name}</Typography></TableCell><TableCell>{p.article ?? '—'}</TableCell><TableCell>{p.code}</TableCell><TableCell>{p.section ? <Chip size="small" label={p.section}/> : '—'}</TableCell><TableCell align="right">{p.retail_price ?? '—'}</TableCell><TableCell align="right">{p.quantity}</TableCell><TableCell align="right"><IconButton size="small" onClick={(e)=>{e.stopPropagation(); copy(p.article)}}><ContentCopyIcon fontSize="small" /></IconButton></TableCell></TableRow>)}</TableBody></Table></TableContainer>
+          <TableContainer component={Card} sx={{ flex: 1 }}><Table><TableHead><TableRow><TableCell padding="checkbox"><Checkbox checked={allSelected} indeterminate={selectedIds.length > 0 && !allSelected} onChange={toggleAll} /></TableCell><TableCell>Наименование</TableCell><TableCell>Артикул</TableCell><TableCell>Код</TableCell><TableCell>Раздел</TableCell><TableCell align="right">Розничная цена</TableCell><TableCell align="right">Остаток</TableCell><TableCell /></TableRow></TableHead><TableBody>{products.map(p => <TableRow hover key={p.id} selected={selectedIds.includes(p.id)} onClick={()=>api.product(p.id).then(setDetail)} sx={{ cursor: 'pointer' }}><TableCell padding="checkbox"><Checkbox checked={selectedIds.includes(p.id)} onClick={e=>e.stopPropagation()} onChange={()=>toggleSelected(p.id)} /></TableCell><TableCell><Typography fontWeight={800}>{p.name}</Typography></TableCell><TableCell>{p.article ?? '—'}</TableCell><TableCell>{p.code}</TableCell><TableCell>{p.section ? <Chip size="small" label={p.section}/> : '—'}</TableCell><TableCell align="right">{p.retail_price ?? '—'}</TableCell><TableCell align="right">{p.quantity}</TableCell><TableCell align="right"><IconButton size="small" onClick={(e)=>{e.stopPropagation(); copy(p.article)}}><ContentCopyIcon fontSize="small" /></IconButton></TableCell></TableRow>)}</TableBody></Table></TableContainer>
         </Stack>}
       </Container>
 
