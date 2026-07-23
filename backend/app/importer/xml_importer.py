@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.services.logging import add_log
@@ -90,19 +90,7 @@ class XMLCatalogImporter:
             for item in products:
                 try:
                     parsed_product = self._parse_product(item)
-                    product = self._upsert_product(parsed_product, existing_products)
-                    if product.id is None:
-                        try:
-                            # SAVEPOINT защищает весь импорт: если БД уже содержит этот код,
-                            # откатывается только INSERT одного товара, а не вся загрузка XML.
-                            with db.begin_nested():
-                                db.add(product)
-                                db.flush()
-                        except IntegrityError:
-                            product = self._recover_existing_product(db, parsed_product)
-                    else:
-                        db.add(product)
-                        db.flush()
+                    product = self._persist_product(db, parsed_product, existing_products)
                     # Обновляем карту кодов, чтобы повторный товар с тем же кодом в этом же XML
                     # обновлял строку, а не создавал второй INSERT.
                     existing_products[product.code] = product
@@ -149,39 +137,69 @@ class XMLCatalogImporter:
                 result[product.code] = product
         return result
 
-    def _upsert_product(self, parsed_product: Product, existing_products: dict[str, Product]) -> Product:
+    def _product_scalar_values(self, product: Product) -> dict[str, object]:
+        """Готовит только колонки products без связанных цен, складов и свойств."""
+        return {
+            "code": product.code,
+            "name": product.name,
+            "article": product.article,
+            "section": product.section,
+            "description": product.description,
+            "image_url": product.image_url,
+            "quantity": product.quantity,
+            "manufacturer": product.manufacturer,
+            "brand": product.brand,
+            "manager": product.manager,
+            "country": product.country,
+            "material": product.material,
+            "color": product.color,
+            "certificate": product.certificate,
+            "tags": product.tags,
+            "search_text": product.search_text,
+        }
+
+    def _persist_product(self, db: Session, parsed_product: Product, existing_products: dict[str, Product]) -> Product:
+        """Атомарный upsert товара по code: БД сама решает INSERT или UPDATE."""
+        dialect = db.get_bind().dialect.name
+        if dialect == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as dialect_insert
+        elif dialect == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as dialect_insert
+        else:
+            return self._persist_product_fallback(db, parsed_product, existing_products)
+
+        values = self._product_scalar_values(parsed_product)
+        update_values = {key: value for key, value in values.items() if key != "code"}
+        stmt = (
+            dialect_insert(Product.__table__)
+            .values(**values)
+            .on_conflict_do_update(index_elements=["code"], set_=update_values)
+            .returning(Product.__table__.c.id)
+        )
+        product_id = db.execute(stmt).scalar_one()
+        existing = db.get(Product, product_id)
+        if existing is None:
+            raise ValueError(f"Не удалось получить товар с id {product_id} после upsert")
+        self._copy_product_scalars(existing, parsed_product)
+        return self._copy_product_relations(existing, parsed_product)
+
+    def _persist_product_fallback(self, db: Session, parsed_product: Product, existing_products: dict[str, Product]) -> Product:
         existing = existing_products.get(parsed_product.code)
         if existing is None:
-            return parsed_product
-        return self._copy_product_data(existing, parsed_product)
-
-    def _recover_existing_product(self, db: Session, parsed_product: Product) -> Product:
-        """Если INSERT столкнулся с уникальным кодом, перечитывает строку и превращает операцию в UPDATE."""
-        with db.no_autoflush:
             existing = db.query(Product).filter(Product.code == parsed_product.code).one_or_none()
         if existing is None:
-            raise ValueError(f"Не удалось найти товар с кодом {parsed_product.code} после конфликта уникальности")
-        product = self._copy_product_data(existing, parsed_product)
-        db.add(product)
-        db.flush()
-        return product
+            db.add(parsed_product)
+            db.flush()
+            return parsed_product
+        self._copy_product_scalars(existing, parsed_product)
+        return self._copy_product_relations(existing, parsed_product)
 
-    def _copy_product_data(self, existing: Product, parsed_product: Product) -> Product:
-        existing.name = parsed_product.name
-        existing.article = parsed_product.article
-        existing.section = parsed_product.section
-        existing.description = parsed_product.description
-        existing.image_url = parsed_product.image_url
-        existing.quantity = parsed_product.quantity
-        existing.manufacturer = parsed_product.manufacturer
-        existing.brand = parsed_product.brand
-        existing.manager = parsed_product.manager
-        existing.country = parsed_product.country
-        existing.material = parsed_product.material
-        existing.color = parsed_product.color
-        existing.certificate = parsed_product.certificate
-        existing.tags = parsed_product.tags
-        existing.search_text = parsed_product.search_text
+    def _copy_product_scalars(self, existing: Product, parsed_product: Product) -> Product:
+        for key, value in self._product_scalar_values(parsed_product).items():
+            setattr(existing, key, value)
+        return existing
+
+    def _copy_product_relations(self, existing: Product, parsed_product: Product) -> Product:
         existing.prices.clear()
         existing.stocks.clear()
         existing.properties.clear()
