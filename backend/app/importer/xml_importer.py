@@ -67,6 +67,11 @@ def _parse_xml_root(path: Path) -> ET.Element:
         return ET.fromstring(text.encode("utf-8"))
 
 
+def _product_code(item: ET.Element) -> str | None:
+    code = _child_text(item, "Код") or item.get("Код") or item.get("code")
+    return code.strip() if code and code.strip() else None
+
+
 class XMLCatalogImporter:
     """Независимый сервис импорта: XML читается только здесь, API работает уже с БД."""
 
@@ -80,14 +85,17 @@ class XMLCatalogImporter:
             add_log(db, "xml_import_start", f"Начато чтение XML: {filename}")
             root = _parse_xml_root(path)
             products = root.findall(".//Товар") or root.findall(".//product") or list(root)
+            product_codes = [code for code in (_product_code(item) for item in products) if code]
+            existing_products = self._load_existing_products(db, product_codes)
             for item in products:
                 try:
                     parsed_product = self._parse_product(item)
-                    product = self._upsert_product(db, parsed_product)
+                    product = self._upsert_product(parsed_product, existing_products)
                     db.add(product)
-                    # Сразу отправляем товар в БД, чтобы следующий товар с тем же кодом обновлял его,
-                    # а не создавал второй INSERT и не падал на unique constraint products.code.
+                    # Сразу отправляем товар в БД и обновляем карту кодов, чтобы повторный товар
+                    # с тем же кодом в этом же XML обновлял строку, а не создавал второй INSERT.
                     db.flush()
+                    existing_products[product.code] = product
                     imported += 1
                 except SQLAlchemyError:
                     raise
@@ -118,8 +126,21 @@ class XMLCatalogImporter:
         return run
 
 
-    def _upsert_product(self, db: Session, parsed_product: Product) -> Product:
-        existing = db.query(Product).filter(Product.code == parsed_product.code).one_or_none()
+    def _load_existing_products(self, db: Session, codes: list[str]) -> dict[str, Product]:
+        """Заранее загружает товары по кодам из XML, чтобы обновлять их без повторных INSERT."""
+        if not codes:
+            return {}
+        unique_codes = list(dict.fromkeys(codes))
+        result: dict[str, Product] = {}
+        chunk_size = 1000
+        for index in range(0, len(unique_codes), chunk_size):
+            chunk = unique_codes[index:index + chunk_size]
+            for product in db.query(Product).filter(Product.code.in_(chunk)).all():
+                result[product.code] = product
+        return result
+
+    def _upsert_product(self, parsed_product: Product, existing_products: dict[str, Product]) -> Product:
+        existing = existing_products.get(parsed_product.code)
         if existing is None:
             return parsed_product
         existing.name = parsed_product.name
