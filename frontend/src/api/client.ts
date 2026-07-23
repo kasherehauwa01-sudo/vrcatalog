@@ -1,0 +1,21 @@
+import type { Meta, Product, ProductDetail } from '../types/catalog';
+
+const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
+const API = `${basePath}/api`;
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
+  if (!response.ok) {
+    throw new Error(`Ошибка API: ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+export const api = {
+  async meta(): Promise<Meta> { return request<Meta>(`${API}/meta`); },
+  async filters(): Promise<Record<string,string[]>> { return request<Record<string,string[]>>(`${API}/filters`); },
+  async products(params: URLSearchParams): Promise<Product[]> { return request<Product[]>(`${API}/products?${params}`); },
+  async product(id: number): Promise<ProductDetail> { return request<ProductDetail>(`${API}/products/${id}`); },
+  async upload(file: File): Promise<Meta> { const form = new FormData(); form.append('file', file); return request<Meta>(`${API}/import`, { method:'POST', body: form }); },
+  exportUrl(kind: 'csv'|'xlsx', search: string) { return `${API}/export.${kind}?search=${encodeURIComponent(search)}`; }
+};
