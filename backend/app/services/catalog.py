@@ -12,7 +12,11 @@ def product_query(db: Session, params):
         q = q.filter(func.lower(Product.search_text).like(term))
     for field in FILTER_FIELDS:
         if value := params.get(field):
-            q = q.filter(getattr(Product, field) == value)
+            values = [item.strip() for item in str(value).split(",") if item.strip()]
+            if len(values) > 1:
+                q = q.filter(getattr(Product, field).in_(values))
+            elif values:
+                q = q.filter(getattr(Product, field) == values[0])
     if params.get("in_stock") == "true":
         q = q.filter(Product.quantity > 0)
     if params.get("price_min") or params.get("price_max"):

@@ -24,6 +24,7 @@ class BarcodeOut(BaseModel):
 class ProductListOut(BaseModel):
     id: int; code: str; name: str; article: str | None; section: str | None; quantity: float
     retail_price: float | None = None
+    prices: list[PriceOut] = []
     model_config = ConfigDict(from_attributes=True)
 class ProductDetailOut(ProductListOut):
     description: str | None; manufacturer: str | None; brand: str | None; manager: str | None; country: str | None; material: str | None; color: str | None; certificate: str | None; tags: str | None

@@ -37,6 +37,12 @@ def products(db: Session = Depends(get_db), limit: int = 60, offset: int = 0, se
     params = locals(); params.pop("db"); params.pop("limit"); params.pop("offset")
     return [decorate(p) for p in product_query(db, params).offset(offset).limit(limit).all()]
 
+
+@router.get("/products/count")
+def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None):
+    params = locals(); params.pop("db")
+    return {"count": product_query(db, params).count()}
+
 @router.delete("/products")
 def delete_products(product_ids: list[int] = Body(...), db: Session = Depends(get_db)):
     deleted = db.query(Product).filter(Product.id.in_(product_ids)).delete(synchronize_session=False)
@@ -80,10 +86,11 @@ def export_csv(db: Session = Depends(get_db), search: str | None = None):
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=products.csv"})
 
 @router.get("/export.xlsx")
-def export_xlsx(db: Session = Depends(get_db), search: str | None = None):
+def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None):
+    params = locals(); params.pop("db")
     add_log(db, "export_xlsx", f"Экспорт Excel; поиск: {search or ''}")
     db.commit()
     wb = Workbook(); ws = wb.active; ws.append(["Код", "Артикул", "Название", "Раздел", "Остаток"])
-    for p in product_query(db, {"search": search}).all(): ws.append([p.code, p.article, p.name, p.section, p.quantity])
+    for p in product_query(db, params).all(): ws.append([p.code, p.article, p.name, p.section, p.quantity])
     stream = BytesIO(); wb.save(stream); stream.seek(0)
     return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=products.xlsx"})
