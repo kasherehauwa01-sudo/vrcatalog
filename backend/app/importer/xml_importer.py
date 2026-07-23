@@ -12,6 +12,8 @@ from app.services.notifications import add_notification
 
 from app.models.catalog import Analog, Barcode, ImportRun, Price, Product, ProductProperty, Stock
 
+IMAGE_BASE_URL = "https://volgorost.ru/upload/import_images/images/"
+
 logger = logging.getLogger(__name__)
 KNOWN_FIELDS = {"Код":"code","Название":"name","Наименование":"name","Раздел":"section","Количество":"quantity"}
 PRICE_NAMES = {
@@ -124,6 +126,7 @@ class XMLCatalogImporter:
         existing.article = parsed_product.article
         existing.section = parsed_product.section
         existing.description = parsed_product.description
+        existing.image_url = parsed_product.image_url
         existing.quantity = parsed_product.quantity
         existing.manufacturer = parsed_product.manufacturer
         existing.brand = parsed_product.brand
@@ -154,7 +157,7 @@ class XMLCatalogImporter:
         name = name.strip() if name else None
         if not code or not name:
             raise ValueError("У товара отсутствует код или название")
-        product = Product(code=code, name=name, section=values.get("section"), quantity=_float(values.get("quantity")))
+        product = Product(code=code, name=name, section=values.get("section"), quantity=_float(values.get("quantity")), image_url=self._parse_image_url(item))
         properties = self._parse_properties(item)
         for prop in properties:
             product.properties.append(ProductProperty(property_code=prop["code"], name=prop["name"], value=prop["value"]))
@@ -169,6 +172,19 @@ class XMLCatalogImporter:
         search_bits.extend(p.value for p in product.properties if p.value)
         product.search_text = " ".join(filter(None, search_bits)).lower()
         return product
+
+    def _parse_image_url(self, item: ET.Element) -> str | None:
+        """Берет первое изображение из XML и превращает /images/... в полный внешний URL."""
+        for images_root in _children_by_names(item, ["Изображения", "images"]):
+            for image in list(images_root):
+                raw_path = _text(image) or image.get("path") or image.get("url")
+                if not raw_path:
+                    continue
+                normalized_path = raw_path.strip().lstrip("/")
+                if normalized_path.lower().startswith("images/"):
+                    normalized_path = normalized_path[len("images/"):]
+                return f"{IMAGE_BASE_URL}{normalized_path}"
+        return None
 
     def _parse_prices(self, item: ET.Element, product: Product) -> None:
         price_nodes = [child for child in item if _tag_name(child).lower() in {"цена", "price"}]

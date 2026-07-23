@@ -28,6 +28,7 @@ class Product(Base):
     article: Mapped[str | None] = mapped_column(String(255), index=True)
     section: Mapped[str | None] = mapped_column(String(255), index=True)
     description: Mapped[str | None] = mapped_column(Text)
+    image_url: Mapped[str | None] = mapped_column(Text)
     quantity: Mapped[float] = mapped_column(Float, default=0)
     manufacturer: Mapped[str | None] = mapped_column(String(255), index=True)
     brand: Mapped[str | None] = mapped_column(String(255), index=True)

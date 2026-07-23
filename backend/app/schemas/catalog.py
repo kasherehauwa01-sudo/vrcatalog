@@ -22,7 +22,7 @@ class BarcodeOut(BaseModel):
     value: str
     model_config = ConfigDict(from_attributes=True)
 class ProductListOut(BaseModel):
-    id: int; code: str; name: str; article: str | None; section: str | None; quantity: float
+    id: int; code: str; name: str; article: str | None; section: str | None; quantity: float; image_url: str | None = None
     retail_price: float | None = None
     prices: list[PriceOut] = []
     model_config = ConfigDict(from_attributes=True)
