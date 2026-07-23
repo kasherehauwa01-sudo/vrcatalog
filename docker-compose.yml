@@ -18,6 +18,7 @@ services:
     build:
       context: ./backend
     environment:
+      PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
       SECRET_KEY: ${SECRET_KEY}
