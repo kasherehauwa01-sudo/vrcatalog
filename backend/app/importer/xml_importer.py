@@ -70,6 +70,9 @@ class XMLCatalogImporter:
                     parsed_product = self._parse_product(item)
                     product = self._upsert_product(db, parsed_product)
                     db.add(product)
+                    # Сразу отправляем товар в БД, чтобы следующий товар с тем же кодом обновлял его,
+                    # а не создавал второй INSERT и не падал на unique constraint products.code.
+                    db.flush()
                     imported += 1
                 except SQLAlchemyError:
                     raise
@@ -129,7 +132,9 @@ class XMLCatalogImporter:
     def _parse_product(self, item: ET.Element) -> Product:
         values = {field: _child_text(item, xml_name) for xml_name, field in KNOWN_FIELDS.items()}
         code = values.get("code") or item.get("Код") or item.get("code")
+        code = code.strip() if code else None
         name = values.get("name") or item.get("Название") or item.get("name") or code
+        name = name.strip() if name else None
         if not code or not name:
             raise ValueError("У товара отсутствует код или название")
         product = Product(code=code, name=name, section=values.get("section"), quantity=_float(values.get("quantity")))
