@@ -5,6 +5,7 @@ import type {
   ServiceLog,
   Notification,
   Warehouse,
+  ProductType,
 } from "../types/catalog";
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -84,6 +85,37 @@ export const api = {
   },
   async deleteWarehouse(id: number): Promise<{ deleted: boolean }> {
     return request<{ deleted: boolean }>(`${API}/warehouses/${id}`, {
+      method: "DELETE",
+    });
+  },
+  async productTypes(): Promise<ProductType[]> {
+    return request<ProductType[]>(`${API}/product-types`);
+  },
+  async productTypeCodes(): Promise<{ codes: string[] }> {
+    return request<{ codes: string[] }>(`${API}/product-types/codes`);
+  },
+  async createProductType(payload: {
+    code: string;
+    name: string;
+  }): Promise<ProductType> {
+    return request<ProductType>(`${API}/product-types`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  },
+  async updateProductType(
+    id: number,
+    payload: { code: string; name: string },
+  ): Promise<ProductType> {
+    return request<ProductType>(`${API}/product-types/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  },
+  async deleteProductType(id: number): Promise<{ deleted: boolean }> {
+    return request<{ deleted: boolean }>(`${API}/product-types/${id}`, {
       method: "DELETE",
     });
   },

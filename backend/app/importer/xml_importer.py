@@ -150,6 +150,7 @@ class XMLCatalogImporter:
             "name": product.name,
             "article": product.article,
             "section": product.section,
+            "product_type": product.product_type,
             "description": product.description,
             "image_url": product.image_url,
             "quantity": product.quantity,
@@ -300,6 +301,7 @@ class XMLCatalogImporter:
             if name == "Менеджер": product.manager = value
             if name == "Сертификат": product.certificate = value
             if name == "Описание": product.description = value
+            if name == "Вид товара": product.product_type = value
             if name == "Тег": product.tags = value if not product.tags else f"{product.tags}, {value}"
             if name == "Страна": product.country = value
             if code == "PROP_BREND" or name == "Бренд": product.brand = value

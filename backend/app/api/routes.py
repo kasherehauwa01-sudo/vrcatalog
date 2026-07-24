@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.importer.xml_importer import XMLCatalogImporter
-from app.models.catalog import Favorite, Notification, Product, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ServiceLogOut, WarehouseSettingIn, WarehouseSettingOut
+from app.models.catalog import Favorite, Notification, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
+from app.schemas.catalog import MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ServiceLogOut, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut
 from app.services.catalog import decorate, list_filters, meta, product_query
 from app.services.logging import add_log
 
@@ -37,13 +37,13 @@ def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
     return meta(db)
 
 @router.get("/products", response_model=list[ProductListOut])
-def products(db: Session = Depends(get_db), limit: int = 60, offset: int = 0, search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None):
+def products(db: Session = Depends(get_db), limit: int = 60, offset: int = 0, search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None):
     params = locals(); params.pop("db"); params.pop("limit"); params.pop("offset")
     return [decorate(p) for p in product_query(db, params).offset(offset).limit(limit).all()]
 
 
 @router.get("/products/count")
-def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None):
+def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None):
     params = locals(); params.pop("db")
     return {"count": product_query(db, params).count()}
 
@@ -59,6 +59,8 @@ def product_detail(product_id: int, db: Session = Depends(get_db)):
     product = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.analogs), selectinload(Product.barcodes)).get(product_id)
     if not product:
         raise HTTPException(404, "Товар не найден")
+    type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
+    product.product_type_name = type_names.get(product.product_type, product.product_type) if product.product_type else None
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
     for stock in product.stocks:
         stock.warehouse_name = warehouse_names.get(stock.warehouse, stock.warehouse)
@@ -132,6 +134,57 @@ def delete_warehouse(warehouse_id: int, db: Session = Depends(get_db)):
     return {"deleted": True}
 
 
+@router.get("/product-types", response_model=list[ProductTypeSettingOut])
+def product_types(db: Session = Depends(get_db)):
+    return db.query(ProductTypeSetting).order_by(ProductTypeSetting.code).all()
+
+@router.get("/product-types/codes")
+def product_type_codes(db: Session = Depends(get_db)):
+    codes = [code for code, in db.query(Product.product_type).filter(Product.product_type.isnot(None)).distinct().order_by(Product.product_type).all()]
+    return {"codes": codes}
+
+@router.post("/product-types", response_model=ProductTypeSettingOut)
+def create_product_type(payload: ProductTypeSettingIn, db: Session = Depends(get_db)):
+    code = payload.code.strip()
+    name = payload.name.strip()
+    if not code or not name:
+        raise HTTPException(400, "Заполните код и наименование вида товара")
+    if db.query(ProductTypeSetting).filter(ProductTypeSetting.code == code).first():
+        raise HTTPException(400, "Вид товара с таким кодом уже добавлен")
+    item = ProductTypeSetting(code=code, name=name)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+@router.put("/product-types/{product_type_id}", response_model=ProductTypeSettingOut)
+def update_product_type(product_type_id: int, payload: ProductTypeSettingIn, db: Session = Depends(get_db)):
+    item = db.get(ProductTypeSetting, product_type_id)
+    if not item:
+        raise HTTPException(404, "Вид товара не найден")
+    code = payload.code.strip()
+    name = payload.name.strip()
+    if not code or not name:
+        raise HTTPException(400, "Заполните код и наименование вида товара")
+    duplicate = db.query(ProductTypeSetting).filter(ProductTypeSetting.code == code, ProductTypeSetting.id != product_type_id).first()
+    if duplicate:
+        raise HTTPException(400, "Вид товара с таким кодом уже добавлен")
+    item.code = code
+    item.name = name
+    db.commit()
+    db.refresh(item)
+    return item
+
+@router.delete("/product-types/{product_type_id}")
+def delete_product_type(product_type_id: int, db: Session = Depends(get_db)):
+    item = db.get(ProductTypeSetting, product_type_id)
+    if not item:
+        raise HTTPException(404, "Вид товара не найден")
+    db.delete(item)
+    db.commit()
+    return {"deleted": True}
+
+
 @router.get("/notifications", response_model=list[NotificationOut])
 def notifications(db: Session = Depends(get_db), limit: int = 200):
     return db.query(Notification).order_by(Notification.created_at.desc()).limit(limit).all()
@@ -162,7 +215,7 @@ def export_csv(db: Session = Depends(get_db), search: str | None = None):
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=products.csv"})
 
 @router.get("/export.xlsx")
-def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None):
+def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None):
     params = locals(); params.pop("db")
     add_log(db, "export_xlsx", f"Экспорт Excel; поиск: {search or ''}")
     db.commit()

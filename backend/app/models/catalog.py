@@ -27,6 +27,7 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String(512), index=True)
     article: Mapped[str | None] = mapped_column(String(255), index=True)
     section: Mapped[str | None] = mapped_column(String(255), index=True)
+    product_type: Mapped[str | None] = mapped_column(String(255), index=True)
     description: Mapped[str | None] = mapped_column(Text)
     image_url: Mapped[str | None] = mapped_column(Text)
     quantity: Mapped[float] = mapped_column(Float, default=0)
@@ -130,6 +131,14 @@ class Notification(Base):
 
 class WarehouseSetting(Base):
     __tablename__ = "warehouse_settings"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ProductTypeSetting(Base):
+    __tablename__ = "product_type_settings"
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), index=True)

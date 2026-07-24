@@ -50,6 +50,7 @@ import type {
   Notification,
   Product,
   ProductDetail,
+  ProductType,
   ServiceLog,
   Warehouse,
 } from "./types/catalog";
@@ -97,6 +98,7 @@ const labels: Record<string, string> = {
   country: "Страна",
   material: "Материал",
   color: "Цвет",
+  product_type: "Вид товара",
   warehouse: "Склады",
 };
 const updateScriptPath = "/var/www/html/vr/update_vrcatalog.sh";
@@ -113,7 +115,7 @@ function App() {
     "catalog",
   );
   const [settingsTab, setSettingsTab] = useState<
-    "settings" | "warehouses" | "logs"
+    "settings" | "mappings" | "logs"
   >("settings");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
@@ -123,9 +125,17 @@ function App() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [productTypes, setProductTypes] = useState<ProductType[]>([]);
   const [warehouseCodes, setWarehouseCodes] = useState<string[]>([]);
+  const [productTypeCodes, setProductTypeCodes] = useState<string[]>([]);
   const [warehouseDialogOpen, setWarehouseDialogOpen] = useState(false);
   const [warehouseForm, setWarehouseForm] = useState<{
+    id?: number;
+    code: string;
+    name: string;
+  }>({ code: "", name: "" });
+  const [productTypeDialogOpen, setProductTypeDialogOpen] = useState(false);
+  const [productTypeForm, setProductTypeForm] = useState<{
     id?: number;
     code: string;
     name: string;
@@ -195,10 +205,12 @@ function App() {
     setSettingsTab("logs");
     setLogs(await api.logs());
   };
-  const openWarehouses = async () => {
-    setSettingsTab("warehouses");
+  const openMappings = async () => {
+    setSettingsTab("mappings");
     setWarehouses(await api.warehouses());
     setWarehouseCodes((await api.warehouseCodes()).codes);
+    setProductTypes(await api.productTypes());
+    setProductTypeCodes((await api.productTypeCodes()).codes);
   };
   const openWarehouseDialog = (warehouse?: Warehouse) => {
     setWarehouseForm(
@@ -221,12 +233,41 @@ function App() {
         name: warehouseForm.name,
       });
     setWarehouseDialogOpen(false);
-    await openWarehouses();
+    await openMappings();
     reload();
   };
   const removeWarehouse = async (id: number) => {
     await api.deleteWarehouse(id);
-    await openWarehouses();
+    await openMappings();
+    reload();
+  };
+  const openProductTypeDialog = (productType?: ProductType) => {
+    setProductTypeForm(
+      productType
+        ? { id: productType.id, code: productType.code, name: productType.name }
+        : { code: "", name: "" },
+    );
+    setProductTypeDialogOpen(true);
+  };
+  const saveProductType = async () => {
+    if (!productTypeForm.code || !productTypeForm.name) return;
+    if (productTypeForm.id)
+      await api.updateProductType(productTypeForm.id, {
+        code: productTypeForm.code,
+        name: productTypeForm.name,
+      });
+    else
+      await api.createProductType({
+        code: productTypeForm.code,
+        name: productTypeForm.name,
+      });
+    setProductTypeDialogOpen(false);
+    await openMappings();
+    reload();
+  };
+  const removeProductType = async (id: number) => {
+    await api.deleteProductType(id);
+    await openMappings();
     reload();
   };
   const visiblePrices = (product: Product) => product.prices;
@@ -326,7 +367,6 @@ function App() {
               variant="scrollable"
             >
               <Tab value="catalog" label="Каталог" />
-              <Tab value="settings" label="Настройки" />
               <Tab
                 value="notifications"
                 label={
@@ -350,6 +390,7 @@ function App() {
                 }
                 onClick={openNotifications}
               />
+              <Tab value="settings" label="Настройки" />
             </Tabs>
           </Paper>
 
@@ -416,14 +457,14 @@ function App() {
                   onChange={(_, value) =>
                     value === "logs"
                       ? openLogs()
-                      : value === "warehouses"
-                        ? openWarehouses()
+                      : value === "mappings"
+                        ? openMappings()
                         : setSettingsTab(value)
                   }
                   sx={{ mb: 2 }}
                 >
                   <Tab value="settings" label="Настройки" />
-                  <Tab value="warehouses" label="Склады" />
+                  <Tab value="mappings" label="Сопоставления" />
                   <Tab value="logs" label="Логи" />
                 </Tabs>
                 {settingsTab === "settings" && (
@@ -453,7 +494,7 @@ function App() {
                     />
                   </Box>
                 )}
-                {settingsTab === "warehouses" && (
+                {settingsTab === "mappings" && (
                   <Box>
                     <Stack
                       direction="row"
@@ -500,6 +541,60 @@ function App() {
                                   aria-label="Удалить склад"
                                   color="error"
                                   onClick={() => removeWarehouse(warehouse.id)}
+                                >
+                                  <DeleteIcon />
+                                </IconButton>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                    <Divider sx={{ my: 3 }} />
+                    <Stack
+                      direction="row"
+                      justifyContent="space-between"
+                      alignItems="center"
+                      sx={{ mb: 2 }}
+                    >
+                      <Box>
+                        <Typography variant="h6">Виды товаров</Typography>
+                        <Typography color="text.secondary">
+                          Задайте наименование для кода вида товара из XML, чтобы в карточке товара показывалось понятное название.
+                        </Typography>
+                      </Box>
+                      <Button
+                        variant="contained"
+                        onClick={() => openProductTypeDialog()}
+                      >
+                        Добавить Вид товара
+                      </Button>
+                    </Stack>
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Наименование</TableCell>
+                            <TableCell>Код</TableCell>
+                            <TableCell align="right">Действия</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {productTypes.map((productType) => (
+                            <TableRow key={productType.id}>
+                              <TableCell>{productType.name}</TableCell>
+                              <TableCell>{productType.code}</TableCell>
+                              <TableCell align="right">
+                                <IconButton
+                                  aria-label="Редактировать вид товара"
+                                  onClick={() => openProductTypeDialog(productType)}
+                                >
+                                  <EditIcon />
+                                </IconButton>
+                                <IconButton
+                                  aria-label="Удалить вид товара"
+                                  color="error"
+                                  onClick={() => removeProductType(productType.id)}
                                 >
                                   <DeleteIcon />
                                 </IconButton>
@@ -770,6 +865,7 @@ function App() {
                   <Typography>Код: {detail.code}</Typography>
                   <Typography>Артикул: {detail.article ?? "—"}</Typography>
                   <Typography>Раздел: {detail.section}</Typography>
+                  <Typography>Вид товара: {detail.product_type_name ?? detail.product_type ?? "—"}</Typography>
                   <Typography>
                     Производитель: {detail.manufacturer ?? "—"}
                   </Typography>
@@ -827,6 +923,61 @@ function App() {
             )}
           </Box>
         </Drawer>
+        <Dialog
+          open={productTypeDialogOpen}
+          onClose={() => setProductTypeDialogOpen(false)}
+          fullWidth
+          maxWidth="sm"
+        >
+          <DialogTitle>
+            {productTypeForm.id ? "Редактировать Вид товара" : "Добавить Вид товара"}
+          </DialogTitle>
+          <DialogContent>
+            <Stack spacing={2} sx={{ mt: 1 }}>
+              <TextField
+                select
+                required
+                label="Код Вида товара"
+                value={productTypeForm.code}
+                onChange={(e) =>
+                  setProductTypeForm((current) => ({
+                    ...current,
+                    code: e.target.value,
+                  }))
+                }
+              >
+                {productTypeCodes.map((code) => (
+                  <MenuItem key={code} value={code}>
+                    {code}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                required
+                label="Наименование"
+                value={productTypeForm.name}
+                onChange={(e) =>
+                  setProductTypeForm((current) => ({
+                    ...current,
+                    name: e.target.value,
+                  }))
+                }
+              />
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setProductTypeDialogOpen(false)}>
+              Отмена
+            </Button>
+            <Button
+              variant="contained"
+              disabled={!productTypeForm.code || !productTypeForm.name}
+              onClick={saveProductType}
+            >
+              Сохранить
+            </Button>
+          </DialogActions>
+        </Dialog>
         <Dialog
           open={warehouseDialogOpen}
           onClose={() => setWarehouseDialogOpen(false)}

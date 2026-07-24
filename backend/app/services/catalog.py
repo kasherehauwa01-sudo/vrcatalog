@@ -1,7 +1,7 @@
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.catalog import ImportRun, Price, Product, Stock, WarehouseSetting
+from app.models.catalog import ImportRun, Price, Product, Stock, WarehouseSetting, ProductTypeSetting
 
 FILTER_FIELDS = ["section", "manufacturer", "brand", "manager", "country", "material", "color"]
 
@@ -17,6 +17,11 @@ def product_query(db: Session, params):
                 q = q.filter(getattr(Product, field).in_(values))
             elif values:
                 q = q.filter(getattr(Product, field) == values[0])
+    if product_type := params.get("product_type"):
+        type_values = [item.strip() for item in str(product_type).split(",") if item.strip()]
+        if type_values:
+            configured_codes = [code for code, in db.query(ProductTypeSetting.code).filter(ProductTypeSetting.name.in_(type_values)).all()]
+            q = q.filter(Product.product_type.in_(list(dict.fromkeys([*type_values, *configured_codes]))))
     if warehouse := params.get("warehouse"):
         warehouse_values = [item.strip() for item in str(warehouse).split(",") if item.strip()]
         if warehouse_values:
@@ -36,6 +41,9 @@ def product_query(db: Session, params):
 
 def list_filters(db: Session):
     data = {field: [v[0] for v in db.query(getattr(Product, field)).filter(getattr(Product, field).isnot(None)).distinct().order_by(getattr(Product, field)).all()] for field in FILTER_FIELDS}
+    type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
+    type_codes = [code for code, in db.query(Product.product_type).filter(Product.product_type.isnot(None)).distinct().order_by(Product.product_type).all()]
+    data["product_type"] = [type_names.get(code, code) for code in type_codes]
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
     warehouse_codes = [code for code, in db.query(Stock.warehouse).filter(Stock.warehouse.isnot(None)).distinct().order_by(Stock.warehouse).all()]
     data["warehouse"] = [warehouse_names.get(code, code) for code in warehouse_codes]

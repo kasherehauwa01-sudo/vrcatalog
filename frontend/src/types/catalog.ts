@@ -4,6 +4,8 @@ export type Product = {
   name: string;
   article?: string;
   section?: string;
+  product_type?: string;
+  product_type_name?: string;
   quantity: number;
   image_url?: string;
   retail_price?: number;
@@ -47,6 +49,13 @@ export type Notification = {
   message: string;
   created_at: string;
   is_read: boolean;
+};
+
+export type ProductType = {
+  id: number;
+  code: string;
+  name: string;
+  created_at: string;
 };
 
 export type Warehouse = {
