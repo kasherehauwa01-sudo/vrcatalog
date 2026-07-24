@@ -22,8 +22,13 @@ class AnalogOut(BaseModel):
 class BarcodeOut(BaseModel):
     value: str
     model_config = ConfigDict(from_attributes=True)
+class ProductImageOut(BaseModel):
+    order: int
+    url: str
+    model_config = ConfigDict(from_attributes=True)
 class ProductListOut(BaseModel):
-    id: int; code: str; name: str; article: str | None; section: str | None; product_type: str | None = None; product_type_name: str | None = None; quantity: float; image_url: str | None = None
+    id: int; code: str; name: str; article: str | None; section: str | None; product_type: str | None = None; product_type_name: str | None = None; quantity: float
+    images: list[ProductImageOut] = []
     retail_price: float | None = None
     prices: list[PriceOut] = []
     model_config = ConfigDict(from_attributes=True)
