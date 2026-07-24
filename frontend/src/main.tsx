@@ -304,23 +304,7 @@ function App() {
             borderColor: alpha("#0284c7", 0.14),
           }}
         >
-          <Toolbar sx={{ gap: 2, py: 1 }}>
-            <TextField
-              fullWidth
-              size="small"
-              placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              InputProps={{
-                startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
-              }}
-              sx={{
-                "& .MuiOutlinedInput-root": {
-                  bgcolor: alpha("#ffffff", 0.86),
-                  borderRadius: 999,
-                },
-              }}
-            />
+          <Toolbar sx={{ gap: 2, py: 1, justifyContent: "flex-end" }}>
             <Button
               variant="contained"
               startIcon={<UploadFileIcon />}
@@ -391,6 +375,35 @@ function App() {
               <Tab value="settings" label="Настройки" />
             </Tabs>
           </Paper>
+
+          {tab === "catalog" && (
+            <Paper
+              sx={{
+                mb: 3,
+                p: 1,
+                bgcolor: alpha("#ffffff", 0.78),
+                border: "1px solid rgba(2,132,199,.14)",
+              }}
+              elevation={0}
+            >
+              <TextField
+                fullWidth
+                size="small"
+                placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                InputProps={{
+                  startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
+                }}
+                sx={{
+                  "& .MuiOutlinedInput-root": {
+                    bgcolor: alpha("#ffffff", 0.86),
+                    borderRadius: 999,
+                  },
+                }}
+              />
+            </Paper>
+          )}
 
           {tab === "notifications" && (
             <Card>
@@ -564,6 +577,7 @@ function App() {
                       <Button
                         variant="contained"
                         onClick={() => openProductTypeDialog()}
+                        sx={{ whiteSpace: "nowrap" }}
                       >
                         Добавить вид
                       </Button>
@@ -572,7 +586,7 @@ function App() {
                       <Table size="small">
                         <TableHead>
                           <TableRow>
-                            <TableCell>Наименование</TableCell>
+                            <TableCell>Вид товара</TableCell>
                             <TableCell>Код</TableCell>
                             <TableCell align="right">Действия</TableCell>
                           </TableRow>
