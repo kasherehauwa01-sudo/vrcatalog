@@ -757,9 +757,8 @@ function App() {
                       <TableCell>Наименование</TableCell>
                       <TableCell>Артикул</TableCell>
                       <TableCell>Код</TableCell>
-                      <TableCell>Раздел</TableCell>
                       <TableCell align="right">Цена</TableCell>
-                      <TableCell align="right">Количество</TableCell>
+                      <TableCell align="right">Количество Авиаторов</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -801,13 +800,6 @@ function App() {
                         </TableCell>
                         <TableCell>{p.article ?? "—"}</TableCell>
                         <TableCell>{p.code}</TableCell>
-                        <TableCell>
-                          {p.section ? (
-                            <Chip size="small" label={p.section} />
-                          ) : (
-                            "—"
-                          )}
-                        </TableCell>
                         <TableCell align="right">
                           {visiblePrices(p).length
                             ? visiblePrices(p).map((price) => (
