@@ -129,6 +129,7 @@ function App() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [filteredCount, setFilteredCount] = useState(0);
+  const [filtersOpen, setFiltersOpen] = useState(true);
   const [openFilterGroups, setOpenFilterGroups] = useState<
     Record<string, boolean>
   >({});
@@ -921,75 +922,7 @@ function App() {
                   >
                     {filtersOpen ? "Свернуть фильтры" : "Развернуть фильтры"}
                   </Button>
-                  {meta.errors && (
-                    <Typography sx={{ mt: 1 }} color="error">
-                      Ошибки импорта: {meta.errors}
-                    </Typography>
-                  )}
-                  <Divider sx={{ my: 2 }} />
-                  <List disablePadding>
-                    {Object.entries(labels).map(([key, label]) => {
-                      const groupOpen = !!openFilterGroups[key];
-                      return (
-                        <Box key={key} sx={{ mb: 1.5 }}>
-                          <Stack
-                            direction="row"
-                            justifyContent="space-between"
-                            alignItems="center"
-                            sx={{ mb: groupOpen ? 1 : 0 }}
-                          >
-                            <Typography
-                              variant="subtitle2"
-                              color="text.secondary"
-                            >
-                              {label}
-                            </Typography>
-                            <Button
-                              size="small"
-                              onClick={() => toggleFilterGroup(key)}
-                            >
-                              {groupOpen ? "Свернуть" : "Развернуть"}
-                            </Button>
-                          </Stack>
-                          <Collapse in={groupOpen} timeout="auto" unmountOnExit>
-                            <Stack direction="row" flexWrap="wrap" gap={1}>
-                              {(filters[key] ?? []).slice(0, 24).map((v) => (
-                                <Chip
-                                  clickable
-                                  color={
-                                    (active[key] ?? []).includes(v)
-                                      ? "primary"
-                                      : "default"
-                                  }
-                                  variant={
-                                    (active[key] ?? []).includes(v)
-                                      ? "filled"
-                                      : "outlined"
-                                  }
-                                  key={v}
-                                  label={v}
-                                  onClick={() => toggleFilter(key, v)}
-                                />
-                              ))}
-                            </Stack>
-                          </Collapse>
-                        </Box>
-                      );
-                    })}
-                  </List>
-                  <Divider sx={{ my: 2 }} />
-                  <Stack spacing={1}>
-                    <Button href={api.exportUrl("xlsx", params)}>
-                      Экспорт Excel
-                    </Button>
-                    <Button
-                      color="error"
-                      variant="outlined"
-                      disabled={!selectedIds.length}
-                      onClick={deleteSelected}
-                    >
-                      Удалить выбранные
-                    </Button>
+                  <Collapse in={filtersOpen} timeout="auto" unmountOnExit>
                     {meta.errors && (
                       <Typography sx={{ mt: 1 }} color="error">
                         Ошибки импорта: {meta.errors}
@@ -997,37 +930,54 @@ function App() {
                     )}
                     <Divider sx={{ my: 2 }} />
                     <List disablePadding>
-                      {Object.entries(labels).map(([key, label]) => (
-                        <Box key={key} sx={{ mb: 2 }}>
-                          <Typography
-                            variant="subtitle2"
-                            color="text.secondary"
-                            sx={{ mb: 1 }}
-                          >
-                            {label}
-                          </Typography>
-                          <Stack direction="row" flexWrap="wrap" gap={1}>
-                            {(filters[key] ?? []).slice(0, 24).map((v) => (
-                              <Chip
-                                clickable
-                                color={
-                                  (active[key] ?? []).includes(v)
-                                    ? "primary"
-                                    : "default"
-                                }
-                                variant={
-                                  (active[key] ?? []).includes(v)
-                                    ? "filled"
-                                    : "outlined"
-                                }
-                                key={v}
-                                label={v}
-                                onClick={() => toggleFilter(key, v)}
-                              />
-                            ))}
-                          </Stack>
-                        </Box>
-                      ))}
+                      {Object.entries(labels).map(([key, label]) => {
+                        const groupOpen = !!openFilterGroups[key];
+                        return (
+                          <Box key={key} sx={{ mb: 1.5 }}>
+                            <Stack
+                              direction="row"
+                              justifyContent="space-between"
+                              alignItems="center"
+                              sx={{ mb: groupOpen ? 1 : 0 }}
+                            >
+                              <Typography
+                                variant="subtitle2"
+                                color="text.secondary"
+                              >
+                                {label}
+                              </Typography>
+                              <Button
+                                size="small"
+                                onClick={() => toggleFilterGroup(key)}
+                              >
+                                {groupOpen ? "Свернуть" : "Развернуть"}
+                              </Button>
+                            </Stack>
+                            <Collapse in={groupOpen} timeout="auto" unmountOnExit>
+                              <Stack direction="row" flexWrap="wrap" gap={1}>
+                                {(filters[key] ?? []).slice(0, 24).map((v) => (
+                                  <Chip
+                                    clickable
+                                    color={
+                                      (active[key] ?? []).includes(v)
+                                        ? "primary"
+                                        : "default"
+                                    }
+                                    variant={
+                                      (active[key] ?? []).includes(v)
+                                        ? "filled"
+                                        : "outlined"
+                                    }
+                                    key={v}
+                                    label={v}
+                                    onClick={() => toggleFilter(key, v)}
+                                  />
+                                ))}
+                              </Stack>
+                            </Collapse>
+                          </Box>
+                        );
+                      })}
                     </List>
                     <Divider sx={{ my: 2 }} />
                     <Stack spacing={1}>
