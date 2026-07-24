@@ -352,6 +352,14 @@ class XMLCatalogImporter:
             value = next((item.get(name) for name in names if item.get(name)), None)
         return value.strip() if value and value.strip() else None
 
+    def _product_field(self, item: ET.Element, field: str) -> str | None:
+        """Читает поле товара только из XML-тегов/атрибутов, которые соответствуют этому полю."""
+        names = PRODUCT_FIELD_TAGS[field]
+        value = _child_text(item, *names)
+        if value is None:
+            value = next((item.get(name) for name in names if item.get(name)), None)
+        return value.strip() if value and value.strip() else None
+
     def _parse_product(self, item: ET.Element) -> Product:
         code = self._product_field(item, "code")
         name = self._product_field(item, "name")
