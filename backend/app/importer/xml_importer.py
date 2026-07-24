@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Iterable
 
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.services.logging import add_log
 from app.services.notifications import add_notification
@@ -103,7 +103,8 @@ class XMLCatalogImporter:
                     existing_products[product.code] = product
                     imported += 1
                     if was_existing:
-                        updated += 1
+                        if getattr(product, "_import_changed", False):
+                            updated += 1
                     else:
                         created += 1
                 except SQLAlchemyError:
@@ -146,7 +147,20 @@ class XMLCatalogImporter:
         chunk_size = 1000
         for index in range(0, len(unique_codes), chunk_size):
             chunk = unique_codes[index:index + chunk_size]
-            for product in db.query(Product).filter(Product.code.in_(chunk)).all():
+            products = (
+                db.query(Product)
+                .options(
+                    selectinload(Product.prices),
+                    selectinload(Product.stocks),
+                    selectinload(Product.properties),
+                    selectinload(Product.analogs),
+                    selectinload(Product.barcodes),
+                    selectinload(Product.images),
+                )
+                .filter(Product.code.in_(chunk))
+                .all()
+            )
+            for product in products:
                 result[product.code] = product
         return result
 
@@ -172,62 +186,171 @@ class XMLCatalogImporter:
         }
 
     def _persist_product(self, db: Session, parsed_product: Product, existing_products: dict[str, Product]) -> Product:
-        """Атомарный upsert товара по code: БД сама решает INSERT или UPDATE."""
-        dialect = db.get_bind().dialect.name
-        if dialect == "postgresql":
-            from sqlalchemy.dialects.postgresql import insert as dialect_insert
-        elif dialect == "sqlite":
-            from sqlalchemy.dialects.sqlite import insert as dialect_insert
-        else:
-            return self._persist_product_fallback(db, parsed_product, existing_products)
-
-        values = self._product_scalar_values(parsed_product)
-        update_values = {key: value for key, value in values.items() if key != "code"}
-        stmt = (
-            dialect_insert(Product.__table__)
-            .values(**values)
-            .on_conflict_do_update(index_elements=["code"], set_=update_values)
-            .returning(Product.__table__.c.id)
-        )
-        product_id = db.execute(stmt).scalar_one()
-        existing = db.get(Product, product_id)
-        if existing is None:
-            raise ValueError(f"Не удалось получить товар с id {product_id} после upsert")
-        self._copy_product_scalars(existing, parsed_product)
-        return self._copy_product_relations(existing, parsed_product)
-
-    def _persist_product_fallback(self, db: Session, parsed_product: Product, existing_products: dict[str, Product]) -> Product:
+        """Создает новый товар или применяет только реальные изменения к существующему."""
         existing = existing_products.get(parsed_product.code)
-        if existing is None:
-            existing = db.query(Product).filter(Product.code == parsed_product.code).one_or_none()
         if existing is None:
             db.add(parsed_product)
             db.flush()
+            parsed_product._import_changed = True
+            add_log(db, "xml_product_created", f"Создан новый товар:\n{parsed_product.code}")
             return parsed_product
-        self._copy_product_scalars(existing, parsed_product)
-        return self._copy_product_relations(existing, parsed_product)
 
-    def _copy_product_scalars(self, existing: Product, parsed_product: Product) -> Product:
-        for key, value in self._product_scalar_values(parsed_product).items():
-            setattr(existing, key, value)
+        changed = False
+        changed_fields = self._sync_product_scalars(existing, parsed_product)
+        if changed_fields:
+            changed = True
+            add_log(db, "xml_product_fields_updated", f"Обновлены поля:\n{', '.join(changed_fields)}")
+        if self._sync_prices(db, existing, parsed_product):
+            changed = True
+        if self._sync_stocks(db, existing, parsed_product):
+            changed = True
+        if self._sync_relation_list(
+            existing.properties,
+            parsed_product.properties,
+            lambda item: (item.property_code, item.name),
+            lambda item: {"property_code": item.property_code, "name": item.name, "value": item.value},
+            ProductProperty,
+        ):
+            changed = True
+            add_log(db, "xml_product_properties_updated", f"Обновлены свойства:\n{existing.code}")
+        if self._sync_relation_list(
+            existing.analogs,
+            parsed_product.analogs,
+            lambda item: item.code or item.name,
+            lambda item: {"code": item.code, "name": item.name},
+            Analog,
+        ):
+            changed = True
+            add_log(db, "xml_product_analogs_updated", f"Обновлены аналоги:\n{existing.code}")
+        if self._sync_relation_list(
+            existing.barcodes,
+            parsed_product.barcodes,
+            lambda item: item.value,
+            lambda item: {"value": item.value},
+            Barcode,
+        ):
+            changed = True
+            add_log(db, "xml_product_barcodes_updated", f"Обновлены штрихкоды:\n{existing.code}")
+        if self._sync_images(db, existing, parsed_product):
+            changed = True
+            add_log(db, "xml_product_images_updated", "Обновлены изображения")
+        if not changed:
+            add_log(db, "xml_product_no_changes", "Изменений нет.")
+        existing._import_changed = changed
         return existing
 
-    def _copy_product_relations(self, existing: Product, parsed_product: Product) -> Product:
-        # Создаем новые ORM-объекты связей, а не переносим их с временного parsed_product.
-        # Иначе SQLAlchemy может каскадно добавить временный Product и снова выполнить INSERT в products.
-        existing.prices = [Price(price_type=price.price_type, price_value=price.price_value) for price in parsed_product.prices]
-        existing.stocks = [Stock(warehouse=stock.warehouse, quantity=stock.quantity) for stock in parsed_product.stocks]
-        existing.properties = [
-            ProductProperty(property_code=prop.property_code, name=prop.name, value=prop.value)
-            for prop in parsed_product.properties
-        ]
-        existing.analogs = [Analog(code=analog.code, name=analog.name) for analog in parsed_product.analogs]
-        existing.barcodes = [Barcode(value=barcode.value) for barcode in parsed_product.barcodes]
-        existing.images = [
+    def _sync_product_scalars(self, existing: Product, parsed_product: Product) -> list[str]:
+        changed_fields: list[str] = []
+        labels = {
+            "name": "Название",
+            "article": "Артикул",
+            "section": "Раздел",
+            "product_type": "Вид товара",
+            "description": "Описание",
+            "quantity": "Количество",
+            "manufacturer": "Производитель",
+            "brand": "Бренд",
+            "manager": "Менеджер",
+            "country": "Страна",
+            "material": "Материал",
+            "color": "Цвет",
+            "certificate": "Сертификат",
+            "tags": "Теги",
+            "search_text": "Поиск",
+        }
+        for field, value in self._product_scalar_values(parsed_product).items():
+            if field == "code":
+                continue
+            if getattr(existing, field) != value:
+                setattr(existing, field, value)
+                changed_fields.append(labels.get(field, field))
+        return changed_fields
+
+    def _sync_prices(self, db: Session, existing: Product, parsed_product: Product) -> bool:
+        changed = False
+        current = {price.price_type: price for price in existing.prices}
+        incoming = {price.price_type: price for price in parsed_product.prices}
+        for price_type, parsed_price in incoming.items():
+            price = current.get(price_type)
+            if price is None:
+                existing.prices.append(Price(price_type=parsed_price.price_type, price_value=parsed_price.price_value))
+                changed = True
+            elif price.price_value != parsed_price.price_value:
+                price.price_value = parsed_price.price_value
+                changed = True
+        for price_type, price in list(current.items()):
+            if price_type not in incoming:
+                existing.prices.remove(price)
+                changed = True
+        if changed:
+            add_log(db, "xml_product_prices_updated", f"Обновлена цена:\n{', '.join(incoming.keys())}")
+        return changed
+
+    def _sync_stocks(self, db: Session, existing: Product, parsed_product: Product) -> bool:
+        changed = False
+        current = {stock.warehouse: stock for stock in existing.stocks}
+        incoming = {stock.warehouse: stock for stock in parsed_product.stocks}
+        changed_warehouses: list[str] = []
+        for warehouse, parsed_stock in incoming.items():
+            stock = current.get(warehouse)
+            if stock is None:
+                existing.stocks.append(Stock(warehouse=parsed_stock.warehouse, quantity=parsed_stock.quantity))
+                changed_warehouses.append(warehouse)
+                changed = True
+            elif stock.quantity != parsed_stock.quantity:
+                stock.quantity = parsed_stock.quantity
+                changed_warehouses.append(warehouse)
+                changed = True
+        for warehouse, stock in list(current.items()):
+            if warehouse not in incoming:
+                existing.stocks.remove(stock)
+                changed_warehouses.append(warehouse)
+                changed = True
+        if changed:
+            add_log(db, "xml_product_stocks_updated", f"Обновлены остатки:\n{', '.join(changed_warehouses)}")
+        return changed
+
+    def _sync_relation_list(self, current_items, incoming_items, key_fn, values_fn, model) -> bool:
+        current = {key_fn(item): item for item in current_items}
+        incoming = {key_fn(item): item for item in incoming_items}
+        changed = False
+        for key, parsed_item in incoming.items():
+            item = current.get(key)
+            values = values_fn(parsed_item)
+            if item is None:
+                current_items.append(model(**values))
+                changed = True
+                continue
+            for field, value in values.items():
+                if getattr(item, field) != value:
+                    setattr(item, field, value)
+                    changed = True
+        for key, item in list(current.items()):
+            if key not in incoming:
+                current_items.remove(item)
+                changed = True
+        return changed
+
+    def _sync_images(self, db: Session, existing: Product, parsed_product: Product) -> bool:
+        current = [(image.image_order, image.image_url) for image in existing.images]
+        incoming = [(image.image_order, image.image_url) for image in parsed_product.images]
+        if current == incoming:
+            return False
+        existing.images.clear()
+        db.flush()
+        existing.images.extend(
             ProductImage(image_order=image.image_order, image_url=image.image_url)
             for image in parsed_product.images
-        ]
-        return existing
+        )
+        return True
+
+    def _product_field(self, item: ET.Element, field: str) -> str | None:
+        """Читает поле товара только из XML-тегов/атрибутов, которые соответствуют этому полю."""
+        names = PRODUCT_FIELD_TAGS[field]
+        value = _child_text(item, *names)
+        if value is None:
+            value = next((item.get(name) for name in names if item.get(name)), None)
+        return value.strip() if value and value.strip() else None
 
     def _product_field(self, item: ET.Element, field: str) -> str | None:
         """Читает поле товара только из XML-тегов/атрибутов, которые соответствуют этому полю."""
