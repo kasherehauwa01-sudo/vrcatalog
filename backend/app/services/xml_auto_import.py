@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.importer.xml_importer import XMLCatalogImporter
+from app.importer.xml_importer import XMLCatalogImporter, xml_product_count
 from app.models.catalog import AutoImportState, XmlServerSetting
 from app.services.logging import add_log
 from app.services.notifications import add_notification
@@ -114,6 +114,16 @@ def run_once() -> None:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".xml", dir=settings.upload_dir) as tmp:
                     temp_path = Path(tmp.name)
                     ftp.retrbinary(f"RETR {filename}", tmp.write)
+                product_count = xml_product_count(temp_path)
+                if product_count == 0:
+                    ftp.delete(filename)
+                    add_log(
+                        db,
+                        "ftp_auto_import_empty_file",
+                        f"Файл {filename} не содержит товаров.\nФайл удален с FTP.",
+                    )
+                    db.commit()
+                    continue
                 run = XMLCatalogImporter().import_file(db, temp_path, filename)
                 ftp.delete(filename)
                 successful += 1

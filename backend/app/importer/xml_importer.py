@@ -77,6 +77,19 @@ def _product_code(item: ET.Element) -> str | None:
     return code.strip() if code and code.strip() else None
 
 
+def _product_nodes(root: ET.Element) -> list[ET.Element]:
+    products = root.findall(".//Товар") or root.findall(".//product")
+    if products:
+        return products
+    if _tag_name(root).lower() in {"товар", "product"}:
+        return [root]
+    return []
+
+
+def xml_product_count(path: Path) -> int:
+    return len(_product_nodes(_parse_xml_root(path)))
+
+
 class XMLCatalogImporter:
     """Независимый сервис импорта: XML читается только здесь, API работает уже с БД."""
 
@@ -90,7 +103,7 @@ class XMLCatalogImporter:
         try:
             add_log(db, "xml_import_start", f"Начато чтение XML: {filename}")
             root = _parse_xml_root(path)
-            products = root.findall(".//Товар") or root.findall(".//product") or list(root)
+            products = _product_nodes(root)
             product_codes = [code for code in (_product_code(item) for item in products) if code]
             existing_products = self._load_existing_products(db, product_codes)
             for item in products:
