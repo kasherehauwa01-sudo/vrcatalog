@@ -564,6 +564,7 @@ function App() {
                       <Button
                         variant="contained"
                         onClick={() => openProductTypeDialog()}
+                        sx={{ whiteSpace: "nowrap" }}
                       >
                         Добавить вид
                       </Button>
@@ -572,7 +573,7 @@ function App() {
                       <Table size="small">
                         <TableHead>
                           <TableRow>
-                            <TableCell>Наименование</TableCell>
+                            <TableCell>Вид товара</TableCell>
                             <TableCell>Код</TableCell>
                             <TableCell align="right">Действия</TableCell>
                           </TableRow>

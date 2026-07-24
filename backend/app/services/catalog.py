@@ -54,7 +54,20 @@ def meta(db: Session):
     run = db.query(ImportRun).order_by(ImportRun.created_at.desc()).first()
     return {"last_import": run.finished_at if run else None, "product_count": db.query(Product).count(), "import_status": run.status if run else None, "imported_count": run.imported_count if run else None, "errors": run.errors if run else None}
 
-def decorate(product: Product):
+def product_type_code(product: Product) -> str | None:
+    if product.product_type:
+        return product.product_type
+    for prop in product.properties:
+        if prop.name in {"Вид товара", "ВидТовара"}:
+            return prop.value
+    return None
+
+
+def decorate(product: Product, product_type_names: dict[str, str] | None = None):
     retail = next((p.value for p in product.prices if "рознич" in p.price_type.lower()), product.prices[0].value if product.prices else None)
     product.retail_price = retail
+    code = product_type_code(product)
+    product.product_type = code
+    if product_type_names is not None:
+        product.product_type_name = product_type_names.get(code, code) if code else None
     return product
