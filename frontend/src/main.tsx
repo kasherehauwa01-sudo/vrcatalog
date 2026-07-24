@@ -461,7 +461,7 @@ function App() {
                   }
                   sx={{ mb: 2 }}
                 >
-                  <Tab value="settings" label="Настройки" />
+                  <Tab value="settings" label="Общие" />
                   <Tab value="mappings" label="Сопоставления" />
                   <Tab value="logs" label="Логи" />
                 </Tabs>
@@ -565,7 +565,7 @@ function App() {
                         variant="contained"
                         onClick={() => openProductTypeDialog()}
                       >
-                        Добавить Вид товара
+                        Добавить вид
                       </Button>
                     </Stack>
                     <TableContainer>
@@ -764,7 +764,7 @@ function App() {
                           />
                         </TableCell>
                         <TableCell>
-                          <Typography fontWeight={800}>{p.name}</Typography>
+                          <Typography>{p.name}</Typography>
                         </TableCell>
                         <TableCell>{p.article ?? "—"}</TableCell>
                         <TableCell>{p.code}</TableCell>
@@ -891,7 +891,10 @@ function App() {
                 <Typography fontWeight={800}>Характеристики</Typography>
                 {detail.properties.map((p, index) => (
                   <Typography key={`${p.property_code ?? p.name}-${index}`}>
-                    {p.name}: {p.value ?? "—"}
+                    {p.name}:{" "}
+                    {p.name === "Вид товара" || p.name === "ВидТовара"
+                      ? detail.product_type_name ?? p.value ?? "—"
+                      : p.value ?? "—"}
                   </Typography>
                 ))}
                 <Typography fontWeight={800}>Остатки по складам</Typography>
@@ -928,7 +931,7 @@ function App() {
           maxWidth="sm"
         >
           <DialogTitle>
-            {productTypeForm.id ? "Редактировать Вид товара" : "Добавить Вид товара"}
+            {productTypeForm.id ? "Редактировать Вид товара" : "Добавить вид"}
           </DialogTitle>
           <DialogContent>
             <Stack spacing={2} sx={{ mt: 1 }}>
