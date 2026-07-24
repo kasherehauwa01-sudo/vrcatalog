@@ -1,7 +1,7 @@
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.catalog import ImportRun, Price, Product, Stock
+from app.models.catalog import ImportRun, Price, Product, Stock, WarehouseSetting
 
 FILTER_FIELDS = ["section", "manufacturer", "brand", "manager", "country", "material", "color"]
 
@@ -17,6 +17,11 @@ def product_query(db: Session, params):
                 q = q.filter(getattr(Product, field).in_(values))
             elif values:
                 q = q.filter(getattr(Product, field) == values[0])
+    if warehouse := params.get("warehouse"):
+        warehouse_values = [item.strip() for item in str(warehouse).split(",") if item.strip()]
+        if warehouse_values:
+            configured_codes = [code for code, in db.query(WarehouseSetting.code).filter(WarehouseSetting.name.in_(warehouse_values)).all()]
+            q = q.join(Stock).filter(Stock.warehouse.in_(list(dict.fromkeys([*warehouse_values, *configured_codes]))))
     if params.get("in_stock") == "true":
         q = q.filter(Product.quantity > 0)
     if params.get("price_min") or params.get("price_max"):
@@ -31,6 +36,9 @@ def product_query(db: Session, params):
 
 def list_filters(db: Session):
     data = {field: [v[0] for v in db.query(getattr(Product, field)).filter(getattr(Product, field).isnot(None)).distinct().order_by(getattr(Product, field)).all()] for field in FILTER_FIELDS}
+    warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
+    warehouse_codes = [code for code, in db.query(Stock.warehouse).filter(Stock.warehouse.isnot(None)).distinct().order_by(Stock.warehouse).all()]
+    data["warehouse"] = [warehouse_names.get(code, code) for code in warehouse_codes]
     data["availability"] = ["В наличии", "Нет в наличии"]
     return data
 

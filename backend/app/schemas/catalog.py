@@ -7,6 +7,7 @@ class PriceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 class StockOut(BaseModel):
     warehouse: str
+    warehouse_name: str | None = None
     quantity: float
     model_config = ConfigDict(from_attributes=True)
 class PropertyOut(BaseModel):
@@ -51,4 +52,14 @@ class NotificationOut(BaseModel):
     message: str
     created_at: datetime
     is_read: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WarehouseSettingIn(BaseModel):
+    code: str
+    name: str
+
+class WarehouseSettingOut(WarehouseSettingIn):
+    id: int
+    created_at: datetime
     model_config = ConfigDict(from_attributes=True)
