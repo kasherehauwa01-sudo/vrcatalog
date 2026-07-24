@@ -9,6 +9,7 @@ import {
   CardContent,
   Checkbox,
   Chip,
+  Collapse,
   Container,
   CssBaseline,
   Divider,
@@ -34,7 +35,6 @@ import {
   Tabs,
   TextField,
   ThemeProvider,
-  Toolbar,
   Typography,
   createTheme,
 } from "@mui/material";
@@ -129,6 +129,7 @@ function App() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [filteredCount, setFilteredCount] = useState(0);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -332,22 +333,6 @@ function App() {
             borderColor: alpha("#0284c7", 0.14),
           }}
         >
-          <Toolbar sx={{ gap: 2, py: 1, justifyContent: "flex-end" }}>
-            <Button
-              variant="contained"
-              startIcon={<UploadFileIcon />}
-              component="label"
-              sx={{ fontSize: 12, whiteSpace: "nowrap", px: 2 }}
-            >
-              Загрузить XML
-              <input
-                hidden
-                type="file"
-                accept=".xml"
-                onChange={(e) => upload(e.target.files?.[0])}
-              />
-            </Button>
-          </Toolbar>
           {loading && <LinearProgress />}
         </AppBar>
 
@@ -421,22 +406,40 @@ function App() {
               }}
               elevation={0}
             >
-              <TextField
-                fullWidth
-                size="small"
-                placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                InputProps={{
-                  startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
-                }}
-                sx={{
-                  "& .MuiOutlinedInput-root": {
-                    bgcolor: alpha("#ffffff", 0.86),
-                    borderRadius: 999,
-                  },
-                }}
-              />
+              <Stack direction={{ xs: "column", md: "row" }} spacing={1} alignItems="stretch">
+                <TextField
+                  fullWidth
+                  size="small"
+                  placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  InputProps={{
+                    startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
+                  }}
+                  sx={{
+                    flex: 1,
+                    maxWidth: { md: 980 },
+                    "& .MuiOutlinedInput-root": {
+                      bgcolor: alpha("#ffffff", 0.86),
+                      borderRadius: 999,
+                    },
+                  }}
+                />
+                <Button
+                  variant="contained"
+                  startIcon={<UploadFileIcon />}
+                  component="label"
+                  sx={{ fontSize: 12, whiteSpace: "nowrap", px: 2 }}
+                >
+                  Загрузить XML
+                  <input
+                    hidden
+                    type="file"
+                    accept=".xml"
+                    onChange={(e) => upload(e.target.files?.[0])}
+                  />
+                </Button>
+              </Stack>
             </Paper>
           )}
 
@@ -895,62 +898,72 @@ function App() {
                     <Typography variant="h6">Фильтры</Typography>
                     <Chip size="small" color="primary" label={filteredCount} />
                   </Stack>
-                  <Button sx={{ mt: 1 }} size="small" onClick={resetFilters}>
-                    Сбросить фильтры
+                  <Button
+                    sx={{ mt: 1 }}
+                    size="small"
+                    variant="outlined"
+                    onClick={() => setFiltersOpen((value) => !value)}
+                  >
+                    {filtersOpen ? "Свернуть фильтры" : "Развернуть фильтры"}
                   </Button>
-                  {meta.errors && (
-                    <Typography sx={{ mt: 1 }} color="error">
-                      Ошибки импорта: {meta.errors}
-                    </Typography>
-                  )}
-                  <Divider sx={{ my: 2 }} />
-                  <List disablePadding>
-                    {Object.entries(labels).map(([key, label]) => (
-                      <Box key={key} sx={{ mb: 2 }}>
-                        <Typography
-                          variant="subtitle2"
-                          color="text.secondary"
-                          sx={{ mb: 1 }}
-                        >
-                          {label}
-                        </Typography>
-                        <Stack direction="row" flexWrap="wrap" gap={1}>
-                          {(filters[key] ?? []).slice(0, 24).map((v) => (
-                            <Chip
-                              clickable
-                              color={
-                                (active[key] ?? []).includes(v)
-                                  ? "primary"
-                                  : "default"
-                              }
-                              variant={
-                                (active[key] ?? []).includes(v)
-                                  ? "filled"
-                                  : "outlined"
-                              }
-                              key={v}
-                              label={v}
-                              onClick={() => toggleFilter(key, v)}
-                            />
-                          ))}
-                        </Stack>
-                      </Box>
-                    ))}
-                  </List>
-                  <Divider sx={{ my: 2 }} />
-                  <Stack spacing={1}>
-                    <Button href={api.exportUrl("xlsx", params)}>
-                      Экспорт Excel
+                  <Collapse in={filtersOpen} timeout="auto" unmountOnExit>
+                    <Button sx={{ mt: 1 }} size="small" onClick={resetFilters}>
+                      Сбросить фильтры
                     </Button>
-                    <Button
-                      color="error"
-                      variant="outlined"
-                      disabled={!selectedIds.length}
-                      onClick={deleteSelected}
-                    >
-                      Удалить выбранные
-                    </Button>
-                  </Stack>
+                    {meta.errors && (
+                      <Typography sx={{ mt: 1 }} color="error">
+                        Ошибки импорта: {meta.errors}
+                      </Typography>
+                    )}
+                    <Divider sx={{ my: 2 }} />
+                    <List disablePadding>
+                      {Object.entries(labels).map(([key, label]) => (
+                        <Box key={key} sx={{ mb: 2 }}>
+                          <Typography
+                            variant="subtitle2"
+                            color="text.secondary"
+                            sx={{ mb: 1 }}
+                          >
+                            {label}
+                          </Typography>
+                          <Stack direction="row" flexWrap="wrap" gap={1}>
+                            {(filters[key] ?? []).slice(0, 24).map((v) => (
+                              <Chip
+                                clickable
+                                color={
+                                  (active[key] ?? []).includes(v)
+                                    ? "primary"
+                                    : "default"
+                                }
+                                variant={
+                                  (active[key] ?? []).includes(v)
+                                    ? "filled"
+                                    : "outlined"
+                                }
+                                key={v}
+                                label={v}
+                                onClick={() => toggleFilter(key, v)}
+                              />
+                            ))}
+                          </Stack>
+                        </Box>
+                      ))}
+                    </List>
+                    <Divider sx={{ my: 2 }} />
+                    <Stack spacing={1}>
+                      <Button href={api.exportUrl("xlsx", params)}>
+                        Экспорт Excel
+                      </Button>
+                      <Button
+                        color="error"
+                        variant="outlined"
+                        disabled={!selectedIds.length}
+                        onClick={deleteSelected}
+                      >
+                        Удалить выбранные
+                      </Button>
+                    </Stack>
+                  </Collapse>
                 </CardContent>
               </Card>
 
