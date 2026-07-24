@@ -5,17 +5,22 @@ from pathlib import Path
 from typing import Iterable
 
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.services.logging import add_log
 from app.services.notifications import add_notification
 
-from app.models.catalog import Analog, Barcode, ImportRun, Price, Product, ProductProperty, Stock
+from app.models.catalog import Analog, Barcode, ImportRun, Price, Product, ProductImage, ProductProperty, Stock
 
 IMAGE_BASE_URL = "https://volgorost.ru/upload/import_images/images/"
 
 logger = logging.getLogger(__name__)
-KNOWN_FIELDS = {"Код":"code","Название":"name","Наименование":"name","Раздел":"section","Количество":"quantity"}
+PRODUCT_FIELD_TAGS = {
+    "code": ("Код", "code"),
+    "name": ("Название", "name"),
+    "section": ("Раздел", "section"),
+    "quantity": ("Количество", "quantity"),
+}
 PRICE_NAMES = {
     "ЦенаОптовая": "Оптовая",
     "ЦенаКорпоративная": "Корпоративная",
@@ -72,6 +77,19 @@ def _product_code(item: ET.Element) -> str | None:
     return code.strip() if code and code.strip() else None
 
 
+def _product_nodes(root: ET.Element) -> list[ET.Element]:
+    products = root.findall(".//Товар") or root.findall(".//product")
+    if products:
+        return products
+    if _tag_name(root).lower() in {"товар", "product"}:
+        return [root]
+    return []
+
+
+def xml_product_count(path: Path) -> int:
+    return len(_product_nodes(_parse_xml_root(path)))
+
+
 class XMLCatalogImporter:
     """Независимый сервис импорта: XML читается только здесь, API работает уже с БД."""
 
@@ -85,7 +103,7 @@ class XMLCatalogImporter:
         try:
             add_log(db, "xml_import_start", f"Начато чтение XML: {filename}")
             root = _parse_xml_root(path)
-            products = root.findall(".//Товар") or root.findall(".//product") or list(root)
+            products = _product_nodes(root)
             product_codes = [code for code in (_product_code(item) for item in products) if code]
             existing_products = self._load_existing_products(db, product_codes)
             for item in products:
@@ -98,7 +116,8 @@ class XMLCatalogImporter:
                     existing_products[product.code] = product
                     imported += 1
                     if was_existing:
-                        updated += 1
+                        if getattr(product, "_import_changed", False):
+                            updated += 1
                     else:
                         created += 1
                 except SQLAlchemyError:
@@ -108,6 +127,8 @@ class XMLCatalogImporter:
                     raise ValueError(f"Ошибка обработки товара с кодом {code}: {exc}") from exc
             run.status = "completed"
             run.imported_count = imported
+            run.created_count = created
+            run.updated_count = updated
             run.errors = None
             run.finished_at = datetime.utcnow()
             add_log(db, "xml_import_finish", f"Импорт XML завершен: {filename}; товаров: {imported}; новых: {created}; обновлено: {updated}")
@@ -139,7 +160,20 @@ class XMLCatalogImporter:
         chunk_size = 1000
         for index in range(0, len(unique_codes), chunk_size):
             chunk = unique_codes[index:index + chunk_size]
-            for product in db.query(Product).filter(Product.code.in_(chunk)).all():
+            products = (
+                db.query(Product)
+                .options(
+                    selectinload(Product.prices),
+                    selectinload(Product.stocks),
+                    selectinload(Product.properties),
+                    selectinload(Product.analogs),
+                    selectinload(Product.barcodes),
+                    selectinload(Product.images),
+                )
+                .filter(Product.code.in_(chunk))
+                .all()
+            )
+            for product in products:
                 result[product.code] = product
         return result
 
@@ -152,7 +186,6 @@ class XMLCatalogImporter:
             "section": product.section,
             "product_type": product.product_type,
             "description": product.description,
-            "image_url": product.image_url,
             "quantity": product.quantity,
             "manufacturer": product.manufacturer,
             "brand": product.brand,
@@ -166,68 +199,181 @@ class XMLCatalogImporter:
         }
 
     def _persist_product(self, db: Session, parsed_product: Product, existing_products: dict[str, Product]) -> Product:
-        """Атомарный upsert товара по code: БД сама решает INSERT или UPDATE."""
-        dialect = db.get_bind().dialect.name
-        if dialect == "postgresql":
-            from sqlalchemy.dialects.postgresql import insert as dialect_insert
-        elif dialect == "sqlite":
-            from sqlalchemy.dialects.sqlite import insert as dialect_insert
-        else:
-            return self._persist_product_fallback(db, parsed_product, existing_products)
-
-        values = self._product_scalar_values(parsed_product)
-        update_values = {key: value for key, value in values.items() if key != "code"}
-        stmt = (
-            dialect_insert(Product.__table__)
-            .values(**values)
-            .on_conflict_do_update(index_elements=["code"], set_=update_values)
-            .returning(Product.__table__.c.id)
-        )
-        product_id = db.execute(stmt).scalar_one()
-        existing = db.get(Product, product_id)
-        if existing is None:
-            raise ValueError(f"Не удалось получить товар с id {product_id} после upsert")
-        self._copy_product_scalars(existing, parsed_product)
-        return self._copy_product_relations(existing, parsed_product)
-
-    def _persist_product_fallback(self, db: Session, parsed_product: Product, existing_products: dict[str, Product]) -> Product:
+        """Создает новый товар или применяет только реальные изменения к существующему."""
         existing = existing_products.get(parsed_product.code)
-        if existing is None:
-            existing = db.query(Product).filter(Product.code == parsed_product.code).one_or_none()
         if existing is None:
             db.add(parsed_product)
             db.flush()
+            parsed_product._import_changed = True
+            add_log(db, "xml_product_created", f"Создан новый товар:\n{parsed_product.code}")
             return parsed_product
-        self._copy_product_scalars(existing, parsed_product)
-        return self._copy_product_relations(existing, parsed_product)
 
-    def _copy_product_scalars(self, existing: Product, parsed_product: Product) -> Product:
-        for key, value in self._product_scalar_values(parsed_product).items():
-            setattr(existing, key, value)
+        changed = False
+        changed_fields = self._sync_product_scalars(existing, parsed_product)
+        if changed_fields:
+            changed = True
+            add_log(db, "xml_product_fields_updated", f"Обновлены поля:\n{', '.join(changed_fields)}")
+        if self._sync_prices(db, existing, parsed_product):
+            changed = True
+        if self._sync_stocks(db, existing, parsed_product):
+            changed = True
+        if self._sync_relation_list(
+            existing.properties,
+            parsed_product.properties,
+            lambda item: (item.property_code, item.name),
+            lambda item: {"property_code": item.property_code, "name": item.name, "value": item.value},
+            ProductProperty,
+        ):
+            changed = True
+            add_log(db, "xml_product_properties_updated", f"Обновлены свойства:\n{existing.code}")
+        if self._sync_relation_list(
+            existing.analogs,
+            parsed_product.analogs,
+            lambda item: item.code or item.name,
+            lambda item: {"code": item.code, "name": item.name},
+            Analog,
+        ):
+            changed = True
+            add_log(db, "xml_product_analogs_updated", f"Обновлены аналоги:\n{existing.code}")
+        if self._sync_relation_list(
+            existing.barcodes,
+            parsed_product.barcodes,
+            lambda item: item.value,
+            lambda item: {"value": item.value},
+            Barcode,
+        ):
+            changed = True
+            add_log(db, "xml_product_barcodes_updated", f"Обновлены штрихкоды:\n{existing.code}")
+        if self._sync_images(db, existing, parsed_product):
+            changed = True
+            add_log(db, "xml_product_images_updated", "Обновлены изображения")
+        if not changed:
+            add_log(db, "xml_product_no_changes", "Изменений нет.")
+        existing._import_changed = changed
         return existing
 
-    def _copy_product_relations(self, existing: Product, parsed_product: Product) -> Product:
-        # Создаем новые ORM-объекты связей, а не переносим их с временного parsed_product.
-        # Иначе SQLAlchemy может каскадно добавить временный Product и снова выполнить INSERT в products.
-        existing.prices = [Price(price_type=price.price_type, price_value=price.price_value) for price in parsed_product.prices]
-        existing.stocks = [Stock(warehouse=stock.warehouse, quantity=stock.quantity) for stock in parsed_product.stocks]
-        existing.properties = [
-            ProductProperty(property_code=prop.property_code, name=prop.name, value=prop.value)
-            for prop in parsed_product.properties
-        ]
-        existing.analogs = [Analog(code=analog.code, name=analog.name) for analog in parsed_product.analogs]
-        existing.barcodes = [Barcode(value=barcode.value) for barcode in parsed_product.barcodes]
-        return existing
+    def _sync_product_scalars(self, existing: Product, parsed_product: Product) -> list[str]:
+        changed_fields: list[str] = []
+        labels = {
+            "name": "Название",
+            "article": "Артикул",
+            "section": "Раздел",
+            "product_type": "Вид товара",
+            "description": "Описание",
+            "quantity": "Количество",
+            "manufacturer": "Производитель",
+            "brand": "Бренд",
+            "manager": "Менеджер",
+            "country": "Страна",
+            "material": "Материал",
+            "color": "Цвет",
+            "certificate": "Сертификат",
+            "tags": "Теги",
+            "search_text": "Поиск",
+        }
+        for field, value in self._product_scalar_values(parsed_product).items():
+            if field == "code":
+                continue
+            if getattr(existing, field) != value:
+                setattr(existing, field, value)
+                changed_fields.append(labels.get(field, field))
+        return changed_fields
+
+    def _sync_prices(self, db: Session, existing: Product, parsed_product: Product) -> bool:
+        changed = False
+        current = {price.price_type: price for price in existing.prices}
+        incoming = {price.price_type: price for price in parsed_product.prices}
+        for price_type, parsed_price in incoming.items():
+            price = current.get(price_type)
+            if price is None:
+                existing.prices.append(Price(price_type=parsed_price.price_type, price_value=parsed_price.price_value))
+                changed = True
+            elif price.price_value != parsed_price.price_value:
+                price.price_value = parsed_price.price_value
+                changed = True
+        for price_type, price in list(current.items()):
+            if price_type not in incoming:
+                existing.prices.remove(price)
+                changed = True
+        if changed:
+            add_log(db, "xml_product_prices_updated", f"Обновлена цена:\n{', '.join(incoming.keys())}")
+        return changed
+
+    def _sync_stocks(self, db: Session, existing: Product, parsed_product: Product) -> bool:
+        changed = False
+        current = {stock.warehouse: stock for stock in existing.stocks}
+        incoming = {stock.warehouse: stock for stock in parsed_product.stocks}
+        changed_warehouses: list[str] = []
+        for warehouse, parsed_stock in incoming.items():
+            stock = current.get(warehouse)
+            if stock is None:
+                existing.stocks.append(Stock(warehouse=parsed_stock.warehouse, quantity=parsed_stock.quantity))
+                changed_warehouses.append(warehouse)
+                changed = True
+            elif stock.quantity != parsed_stock.quantity:
+                stock.quantity = parsed_stock.quantity
+                changed_warehouses.append(warehouse)
+                changed = True
+        for warehouse, stock in list(current.items()):
+            if warehouse not in incoming:
+                existing.stocks.remove(stock)
+                changed_warehouses.append(warehouse)
+                changed = True
+        if changed:
+            add_log(db, "xml_product_stocks_updated", f"Обновлены остатки:\n{', '.join(changed_warehouses)}")
+        return changed
+
+    def _sync_relation_list(self, current_items, incoming_items, key_fn, values_fn, model) -> bool:
+        current = {key_fn(item): item for item in current_items}
+        incoming = {key_fn(item): item for item in incoming_items}
+        changed = False
+        for key, parsed_item in incoming.items():
+            item = current.get(key)
+            values = values_fn(parsed_item)
+            if item is None:
+                current_items.append(model(**values))
+                changed = True
+                continue
+            for field, value in values.items():
+                if getattr(item, field) != value:
+                    setattr(item, field, value)
+                    changed = True
+        for key, item in list(current.items()):
+            if key not in incoming:
+                current_items.remove(item)
+                changed = True
+        return changed
+
+    def _sync_images(self, db: Session, existing: Product, parsed_product: Product) -> bool:
+        current = [(image.image_order, image.image_url) for image in existing.images]
+        incoming = [(image.image_order, image.image_url) for image in parsed_product.images]
+        if current == incoming:
+            return False
+        existing.images.clear()
+        db.flush()
+        existing.images.extend(
+            ProductImage(image_order=image.image_order, image_url=image.image_url)
+            for image in parsed_product.images
+        )
+        return True
+
+    def _product_field(self, item: ET.Element, field: str) -> str | None:
+        """Читает поле товара только из XML-тегов/атрибутов, которые соответствуют этому полю."""
+        names = PRODUCT_FIELD_TAGS[field]
+        value = _child_text(item, *names)
+        if value is None:
+            value = next((item.get(name) for name in names if item.get(name)), None)
+        return value.strip() if value and value.strip() else None
 
     def _parse_product(self, item: ET.Element) -> Product:
-        values = {field: _child_text(item, xml_name) for xml_name, field in KNOWN_FIELDS.items()}
-        code = values.get("code") or item.get("Код") or item.get("code")
-        code = code.strip() if code else None
-        name = values.get("name") or item.get("Название") or item.get("name") or code
-        name = name.strip() if name else None
+        code = self._product_field(item, "code")
+        name = self._product_field(item, "name")
+        section = self._product_field(item, "section")
+        quantity = self._product_field(item, "quantity")
         if not code or not name:
             raise ValueError("У товара отсутствует код или название")
-        product = Product(code=code, name=name, section=values.get("section"), quantity=_float(values.get("quantity")), image_url=self._parse_image_url(item))
+        product = Product(code=code, name=name, section=section, quantity=_float(quantity))
+        product.images = self._parse_images(item)
         properties = self._parse_properties(item)
         for prop in properties:
             product.properties.append(ProductProperty(property_code=prop["code"], name=prop["name"], value=prop["value"]))
@@ -243,18 +389,23 @@ class XMLCatalogImporter:
         product.search_text = " ".join(filter(None, search_bits)).lower()
         return product
 
-    def _parse_image_url(self, item: ET.Element) -> str | None:
-        """Берет первое изображение из XML и превращает /images/... в полный внешний URL."""
+    def _image_url(self, raw_path: str) -> str:
+        """Превращает путь изображения из XML в полный внешний URL."""
+        normalized_path = raw_path.strip().lstrip("/")
+        if normalized_path.lower().startswith("images/"):
+            normalized_path = normalized_path[len("images/"):]
+        return f"{IMAGE_BASE_URL}{normalized_path}"
+
+    def _parse_images(self, item: ET.Element) -> list[ProductImage]:
+        """Сохраняет все изображения товара из XML с исходным порядком."""
+        images: list[ProductImage] = []
         for images_root in _children_by_names(item, ["Изображения", "images"]):
             for image in list(images_root):
                 raw_path = _text(image) or image.get("path") or image.get("url")
                 if not raw_path:
                     continue
-                normalized_path = raw_path.strip().lstrip("/")
-                if normalized_path.lower().startswith("images/"):
-                    normalized_path = normalized_path[len("images/"):]
-                return f"{IMAGE_BASE_URL}{normalized_path}"
-        return None
+                images.append(ProductImage(image_order=len(images) + 1, image_url=self._image_url(raw_path)))
+        return images
 
     def _parse_prices(self, item: ET.Element, product: Product) -> None:
         price_nodes = [child for child in item if _tag_name(child).lower() in {"цена", "price"}]
@@ -297,7 +448,7 @@ class XMLCatalogImporter:
             if not value:
                 continue
             if name == "Артикул": product.article = value
-            if name in {"Наименование", "Наименование товара", "Название товара"}:
+            if name in {"Наименование", "Наименование товара", "Название товара"} and value != product.code:
                 product.name = value
             if name == "Производитель": product.manufacturer = value
             if name == "Менеджер": product.manager = value
