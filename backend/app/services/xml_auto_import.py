@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
+import re
 import tempfile
+import traceback
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -20,6 +23,37 @@ CHECK_INTERVAL_SECONDS = 600
 MOSCOW_TZ = timezone(timedelta(hours=3))
 _lock = threading.Lock()
 _worker_started = False
+logger = logging.getLogger(__name__)
+
+
+def _product_code_from_error(exc: Exception) -> str | None:
+    match = re.search(r"кодом ([^:]+):", str(exc))
+    return match.group(1) if match else None
+
+
+def _exception_details(stage: str, exc: Exception, **context: object) -> tuple[str, str]:
+    lines = [f"Этап:\n{stage}"]
+    for key, value in context.items():
+        if value is not None:
+            lines.append(f"{key}:\n{value}")
+    lines.extend([
+        f"Ошибка:\n{exc}",
+        f"Exception:\n{type(exc).__name__}",
+    ])
+    if getattr(exc, "errno", None) is not None:
+        lines.append(f"Errno:\n{exc.errno}")
+    trace = traceback.format_exc()
+    lines.append(f"Traceback:\n{trace}")
+    return "\n\n".join(lines), trace
+
+
+def _ftp_size(ftp: FTP | None, filename: str) -> int | None:
+    if ftp is None:
+        return None
+    try:
+        return ftp.size(filename)
+    except Exception:
+        return None
 
 
 def default_xml_server_setting() -> XmlServerSetting:
@@ -105,10 +139,23 @@ def run_once() -> None:
     state.last_run_at = moscow_now()
     db.commit()
     ftp: FTP | None = None
+    setting: XmlServerSetting | None = None
     try:
         add_log(db, "ftp_auto_import_check", "Автоматическая проверка FTP...")
         setting = get_xml_server_setting(db)
-        ftp = connect(setting)
+        try:
+            ftp = connect(setting)
+        except Exception as exc:
+            logger.exception("Ошибка подключения к FTP")
+            message, trace = _exception_details(
+                "Подключение к FTP",
+                exc,
+                Host=setting.host,
+                Port=setting.port,
+                Login=setting.username,
+            )
+            add_log(db, "ftp_connect_error", message, "error", type(exc).__name__, trace)
+            raise
         add_log(db, "ftp_auto_import_connected", "Подключение выполнено.")
         files = sorted(name for name in ftp.nlst() if name.lower().endswith(".xml"))
         add_log(db, "ftp_auto_import_files", f"Найдено файлов: {len(files)}")
@@ -116,12 +163,44 @@ def run_once() -> None:
             processed += 1
             temp_path: Path | None = None
             current_name = filename
+            error_message: str | None = None
+            error_trace: str | None = None
+            error_type: str | None = None
             try:
                 add_log(db, "ftp_auto_import_start", f"Начат импорт:\n{filename}")
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".xml", dir=settings.upload_dir) as tmp:
                     temp_path = Path(tmp.name)
-                    ftp.retrbinary(f"RETR {filename}", tmp.write)
-                product_count = xml_product_count(temp_path)
+                    try:
+                        ftp.retrbinary(f"RETR {filename}", tmp.write)
+                    except Exception as exc:
+                        logger.exception("Ошибка скачивания XML с FTP")
+                        message, trace = _exception_details(
+                            "Скачивание файла",
+                            exc,
+                            File=filename,
+                            FtpPath=getattr(setting, "xml_dir", None),
+                            Size=_ftp_size(ftp, filename),
+                        )
+                        error_message = message
+                        error_trace = trace
+                        error_type = type(exc).__name__
+                        raise
+                try:
+                    product_count = xml_product_count(temp_path)
+                except Exception as exc:
+                    logger.exception("Ошибка чтения XML")
+                    position = getattr(exc, "position", None)
+                    message, trace = _exception_details(
+                        "Чтение XML",
+                        exc,
+                        File=filename,
+                        Line=position[0] if position else None,
+                        Column=position[1] if position else None,
+                    )
+                    error_message = message
+                    error_trace = trace
+                    error_type = type(exc).__name__
+                    raise
                 if product_count == 0:
                     ftp.delete(filename)
                     add_log(
@@ -131,7 +210,20 @@ def run_once() -> None:
                     )
                     db.commit()
                     continue
-                run = XMLCatalogImporter().import_file(db, temp_path, filename)
+                try:
+                    run = XMLCatalogImporter().import_file(db, temp_path, filename)
+                except Exception as exc:
+                    logger.exception("Ошибка импорта XML в базу")
+                    message, trace = _exception_details(
+                        "Импорт XML в базу",
+                        exc,
+                        File=filename,
+                        ProductCode=_product_code_from_error(exc),
+                    )
+                    error_message = message
+                    error_trace = trace
+                    error_type = type(exc).__name__
+                    raise
                 ftp.delete(filename)
                 successful += 1
                 now = moscow_now()
@@ -159,7 +251,12 @@ def run_once() -> None:
                     "Ошибка импорта XML.",
                     f"Файл:\n{current_name}\n\nПричина:\n{last_error}\n\nДата:\n{_format_dt(now)}",
                 )
-                add_log(db, "ftp_auto_import_error", f"Ошибка импорта:\n{last_error}", "error")
+                if error_message is None:
+                    error_message, error_trace = _exception_details(
+                        "Обработка файла", exc, File=current_name
+                    )
+                    error_type = type(exc).__name__
+                add_log(db, "ftp_auto_import_error", error_message, "error", error_type, error_trace)
                 db.commit()
             finally:
                 if temp_path:
@@ -183,7 +280,17 @@ def run_once() -> None:
         state.last_error = str(exc)
         state.is_running = False
         state.last_run_at = moscow_now()
-        add_log(db, "ftp_auto_import_error", f"Ошибка импорта:\n{exc}", "error")
+        logger.exception("Ошибка автоматического импорта XML")
+        context = {}
+        if setting is not None:
+            context = {"Host": setting.host, "Port": setting.port, "Login": setting.username}
+        stage = (
+            "Подключение к FTP"
+            if ftp is None and setting is not None
+            else "Автоматическая проверка FTP"
+        )
+        message, trace = _exception_details(stage, exc, **context)
+        add_log(db, "ftp_auto_import_error", message, "error", type(exc).__name__, trace)
         db.commit()
     finally:
         if ftp is not None:

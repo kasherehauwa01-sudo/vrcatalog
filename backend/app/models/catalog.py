@@ -136,6 +136,8 @@ class ServiceLog(Base):
     level: Mapped[str] = mapped_column(String(32), default="info", index=True)
     event: Mapped[str] = mapped_column(String(255), index=True)
     message: Mapped[str] = mapped_column(Text)
+    error_type: Mapped[str | None] = mapped_column(String(255), index=True)
+    traceback: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 

@@ -39,6 +39,8 @@ export type ServiceLog = {
   level: string;
   event: string;
   message: string;
+  error_type?: string;
+  traceback?: string;
   created_at: string;
 };
 

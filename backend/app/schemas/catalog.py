@@ -47,6 +47,8 @@ class ServiceLogOut(BaseModel):
     level: str
     event: str
     message: str
+    error_type: str | None = None
+    traceback: str | None = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 

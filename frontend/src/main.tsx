@@ -106,6 +106,8 @@ const updateScriptPath = "/var/www/html/vr/update_vrcatalog.sh";
 const clientsUrl = "https://kvasmix.ru/vr/clients/";
 const formatMoscowDate = (value: string) =>
   new Date(value).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
+const getLogStage = (log: ServiceLog) =>
+  log.message.match(/Этап:\n([^\n]+)/)?.[1] ?? log.event;
 
 function App() {
   const [search, setSearch] = useState("");
@@ -123,6 +125,7 @@ function App() {
   >("settings");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
+  const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [filteredCount, setFilteredCount] = useState(0);
@@ -801,32 +804,65 @@ function App() {
                         <TableRow>
                           <TableCell>Дата</TableCell>
                           <TableCell>Уровень</TableCell>
-                          <TableCell>Событие</TableCell>
+                          <TableCell>Этап</TableCell>
+                          <TableCell>Тип ошибки</TableCell>
                           <TableCell>Сообщение</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
                         {logs.map((log) => (
-                          <TableRow key={log.id}>
-                            <TableCell>
-                              {formatMoscowDate(log.created_at)}
-                            </TableCell>
-                            <TableCell>
-                              <Chip
-                                size="small"
-                                color={
-                                  log.level === "error"
-                                    ? "error"
-                                    : log.level === "warning"
-                                      ? "warning"
-                                      : "primary"
-                                }
-                                label={log.level}
-                              />
-                            </TableCell>
-                            <TableCell>{log.event}</TableCell>
-                            <TableCell>{log.message}</TableCell>
-                          </TableRow>
+                          <React.Fragment key={log.id}>
+                            <TableRow
+                              hover={!!log.traceback}
+                              onClick={() =>
+                                log.traceback &&
+                                setExpandedLogId((current) =>
+                                  current === log.id ? null : log.id,
+                                )
+                              }
+                              sx={{ cursor: log.traceback ? "pointer" : "default" }}
+                            >
+                              <TableCell>
+                                {formatMoscowDate(log.created_at)}
+                              </TableCell>
+                              <TableCell>
+                                <Chip
+                                  size="small"
+                                  color={
+                                    log.level === "error"
+                                      ? "error"
+                                      : log.level === "warning"
+                                        ? "warning"
+                                        : "primary"
+                                  }
+                                  label={log.level}
+                                />
+                              </TableCell>
+                              <TableCell>{getLogStage(log)}</TableCell>
+                              <TableCell>{log.error_type ?? "—"}</TableCell>
+                              <TableCell sx={{ whiteSpace: "pre-line" }}>
+                                {log.message}
+                                {log.traceback && (
+                                  <Typography color="primary" variant="caption" display="block">
+                                    {expandedLogId === log.id
+                                      ? "Скрыть traceback"
+                                      : "Показать traceback"}
+                                  </Typography>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                            {expandedLogId === log.id && log.traceback && (
+                              <TableRow>
+                                <TableCell colSpan={5}>
+                                  <Paper variant="outlined" sx={{ p: 2, bgcolor: "#f8fafc" }}>
+                                    <Typography component="pre" sx={{ m: 0, whiteSpace: "pre-wrap" }}>
+                                      {log.traceback}
+                                    </Typography>
+                                  </Paper>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </React.Fragment>
                         ))}
                       </TableBody>
                     </Table>
