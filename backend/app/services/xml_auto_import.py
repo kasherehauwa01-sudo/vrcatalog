@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from ftplib import FTP
 from pathlib import Path
 
@@ -17,6 +17,7 @@ from app.services.logging import add_log
 from app.services.notifications import add_notification
 
 CHECK_INTERVAL_SECONDS = 600
+MOSCOW_TZ = timezone(timedelta(hours=3))
 _lock = threading.Lock()
 _worker_started = False
 
@@ -74,8 +75,14 @@ def test_connection(db: Session) -> tuple[bool, str]:
         return False, f"Не удалось подключиться.\n\nПричина:\n{exc}"
 
 
+def moscow_now() -> datetime:
+    return datetime.now(MOSCOW_TZ).replace(tzinfo=None)
+
+
 def _format_dt(value: datetime) -> str:
-    return value.strftime("%d.%m.%Y %H:%M")
+    if value.tzinfo is None:
+        return value.strftime("%d.%m.%Y %H:%M")
+    return value.astimezone(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
 
 
 def _rename_error_file(ftp: FTP, filename: str) -> str:
@@ -95,7 +102,7 @@ def run_once() -> None:
     state = get_auto_import_state(db)
     state.is_running = True
     state.status = "running"
-    state.last_run_at = datetime.utcnow()
+    state.last_run_at = moscow_now()
     db.commit()
     ftp: FTP | None = None
     try:
@@ -127,7 +134,7 @@ def run_once() -> None:
                 run = XMLCatalogImporter().import_file(db, temp_path, filename)
                 ftp.delete(filename)
                 successful += 1
-                now = datetime.utcnow()
+                now = moscow_now()
                 add_notification(
                     db,
                     "ftp_import_success",
@@ -145,7 +152,7 @@ def run_once() -> None:
                         current_name = _rename_error_file(ftp, filename)
                 except Exception as rename_exc:  # noqa: BLE001
                     last_error = f"{exc}\nОшибка переименования FTP-файла: {rename_exc}"
-                now = datetime.utcnow()
+                now = moscow_now()
                 add_notification(
                     db,
                     "ftp_import_error",
@@ -164,7 +171,7 @@ def run_once() -> None:
         state.failed_files = failed
         state.last_error = last_error
         state.is_running = False
-        state.last_run_at = datetime.utcnow()
+        state.last_run_at = moscow_now()
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
@@ -175,7 +182,7 @@ def run_once() -> None:
         state.failed_files = failed
         state.last_error = str(exc)
         state.is_running = False
-        state.last_run_at = datetime.utcnow()
+        state.last_run_at = moscow_now()
         add_log(db, "ftp_auto_import_error", f"Ошибка импорта:\n{exc}", "error")
         db.commit()
     finally:
@@ -186,6 +193,13 @@ def run_once() -> None:
                 pass
         db.close()
         _lock.release()
+
+
+def start_manual_import() -> bool:
+    if _lock.locked():
+        return False
+    threading.Thread(target=run_once, daemon=True, name="xml-ftp-manual-import").start()
+    return True
 
 
 def start_worker() -> None:

@@ -14,7 +14,7 @@ from app.models.catalog import Favorite, Notification, Product, ProductTypeSetti
 from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ServiceLogOut, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.catalog import decorate, list_filters, meta, product_query
 from app.services.logging import add_log
-from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, test_connection
+from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
 
 router = APIRouter()
 
@@ -96,6 +96,11 @@ def test_xml_server_settings(db: Session = Depends(get_db)):
 @router.get("/auto-import-state", response_model=AutoImportStateOut)
 def auto_import_state(db: Session = Depends(get_db)):
     return get_auto_import_state(db)
+
+@router.post("/auto-import/run")
+def run_auto_import_now():
+    started = start_manual_import()
+    return {"started": started}
 
 @router.get("/filters")
 def filters(db: Session = Depends(get_db)):

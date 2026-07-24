@@ -151,6 +151,11 @@ export const api = {
   async autoImportState(): Promise<AutoImportState> {
     return request<AutoImportState>(`${API}/auto-import-state`);
   },
+  async runAutoImportNow(): Promise<{ started: boolean }> {
+    return request<{ started: boolean }>(`${API}/auto-import/run`, {
+      method: "POST",
+    });
+  },
   async upload(file: File): Promise<Meta> {
     const form = new FormData();
     form.append("file", file);

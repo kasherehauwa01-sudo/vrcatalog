@@ -104,6 +104,8 @@ const labels: Record<string, string> = {
 };
 const updateScriptPath = "/var/www/html/vr/update_vrcatalog.sh";
 const clientsUrl = "https://kvasmix.ru/vr/clients/";
+const formatMoscowDate = (value: string) =>
+  new Date(value).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
 
 function App() {
   const [search, setSearch] = useState("");
@@ -144,6 +146,7 @@ function App() {
   const [xmlServerForm, setXmlServerForm] = useState<XmlServerSetting | null>(null);
   const [autoImportState, setAutoImportState] = useState<AutoImportState | null>(null);
   const [ftpTestMessage, setFtpTestMessage] = useState<string | null>(null);
+  const [manualImportMessage, setManualImportMessage] = useState<string | null>(null);
   const params = useMemo(() => {
     const p = new URLSearchParams({ search });
     Object.entries(active).forEach(
@@ -628,6 +631,25 @@ function App() {
                     )}
                     <Divider sx={{ my: 3 }} />
                     <Typography variant="h6">Автоматическая загрузка XML</Typography>
+                    <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mt: 2 }}>
+                      <Button
+                        variant="contained"
+                        onClick={async () => {
+                          const result = await api.runAutoImportNow();
+                          setManualImportMessage(
+                            result.started
+                              ? "Принудительный импорт XML запущен."
+                              : "Импорт уже выполняется.",
+                          );
+                          setAutoImportState(await api.autoImportState());
+                        }}
+                      >
+                        Запустить импорт
+                      </Button>
+                    </Stack>
+                    {manualImportMessage && (
+                      <Typography sx={{ mt: 1 }}>{manualImportMessage}</Typography>
+                    )}
                     <Typography fontWeight={800} sx={{ mt: 2 }}>
                       Статус автозагрузки
                     </Typography>
@@ -645,7 +667,7 @@ function App() {
                     </Typography>
                     {autoImportState?.last_run_at ? (
                       <Stack spacing={0.5} sx={{ mt: 1 }}>
-                        <Typography>Дата: {new Date(autoImportState.last_run_at).toLocaleString()}</Typography>
+                        <Typography>Дата: {formatMoscowDate(autoImportState.last_run_at)}</Typography>
                         <Typography>Статус: {autoImportState.status === "error" ? "Ошибка" : "Успешно"}</Typography>
                         <Typography>Обработано файлов: {autoImportState.processed_files}</Typography>
                         <Typography>Успешно: {autoImportState.successful_files}</Typography>
