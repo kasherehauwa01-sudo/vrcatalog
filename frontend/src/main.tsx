@@ -101,6 +101,7 @@ const labels: Record<string, string> = {
   warehouse: "Склады",
 };
 const updateScriptPath = "/var/www/html/vr/update_vrcatalog.sh";
+const clientsUrl = "https://kvasmix.ru/vr/clients/";
 
 function App() {
   const [search, setSearch] = useState("");
@@ -342,12 +343,19 @@ function App() {
           >
             <Tabs
               value={tab}
-              onChange={(_, value) => setTab(value)}
+              onChange={(_, value) => {
+                if (value === "clients") {
+                  window.location.href = clientsUrl;
+                  return;
+                }
+                setTab(value);
+              }}
               textColor="primary"
               indicatorColor="primary"
               variant="scrollable"
             >
               <Tab value="catalog" label="Каталог" />
+              <Tab value="clients" label="Контрагенты" />
               <Tab
                 value="notifications"
                 label={
@@ -890,67 +898,98 @@ function App() {
                     <Typography>Изображение отсутствует</Typography>
                   </Paper>
                 )}
-                <Typography fontWeight={800}>Остатки по складам</Typography>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Склад</TableCell>
-                      <TableCell align="right">Остаток</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {detail.stocks.map((s) => (
-                      <TableRow key={s.warehouse}>
-                        <TableCell>{s.warehouse_name ?? s.warehouse}</TableCell>
-                        <TableCell align="right">{s.quantity}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-                <Typography fontWeight={800}>Характеристики</Typography>
-                {detail.properties.map((p, index) => (
-                  <Typography key={`${p.property_code ?? p.name}-${index}`}>
-                    {p.name}:{" "}
-                    {p.name === "Вид товара" || p.name === "ВидТовара"
-                      ? detail.product_type_name ?? p.value ?? "—"
-                      : p.value ?? "—"}
-                  </Typography>
-                ))}
+                {detail.stocks.length > 0 && (
+                  <>
+                    <Typography fontWeight={800}>Остатки по складам</Typography>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Склад</TableCell>
+                          <TableCell align="right">Остаток</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {detail.stocks.map((s) => (
+                          <TableRow key={s.warehouse}>
+                            <TableCell>{s.warehouse_name ?? s.warehouse}</TableCell>
+                            <TableCell align="right">{s.quantity}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </>
+                )}
                 <Paper variant="outlined" sx={{ p: 2 }}>
-                  <Typography>Код: {detail.code}</Typography>
-                  <Typography>Артикул: {detail.article ?? "—"}</Typography>
-                  <Typography>Раздел: {detail.section}</Typography>
-                  <Typography>Вид товара: {detail.product_type_name ?? detail.product_type ?? "—"}</Typography>
-                  <Typography>
-                    Производитель: {detail.manufacturer ?? "—"}
-                  </Typography>
-                  <Typography>Менеджер: {detail.manager ?? "—"}</Typography>
-                  <Typography>Бренд: {detail.brand ?? "—"}</Typography>
-                  <Typography>Материал: {detail.material ?? "—"}</Typography>
-                  <Typography>Цвет: {detail.color ?? "—"}</Typography>
-                  <Typography>
-                    Сертификат: {detail.certificate ?? "—"}
-                  </Typography>
-                  <Typography>
-                    Штрихкоды:{" "}
-                    {detail.barcodes.length
-                      ? detail.barcodes.map((b) => b.value).join(", ")
-                      : "—"}
-                  </Typography>
-                  <Typography sx={{ mt: 1 }}>{detail.description}</Typography>
+                  {[
+                    ["Код", detail.code],
+                    ["Артикул", detail.article],
+                    ["Раздел", detail.section],
+                    ["Вид товара", detail.product_type_name ?? detail.product_type],
+                    ["Производитель", detail.manufacturer],
+                    ["Менеджер", detail.manager],
+                    ["Бренд", detail.brand],
+                    ["Материал", detail.material],
+                    ["Цвет", detail.color],
+                    ["Сертификат", detail.certificate],
+                    ["Штрихкоды", detail.barcodes.map((b) => b.value).join(", ")],
+                    ["Описание", detail.description],
+                  ]
+                    .filter(([, value]) => value)
+                    .map(([label, value]) => (
+                      <Typography key={label} sx={{ mt: label === "Описание" ? 1 : 0 }}>
+                        <Box component="span" fontWeight={800}>
+                          {label}:
+                        </Box>{" "}
+                        {value}
+                      </Typography>
+                    ))}
                 </Paper>
-                <Typography fontWeight={800}>Цены</Typography>
-                {detail.prices.map((p) => (
-                  <Typography key={p.price_type} sx={{ whiteSpace: "nowrap" }}>
-                    {p.price_type}: {p.value} руб.
-                  </Typography>
-                ))}
-                <Typography fontWeight={800}>Аналоги</Typography>
-                {detail.analogs.map((a) => (
-                  <Typography key={a.code}>
-                    {a.code} {a.name}
-                  </Typography>
-                ))}
+                {detail.properties.some((p) =>
+                  p.name === "Вид товара" || p.name === "ВидТовара"
+                    ? Boolean(detail.product_type_name ?? p.value)
+                    : Boolean(p.value),
+                ) && (
+                  <>
+                    <Typography fontWeight={800}>Характеристики</Typography>
+                    {detail.properties
+                      .map((p) => ({
+                        ...p,
+                        displayValue:
+                          p.name === "Вид товара" || p.name === "ВидТовара"
+                            ? detail.product_type_name ?? p.value
+                            : p.value,
+                      }))
+                      .filter((p) => p.displayValue)
+                      .map((p, index) => (
+                        <Typography key={`${p.property_code ?? p.name}-${index}`}>
+                          <Box component="span" fontWeight={800}>
+                            {p.name}:
+                          </Box>{" "}
+                          {p.displayValue}
+                        </Typography>
+                      ))}
+                  </>
+                )}
+                {detail.prices.length > 0 && (
+                  <>
+                    <Typography fontWeight={800}>Цены</Typography>
+                    {detail.prices.map((p) => (
+                      <Typography key={p.price_type} sx={{ whiteSpace: "nowrap" }}>
+                        {p.price_type}: {p.value} руб.
+                      </Typography>
+                    ))}
+                  </>
+                )}
+                {detail.analogs.length > 0 && (
+                  <>
+                    <Typography fontWeight={800}>Аналоги</Typography>
+                    {detail.analogs.map((a) => (
+                      <Typography key={a.code}>
+                        {a.code} {a.name}
+                      </Typography>
+                    ))}
+                  </>
+                )}
               </Stack>
             )}
           </Box>
