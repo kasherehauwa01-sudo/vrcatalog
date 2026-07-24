@@ -6,7 +6,7 @@ from app.models.catalog import ImportRun, Price, Product, Stock, WarehouseSettin
 FILTER_FIELDS = ["section", "manufacturer", "brand", "manager", "country", "material", "color"]
 
 def product_query(db: Session, params):
-    q = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks))
+    q = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.images))
     if search := params.get("search"):
         term = f"%{search.lower()}%"
         q = q.filter(func.lower(Product.search_text).like(term))
@@ -54,7 +54,36 @@ def meta(db: Session):
     run = db.query(ImportRun).order_by(ImportRun.created_at.desc()).first()
     return {"last_import": run.finished_at if run else None, "product_count": db.query(Product).count(), "import_status": run.status if run else None, "imported_count": run.imported_count if run else None, "errors": run.errors if run else None}
 
-def decorate(product: Product):
+def product_type_code(product: Product) -> str | None:
+    if product.product_type:
+        return product.product_type
+    for prop in product.properties:
+        if prop.name in {"Вид товара", "ВидТовара"}:
+            return prop.value
+    return None
+
+
+def product_display_name(product: Product) -> str:
+    if product.name and product.name != product.code:
+        return product.name
+    for prop in product.properties:
+        prop_name = prop.name.lower()
+        is_name_property = (
+            prop.name in {"Наименование", "Наименование товара", "Название товара", "Название"}
+            or "наименование" in prop_name
+            or "название" in prop_name
+        )
+        if is_name_property and prop.value and prop.value != product.code:
+            return prop.value
+    return product.name
+
+
+def decorate(product: Product, product_type_names: dict[str, str] | None = None):
     retail = next((p.value for p in product.prices if "рознич" in p.price_type.lower()), product.prices[0].value if product.prices else None)
     product.retail_price = retail
+    product.name = product_display_name(product)
+    code = product_type_code(product)
+    product.product_type = code
+    if product_type_names is not None:
+        product.product_type_name = product_type_names.get(code, code) if code else None
     return product

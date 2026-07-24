@@ -11,9 +11,10 @@ from sqlalchemy.orm import Session, selectinload
 from app.db.session import get_db
 from app.importer.xml_importer import XMLCatalogImporter
 from app.models.catalog import Favorite, Notification, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ServiceLogOut, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut
+from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ServiceLogOut, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.catalog import decorate, list_filters, meta, product_query
 from app.services.logging import add_log
+from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, test_connection
 
 router = APIRouter()
 
@@ -39,7 +40,8 @@ def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
 @router.get("/products", response_model=list[ProductListOut])
 def products(db: Session = Depends(get_db), limit: int = 60, offset: int = 0, search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None):
     params = locals(); params.pop("db"); params.pop("limit"); params.pop("offset")
-    return [decorate(p) for p in product_query(db, params).offset(offset).limit(limit).all()]
+    type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
+    return [decorate(p, type_names) for p in product_query(db, params).offset(offset).limit(limit).all()]
 
 
 @router.get("/products/count")
@@ -56,16 +58,44 @@ def delete_products(product_ids: list[int] = Body(...), db: Session = Depends(ge
 
 @router.get("/products/{product_id}", response_model=ProductDetailOut)
 def product_detail(product_id: int, db: Session = Depends(get_db)):
-    product = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.analogs), selectinload(Product.barcodes)).get(product_id)
+    product = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.analogs), selectinload(Product.barcodes), selectinload(Product.images)).get(product_id)
     if not product:
         raise HTTPException(404, "Товар не найден")
     db.add(ViewHistory(product_id=product_id)); db.commit()
     type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
-    product.product_type_name = type_names.get(product.product_type, product.product_type) if product.product_type else None
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
     for stock in product.stocks:
         stock.warehouse_name = warehouse_names.get(stock.warehouse, stock.warehouse)
-    return decorate(product)
+    return decorate(product, type_names)
+
+
+@router.get("/xml-server-settings", response_model=XmlServerSettingOut)
+def xml_server_settings(db: Session = Depends(get_db)):
+    return get_xml_server_setting(db)
+
+@router.put("/xml-server-settings", response_model=XmlServerSettingOut)
+def update_xml_server_settings(payload: XmlServerSettingIn, db: Session = Depends(get_db)):
+    if payload.protocol.upper() != "FTP":
+        raise HTTPException(400, "Пока поддерживается только FTP")
+    setting = get_xml_server_setting(db)
+    setting.protocol = payload.protocol.upper()
+    setting.host = payload.host.strip()
+    setting.port = payload.port
+    setting.username = payload.username.strip()
+    setting.password = payload.password
+    setting.xml_dir = payload.xml_dir.strip() or "/"
+    db.commit()
+    db.refresh(setting)
+    return setting
+
+@router.post("/xml-server-settings/test", response_model=FtpConnectionTestOut)
+def test_xml_server_settings(db: Session = Depends(get_db)):
+    success, message = test_connection(db)
+    return {"success": success, "message": message}
+
+@router.get("/auto-import-state", response_model=AutoImportStateOut)
+def auto_import_state(db: Session = Depends(get_db)):
+    return get_auto_import_state(db)
 
 @router.get("/filters")
 def filters(db: Session = Depends(get_db)):
