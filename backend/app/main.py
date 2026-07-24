@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.db.schema_migrations import ensure_price_columns, ensure_product_columns
 from app.db.session import Base, engine
 from app.models import catalog  # noqa: F401
+from app.services.xml_auto_import import start_worker
 
 logging.basicConfig(level=logging.INFO)
 Base.metadata.create_all(bind=engine)
@@ -26,3 +27,7 @@ app = FastAPI(
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(router, prefix="/api")
+
+@app.on_event("startup")
+def start_xml_auto_import() -> None:
+    start_worker()
