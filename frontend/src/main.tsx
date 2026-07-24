@@ -50,6 +50,8 @@ import type {
   Product,
   ProductDetail,
   ProductType,
+  XmlServerSetting,
+  AutoImportState,
   ServiceLog,
   Warehouse,
 } from "./types/catalog";
@@ -139,6 +141,9 @@ function App() {
     code: string;
     name: string;
   }>({ code: "", name: "" });
+  const [xmlServerForm, setXmlServerForm] = useState<XmlServerSetting | null>(null);
+  const [autoImportState, setAutoImportState] = useState<AutoImportState | null>(null);
+  const [ftpTestMessage, setFtpTestMessage] = useState<string | null>(null);
   const params = useMemo(() => {
     const p = new URLSearchParams({ search });
     Object.entries(active).forEach(
@@ -159,6 +164,11 @@ function App() {
       .then((result) => setUnreadNotifications(result.count));
   };
   useEffect(reload, [params]);
+  useEffect(() => {
+    if (tab === "settings" && settingsTab === "settings") {
+      openGeneralSettings();
+    }
+  }, [tab, settingsTab]);
   const upload = async (file?: File) => {
     if (!file) return;
     setLoading(true);
@@ -203,6 +213,11 @@ function App() {
   const openLogs = async () => {
     setSettingsTab("logs");
     setLogs(await api.logs());
+  };
+  const openGeneralSettings = async () => {
+    setSettingsTab("settings");
+    setXmlServerForm(await api.xmlServerSettings());
+    setAutoImportState(await api.autoImportState());
   };
   const openMappings = async () => {
     setSettingsTab("mappings");
@@ -477,7 +492,7 @@ function App() {
                       ? openLogs()
                       : value === "mappings"
                         ? openMappings()
-                        : setSettingsTab(value)
+                        : openGeneralSettings()
                   }
                   sx={{ mb: 2 }}
                 >
@@ -510,6 +525,114 @@ function App() {
                         ),
                       }}
                     />
+                    <Divider sx={{ my: 3 }} />
+                    <Typography variant="h6">Подключение к серверу XML</Typography>
+                    {xmlServerForm && (
+                      <Stack spacing={2} sx={{ mt: 2 }}>
+                        <TextField
+                          select
+                          label="Протокол"
+                          value={xmlServerForm.protocol}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, protocol: e.target.value })
+                          }
+                        >
+                          <MenuItem value="FTP">FTP</MenuItem>
+                        </TextField>
+                        <TextField
+                          label="Хост"
+                          value={xmlServerForm.host}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, host: e.target.value })
+                          }
+                        />
+                        <TextField
+                          label="Порт"
+                          type="number"
+                          value={xmlServerForm.port}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, port: Number(e.target.value) })
+                          }
+                        />
+                        <TextField
+                          label="Логин"
+                          value={xmlServerForm.username}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, username: e.target.value })
+                          }
+                        />
+                        <TextField
+                          label="Пароль"
+                          type="password"
+                          value={xmlServerForm.password}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, password: e.target.value })
+                          }
+                        />
+                        <TextField
+                          label="Каталог для XML"
+                          value={xmlServerForm.xml_dir}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, xml_dir: e.target.value })
+                          }
+                        />
+                        <Stack direction="row" gap={1} flexWrap="wrap">
+                          <Button
+                            variant="contained"
+                            onClick={async () => {
+                              const saved = await api.updateXmlServerSettings(xmlServerForm);
+                              setXmlServerForm(saved);
+                            }}
+                          >
+                            Сохранить подключение
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={async () => {
+                              await api.updateXmlServerSettings(xmlServerForm);
+                              const result = await api.testXmlServerSettings();
+                              setFtpTestMessage(result.message);
+                            }}
+                          >
+                            Проверить подключение
+                          </Button>
+                        </Stack>
+                        {ftpTestMessage && (
+                          <Typography sx={{ whiteSpace: "pre-line" }}>{ftpTestMessage}</Typography>
+                        )}
+                      </Stack>
+                    )}
+                    <Divider sx={{ my: 3 }} />
+                    <Typography variant="h6">Автоматическая загрузка XML</Typography>
+                    <Typography fontWeight={800} sx={{ mt: 2 }}>
+                      Статус автозагрузки
+                    </Typography>
+                    <Typography>
+                      {autoImportState?.is_running
+                        ? "🟢 Работает"
+                        : autoImportState?.status === "error"
+                          ? "⚠ Ошибка"
+                          : autoImportState?.status === "stopped"
+                            ? "🔴 Остановлена"
+                            : "🟢 Работает"}
+                    </Typography>
+                    <Typography fontWeight={800} sx={{ mt: 2 }}>
+                      Последняя автозагрузка
+                    </Typography>
+                    {autoImportState?.last_run_at ? (
+                      <Stack spacing={0.5} sx={{ mt: 1 }}>
+                        <Typography>Дата: {new Date(autoImportState.last_run_at).toLocaleString()}</Typography>
+                        <Typography>Статус: {autoImportState.status === "error" ? "Ошибка" : "Успешно"}</Typography>
+                        <Typography>Обработано файлов: {autoImportState.processed_files}</Typography>
+                        <Typography>Успешно: {autoImportState.successful_files}</Typography>
+                        <Typography>Ошибок: {autoImportState.failed_files}</Typography>
+                        {autoImportState.last_error && (
+                          <Typography sx={{ whiteSpace: "pre-line" }}>Причина: {autoImportState.last_error}</Typography>
+                        )}
+                      </Stack>
+                    ) : (
+                      <Typography sx={{ mt: 1 }}>Автозагрузка еще не выполнялась.</Typography>
+                    )}
                   </Box>
                 )}
                 {settingsTab === "mappings" && (

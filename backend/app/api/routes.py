@@ -11,9 +11,10 @@ from sqlalchemy.orm import Session, selectinload
 from app.db.session import get_db
 from app.importer.xml_importer import XMLCatalogImporter
 from app.models.catalog import Favorite, Notification, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ServiceLogOut, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut
+from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ServiceLogOut, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.catalog import decorate, list_filters, meta, product_query
 from app.services.logging import add_log
+from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, test_connection
 
 router = APIRouter()
 
@@ -66,6 +67,35 @@ def product_detail(product_id: int, db: Session = Depends(get_db)):
     for stock in product.stocks:
         stock.warehouse_name = warehouse_names.get(stock.warehouse, stock.warehouse)
     return decorate(product, type_names)
+
+
+@router.get("/xml-server-settings", response_model=XmlServerSettingOut)
+def xml_server_settings(db: Session = Depends(get_db)):
+    return get_xml_server_setting(db)
+
+@router.put("/xml-server-settings", response_model=XmlServerSettingOut)
+def update_xml_server_settings(payload: XmlServerSettingIn, db: Session = Depends(get_db)):
+    if payload.protocol.upper() != "FTP":
+        raise HTTPException(400, "Пока поддерживается только FTP")
+    setting = get_xml_server_setting(db)
+    setting.protocol = payload.protocol.upper()
+    setting.host = payload.host.strip()
+    setting.port = payload.port
+    setting.username = payload.username.strip()
+    setting.password = payload.password
+    setting.xml_dir = payload.xml_dir.strip() or "/"
+    db.commit()
+    db.refresh(setting)
+    return setting
+
+@router.post("/xml-server-settings/test", response_model=FtpConnectionTestOut)
+def test_xml_server_settings(db: Session = Depends(get_db)):
+    success, message = test_connection(db)
+    return {"success": success, "message": message}
+
+@router.get("/auto-import-state", response_model=AutoImportStateOut)
+def auto_import_state(db: Session = Depends(get_db)):
+    return get_auto_import_state(db)
 
 @router.get("/filters")
 def filters(db: Session = Depends(get_db)):

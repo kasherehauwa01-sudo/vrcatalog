@@ -113,6 +113,8 @@ class XMLCatalogImporter:
                     raise ValueError(f"Ошибка обработки товара с кодом {code}: {exc}") from exc
             run.status = "completed"
             run.imported_count = imported
+            run.created_count = created
+            run.updated_count = updated
             run.errors = None
             run.finished_at = datetime.utcnow()
             add_log(db, "xml_import_finish", f"Импорт XML завершен: {filename}; товаров: {imported}; новых: {created}; обновлено: {updated}")

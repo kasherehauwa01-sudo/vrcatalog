@@ -78,3 +78,32 @@ class ProductTypeSettingOut(ProductTypeSettingIn):
     id: int
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+class XmlServerSettingIn(BaseModel):
+    protocol: str = "FTP"
+    host: str
+    port: int
+    username: str
+    password: str
+    xml_dir: str
+
+class XmlServerSettingOut(XmlServerSettingIn):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class AutoImportStateOut(BaseModel):
+    status: str
+    last_run_at: datetime | None = None
+    processed_files: int = 0
+    successful_files: int = 0
+    failed_files: int = 0
+    last_error: str | None = None
+    is_running: bool = False
+    updated_at: datetime | None = None
+    model_config = ConfigDict(from_attributes=True)
+
+class FtpConnectionTestOut(BaseModel):
+    success: bool
+    message: str

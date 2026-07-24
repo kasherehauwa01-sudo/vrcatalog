@@ -64,3 +64,26 @@ export type Warehouse = {
   name: string;
   created_at: string;
 };
+
+export type XmlServerSetting = {
+  id: number;
+  protocol: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  xml_dir: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AutoImportState = {
+  status: string;
+  last_run_at?: string;
+  processed_files: number;
+  successful_files: number;
+  failed_files: number;
+  last_error?: string;
+  is_running: boolean;
+  updated_at?: string;
+};

@@ -149,6 +149,34 @@ class Notification(Base):
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 
+class XmlServerSetting(Base):
+    __tablename__ = "xml_server_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    protocol: Mapped[str] = mapped_column(String(16), default="FTP")
+    host: Mapped[str] = mapped_column(String(255), default="176.53.160.144")
+    port: Mapped[int] = mapped_column(Integer, default=21)
+    username: Mapped[str] = mapped_column(String(255), default="uploader")
+    password: Mapped[str] = mapped_column(String(255), default="9963396")
+    xml_dir: Mapped[str] = mapped_column(String(512), default="/xml")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AutoImportState(Base):
+    __tablename__ = "auto_import_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), default="stopped")
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime)
+    processed_files: Mapped[int] = mapped_column(Integer, default=0)
+    successful_files: Mapped[int] = mapped_column(Integer, default=0)
+    failed_files: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    is_running: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class WarehouseSetting(Base):
     __tablename__ = "warehouse_settings"
     id: Mapped[int] = mapped_column(primary_key=True)
