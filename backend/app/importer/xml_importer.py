@@ -10,12 +10,17 @@ from sqlalchemy.orm import Session
 from app.services.logging import add_log
 from app.services.notifications import add_notification
 
-from app.models.catalog import Analog, Barcode, ImportRun, Price, Product, ProductProperty, Stock
+from app.models.catalog import Analog, Barcode, ImportRun, Price, Product, ProductImage, ProductProperty, Stock
 
 IMAGE_BASE_URL = "https://volgorost.ru/upload/import_images/images/"
 
 logger = logging.getLogger(__name__)
-KNOWN_FIELDS = {"Код":"code","Название":"name","Наименование":"name","Раздел":"section","Количество":"quantity"}
+PRODUCT_FIELD_TAGS = {
+    "code": ("Код", "code"),
+    "name": ("Название", "name"),
+    "section": ("Раздел", "section"),
+    "quantity": ("Количество", "quantity"),
+}
 PRICE_NAMES = {
     "ЦенаОптовая": "Оптовая",
     "ЦенаКорпоративная": "Корпоративная",
@@ -108,6 +113,8 @@ class XMLCatalogImporter:
                     raise ValueError(f"Ошибка обработки товара с кодом {code}: {exc}") from exc
             run.status = "completed"
             run.imported_count = imported
+            run.created_count = created
+            run.updated_count = updated
             run.errors = None
             run.finished_at = datetime.utcnow()
             add_log(db, "xml_import_finish", f"Импорт XML завершен: {filename}; товаров: {imported}; новых: {created}; обновлено: {updated}")
@@ -152,7 +159,6 @@ class XMLCatalogImporter:
             "section": product.section,
             "product_type": product.product_type,
             "description": product.description,
-            "image_url": product.image_url,
             "quantity": product.quantity,
             "manufacturer": product.manufacturer,
             "brand": product.brand,
@@ -217,17 +223,29 @@ class XMLCatalogImporter:
         ]
         existing.analogs = [Analog(code=analog.code, name=analog.name) for analog in parsed_product.analogs]
         existing.barcodes = [Barcode(value=barcode.value) for barcode in parsed_product.barcodes]
+        existing.images = [
+            ProductImage(image_order=image.image_order, image_url=image.image_url)
+            for image in parsed_product.images
+        ]
         return existing
 
+    def _product_field(self, item: ET.Element, field: str) -> str | None:
+        """Читает поле товара только из XML-тегов/атрибутов, которые соответствуют этому полю."""
+        names = PRODUCT_FIELD_TAGS[field]
+        value = _child_text(item, *names)
+        if value is None:
+            value = next((item.get(name) for name in names if item.get(name)), None)
+        return value.strip() if value and value.strip() else None
+
     def _parse_product(self, item: ET.Element) -> Product:
-        values = {field: _child_text(item, xml_name) for xml_name, field in KNOWN_FIELDS.items()}
-        code = values.get("code") or item.get("Код") or item.get("code")
-        code = code.strip() if code else None
-        name = values.get("name") or item.get("Название") or item.get("name") or code
-        name = name.strip() if name else None
+        code = self._product_field(item, "code")
+        name = self._product_field(item, "name")
+        section = self._product_field(item, "section")
+        quantity = self._product_field(item, "quantity")
         if not code or not name:
             raise ValueError("У товара отсутствует код или название")
-        product = Product(code=code, name=name, section=values.get("section"), quantity=_float(values.get("quantity")), image_url=self._parse_image_url(item))
+        product = Product(code=code, name=name, section=section, quantity=_float(quantity))
+        product.images = self._parse_images(item)
         properties = self._parse_properties(item)
         for prop in properties:
             product.properties.append(ProductProperty(property_code=prop["code"], name=prop["name"], value=prop["value"]))
@@ -243,18 +261,23 @@ class XMLCatalogImporter:
         product.search_text = " ".join(filter(None, search_bits)).lower()
         return product
 
-    def _parse_image_url(self, item: ET.Element) -> str | None:
-        """Берет первое изображение из XML и превращает /images/... в полный внешний URL."""
+    def _image_url(self, raw_path: str) -> str:
+        """Превращает путь изображения из XML в полный внешний URL."""
+        normalized_path = raw_path.strip().lstrip("/")
+        if normalized_path.lower().startswith("images/"):
+            normalized_path = normalized_path[len("images/"):]
+        return f"{IMAGE_BASE_URL}{normalized_path}"
+
+    def _parse_images(self, item: ET.Element) -> list[ProductImage]:
+        """Сохраняет все изображения товара из XML с исходным порядком."""
+        images: list[ProductImage] = []
         for images_root in _children_by_names(item, ["Изображения", "images"]):
             for image in list(images_root):
                 raw_path = _text(image) or image.get("path") or image.get("url")
                 if not raw_path:
                     continue
-                normalized_path = raw_path.strip().lstrip("/")
-                if normalized_path.lower().startswith("images/"):
-                    normalized_path = normalized_path[len("images/"):]
-                return f"{IMAGE_BASE_URL}{normalized_path}"
-        return None
+                images.append(ProductImage(image_order=len(images) + 1, image_url=self._image_url(raw_path)))
+        return images
 
     def _parse_prices(self, item: ET.Element, product: Product) -> None:
         price_nodes = [child for child in item if _tag_name(child).lower() in {"цена", "price"}]
@@ -297,7 +320,7 @@ class XMLCatalogImporter:
             if not value:
                 continue
             if name == "Артикул": product.article = value
-            if name in {"Наименование", "Наименование товара", "Название товара"}:
+            if name in {"Наименование", "Наименование товара", "Название товара"} and value != product.code:
                 product.name = value
             if name == "Производитель": product.manufacturer = value
             if name == "Менеджер": product.manager = value
