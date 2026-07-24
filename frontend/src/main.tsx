@@ -753,6 +753,7 @@ function App() {
                           onChange={toggleAll}
                         />
                       </TableCell>
+                      <TableCell>Фото</TableCell>
                       <TableCell>Наименование</TableCell>
                       <TableCell>Артикул</TableCell>
                       <TableCell>Код</TableCell>
@@ -776,6 +777,24 @@ function App() {
                             onClick={(e) => e.stopPropagation()}
                             onChange={() => toggleSelected(p.id)}
                           />
+                        </TableCell>
+                        <TableCell>
+                          {p.images[0] ? (
+                            <Box
+                              component="img"
+                              src={p.images[0].url}
+                              alt={p.name}
+                              sx={{
+                                width: 56,
+                                height: 56,
+                                objectFit: "contain",
+                                borderRadius: 2,
+                                bgcolor: "#e0f2fe",
+                              }}
+                            />
+                          ) : (
+                            "—"
+                          )}
                         </TableCell>
                         <TableCell>
                           <Typography>{p.name}</Typography>
@@ -825,21 +844,45 @@ function App() {
                 <Typography variant="h5" fontWeight={900}>
                   {detail.name}
                 </Typography>
-                {detail.image_url ? (
-                  <Box
-                    component="img"
-                    src={detail.image_url}
-                    alt={detail.name}
-                    onClick={() => setImagePreviewUrl(detail.image_url ?? null)}
-                    sx={{
-                      width: "100%",
-                      maxHeight: 420,
-                      objectFit: "contain",
-                      borderRadius: 4,
-                      bgcolor: "#e0f2fe",
-                      cursor: "zoom-in",
-                    }}
-                  />
+                {detail.images.length ? (
+                  <Stack spacing={1.5}>
+                    <Box
+                      component="img"
+                      src={detail.images[0].url}
+                      alt={detail.name}
+                      onClick={() => setImagePreviewUrl(detail.images[0].url)}
+                      sx={{
+                        width: "100%",
+                        maxHeight: 420,
+                        objectFit: "contain",
+                        borderRadius: 4,
+                        bgcolor: "#e0f2fe",
+                        cursor: "zoom-in",
+                      }}
+                    />
+                    {detail.images.length > 1 && (
+                      <Stack direction="row" gap={1} flexWrap="wrap">
+                        {detail.images.map((image) => (
+                          <Box
+                            component="img"
+                            key={image.order}
+                            src={image.url}
+                            alt={`${detail.name} — фото ${image.order}`}
+                            onClick={() => setImagePreviewUrl(image.url)}
+                            sx={{
+                              width: 84,
+                              height: 84,
+                              objectFit: "contain",
+                              borderRadius: 2,
+                              bgcolor: "#e0f2fe",
+                              cursor: "zoom-in",
+                              border: "1px solid rgba(2,132,199,.18)",
+                            }}
+                          />
+                        ))}
+                      </Stack>
+                    )}
+                  </Stack>
                 ) : (
                   <Paper
                     variant="outlined"

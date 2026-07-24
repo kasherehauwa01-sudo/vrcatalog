@@ -29,7 +29,6 @@ class Product(Base):
     section: Mapped[str | None] = mapped_column(String(255), index=True)
     product_type: Mapped[str | None] = mapped_column(String(255), index=True)
     description: Mapped[str | None] = mapped_column(Text)
-    image_url: Mapped[str | None] = mapped_column(Text)
     quantity: Mapped[float] = mapped_column(Float, default=0)
     manufacturer: Mapped[str | None] = mapped_column(String(255), index=True)
     brand: Mapped[str | None] = mapped_column(String(255), index=True)
@@ -46,6 +45,7 @@ class Product(Base):
     properties: Mapped[list["ProductProperty"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     analogs: Mapped[list["Analog"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     barcodes: Mapped[list["Barcode"]] = relationship(cascade="all, delete-orphan", back_populates="product")
+    images: Mapped[list["ProductImage"]] = relationship(cascade="all, delete-orphan", back_populates="product", order_by="ProductImage.image_order")
 
 
 class Price(Base):
@@ -95,6 +95,26 @@ class Barcode(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
     value: Mapped[str] = mapped_column(String(255), index=True)
     product: Mapped[Product] = relationship(back_populates="barcodes")
+
+
+class ProductImage(Base):
+    __tablename__ = "product_images"
+    __table_args__ = (UniqueConstraint("product_id", "image_order", name="uq_product_images_product_order"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    image_order: Mapped[int] = mapped_column(Integer)
+    image_url: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    product: Mapped[Product] = relationship(back_populates="images")
+
+    @property
+    def order(self) -> int:
+        return self.image_order
+
+    @property
+    def url(self) -> str:
+        return self.image_url
 
 
 class Favorite(Base):

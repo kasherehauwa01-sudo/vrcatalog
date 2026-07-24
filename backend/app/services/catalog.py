@@ -6,7 +6,7 @@ from app.models.catalog import ImportRun, Price, Product, Stock, WarehouseSettin
 FILTER_FIELDS = ["section", "manufacturer", "brand", "manager", "country", "material", "color"]
 
 def product_query(db: Session, params):
-    q = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties))
+    q = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.images))
     if search := params.get("search"):
         term = f"%{search.lower()}%"
         q = q.filter(func.lower(Product.search_text).like(term))
