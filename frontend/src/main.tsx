@@ -485,7 +485,7 @@ function App() {
                           }}
                         >
                           <TableCell>
-                            {new Date(notification.created_at).toLocaleString()}
+                            {formatMoscowDate(notification.created_at)}
                           </TableCell>
                           <TableCell>
                             <Typography
@@ -809,7 +809,7 @@ function App() {
                         {logs.map((log) => (
                           <TableRow key={log.id}>
                             <TableCell>
-                              {new Date(log.created_at).toLocaleString()}
+                              {formatMoscowDate(log.created_at)}
                             </TableCell>
                             <TableCell>
                               <Chip
