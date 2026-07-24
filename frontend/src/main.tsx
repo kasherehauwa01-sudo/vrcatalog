@@ -304,23 +304,7 @@ function App() {
             borderColor: alpha("#0284c7", 0.14),
           }}
         >
-          <Toolbar sx={{ gap: 2, py: 1 }}>
-            <TextField
-              fullWidth
-              size="small"
-              placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              InputProps={{
-                startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
-              }}
-              sx={{
-                "& .MuiOutlinedInput-root": {
-                  bgcolor: alpha("#ffffff", 0.86),
-                  borderRadius: 999,
-                },
-              }}
-            />
+          <Toolbar sx={{ gap: 2, py: 1, justifyContent: "flex-end" }}>
             <Button
               variant="contained"
               startIcon={<UploadFileIcon />}
@@ -391,6 +375,35 @@ function App() {
               <Tab value="settings" label="Настройки" />
             </Tabs>
           </Paper>
+
+          {tab === "catalog" && (
+            <Paper
+              sx={{
+                mb: 3,
+                p: 1,
+                bgcolor: alpha("#ffffff", 0.78),
+                border: "1px solid rgba(2,132,199,.14)",
+              }}
+              elevation={0}
+            >
+              <TextField
+                fullWidth
+                size="small"
+                placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                InputProps={{
+                  startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
+                }}
+                sx={{
+                  "& .MuiOutlinedInput-root": {
+                    bgcolor: alpha("#ffffff", 0.86),
+                    borderRadius: 999,
+                  },
+                }}
+              />
+            </Paper>
+          )}
 
           {tab === "notifications" && (
             <Card>
@@ -564,6 +577,7 @@ function App() {
                       <Button
                         variant="contained"
                         onClick={() => openProductTypeDialog()}
+                        sx={{ whiteSpace: "nowrap" }}
                       >
                         Добавить вид
                       </Button>
@@ -572,7 +586,7 @@ function App() {
                       <Table size="small">
                         <TableHead>
                           <TableRow>
-                            <TableCell>Наименование</TableCell>
+                            <TableCell>Вид товара</TableCell>
                             <TableCell>Код</TableCell>
                             <TableCell align="right">Действия</TableCell>
                           </TableRow>
@@ -739,6 +753,7 @@ function App() {
                           onChange={toggleAll}
                         />
                       </TableCell>
+                      <TableCell>Фото</TableCell>
                       <TableCell>Наименование</TableCell>
                       <TableCell>Артикул</TableCell>
                       <TableCell>Код</TableCell>
@@ -762,6 +777,24 @@ function App() {
                             onClick={(e) => e.stopPropagation()}
                             onChange={() => toggleSelected(p.id)}
                           />
+                        </TableCell>
+                        <TableCell>
+                          {p.images[0] ? (
+                            <Box
+                              component="img"
+                              src={p.images[0].url}
+                              alt={p.name}
+                              sx={{
+                                width: 56,
+                                height: 56,
+                                objectFit: "contain",
+                                borderRadius: 2,
+                                bgcolor: "#e0f2fe",
+                              }}
+                            />
+                          ) : (
+                            "—"
+                          )}
                         </TableCell>
                         <TableCell>
                           <Typography>{p.name}</Typography>
@@ -811,21 +844,45 @@ function App() {
                 <Typography variant="h5" fontWeight={900}>
                   {detail.name}
                 </Typography>
-                {detail.image_url ? (
-                  <Box
-                    component="img"
-                    src={detail.image_url}
-                    alt={detail.name}
-                    onClick={() => setImagePreviewUrl(detail.image_url ?? null)}
-                    sx={{
-                      width: "100%",
-                      maxHeight: 420,
-                      objectFit: "contain",
-                      borderRadius: 4,
-                      bgcolor: "#e0f2fe",
-                      cursor: "zoom-in",
-                    }}
-                  />
+                {detail.images.length ? (
+                  <Stack spacing={1.5}>
+                    <Box
+                      component="img"
+                      src={detail.images[0].url}
+                      alt={detail.name}
+                      onClick={() => setImagePreviewUrl(detail.images[0].url)}
+                      sx={{
+                        width: "100%",
+                        maxHeight: 420,
+                        objectFit: "contain",
+                        borderRadius: 4,
+                        bgcolor: "#e0f2fe",
+                        cursor: "zoom-in",
+                      }}
+                    />
+                    {detail.images.length > 1 && (
+                      <Stack direction="row" gap={1} flexWrap="wrap">
+                        {detail.images.map((image) => (
+                          <Box
+                            component="img"
+                            key={image.order}
+                            src={image.url}
+                            alt={`${detail.name} — фото ${image.order}`}
+                            onClick={() => setImagePreviewUrl(image.url)}
+                            sx={{
+                              width: 84,
+                              height: 84,
+                              objectFit: "contain",
+                              borderRadius: 2,
+                              bgcolor: "#e0f2fe",
+                              cursor: "zoom-in",
+                              border: "1px solid rgba(2,132,199,.18)",
+                            }}
+                          />
+                        ))}
+                      </Stack>
+                    )}
+                  </Stack>
                 ) : (
                   <Paper
                     variant="outlined"

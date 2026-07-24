@@ -7,7 +7,7 @@ export type Product = {
   product_type?: string;
   product_type_name?: string;
   quantity: number;
-  image_url?: string;
+  images: { order: number; url: string }[];
   retail_price?: number;
   prices: { price_type: string; value: number }[];
 };
