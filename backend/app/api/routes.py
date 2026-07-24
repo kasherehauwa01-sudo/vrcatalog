@@ -215,13 +215,22 @@ def delete_product_type(product_type_id: int, db: Session = Depends(get_db)):
     return {"deleted": True}
 
 
+def error_notifications_query(db: Session):
+    return db.query(Notification).filter(Notification.type.ilike("%error%"))
+
 @router.get("/notifications", response_model=list[NotificationOut])
 def notifications(db: Session = Depends(get_db), limit: int = 200):
-    return db.query(Notification).order_by(Notification.created_at.desc()).limit(limit).all()
+    return error_notifications_query(db).order_by(Notification.created_at.desc()).limit(limit).all()
 
 @router.get("/notifications/unread-count")
 def notifications_unread_count(db: Session = Depends(get_db)):
-    return {"count": db.query(Notification).filter(Notification.is_read.is_(False)).count()}
+    return {"count": error_notifications_query(db).filter(Notification.is_read.is_(False)).count()}
+
+@router.post("/notifications/read-all")
+def notifications_read_all(db: Session = Depends(get_db)):
+    updated = error_notifications_query(db).filter(Notification.is_read.is_(False)).update({Notification.is_read: True}, synchronize_session=False)
+    db.commit()
+    return {"updated": updated}
 
 @router.post("/notifications/{notification_id}/read")
 def notification_read(notification_id: int, db: Session = Depends(get_db)):

@@ -59,6 +59,11 @@ export const api = {
       method: "POST",
     });
   },
+  async markAllNotificationsRead(): Promise<{ updated: number }> {
+    return request<{ updated: number }>(`${API}/notifications/read-all`, {
+      method: "POST",
+    });
+  },
   async warehouses(): Promise<Warehouse[]> {
     return request<Warehouse[]>(`${API}/warehouses`);
   },

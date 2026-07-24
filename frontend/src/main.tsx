@@ -298,6 +298,13 @@ function App() {
       .unreadNotifications()
       .then((result) => setUnreadNotifications(result.count));
   };
+  const readAllNotifications = async () => {
+    await api.markAllNotificationsRead();
+    setNotifications(await api.notifications());
+    api
+      .unreadNotifications()
+      .then((result) => setUnreadNotifications(result.count));
+  };
 
   return (
     <ThemeProvider theme={theme}>
@@ -430,9 +437,26 @@ function App() {
           {tab === "notifications" && (
             <Card>
               <CardContent>
-                <Typography variant="h6" sx={{ mb: 2 }}>
-                  Уведомления
-                </Typography>
+                <Stack
+                  direction="row"
+                  justifyContent="space-between"
+                  alignItems="center"
+                  sx={{ mb: 2 }}
+                >
+                  <Box>
+                    <Typography variant="h6">Уведомления</Typography>
+                    <Typography color="text.secondary">
+                      Отображаются только ошибки.
+                    </Typography>
+                  </Box>
+                  <Button
+                    variant="outlined"
+                    disabled={!notifications.some((notification) => !notification.is_read)}
+                    onClick={readAllNotifications}
+                  >
+                    Прочитать все
+                  </Button>
+                </Stack>
                 <TableContainer>
                   <Table>
                     <TableHead>
