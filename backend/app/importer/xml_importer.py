@@ -63,13 +63,33 @@ def _normalize_price_type(raw: str) -> str:
     return PRICE_NAMES.get(raw, raw.replace("Цена", "", 1) or raw)
 
 
+def _is_valid_xml_char(char: str) -> bool:
+    code = ord(char)
+    return code in {0x09, 0x0A, 0x0D} or 0x20 <= code <= 0xD7FF or 0xE000 <= code <= 0xFFFD or 0x10000 <= code <= 0x10FFFF
+
+
+def _clean_xml_text(text: str) -> str:
+    return "".join(char for char in text if _is_valid_xml_char(char))
+
+
 def _parse_xml_root(path: Path) -> ET.Element:
     raw = path.read_bytes()
+    parse_errors: list[Exception] = []
     try:
         return ET.fromstring(raw)
-    except ET.ParseError:
-        text = raw.decode("windows-1251")
-        return ET.fromstring(text.encode("utf-8"))
+    except ET.ParseError as exc:
+        parse_errors.append(exc)
+    for encoding in ("windows-1251", "utf-8"):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError as exc:
+            parse_errors.append(exc)
+            continue
+        try:
+            return ET.fromstring(_clean_xml_text(text))
+        except ET.ParseError as exc:
+            parse_errors.append(exc)
+    raise parse_errors[-1]
 
 
 def _product_code(item: ET.Element) -> str | None:
