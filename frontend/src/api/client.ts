@@ -6,6 +6,8 @@ import type {
   Notification,
   Warehouse,
   ProductType,
+  XmlServerSetting,
+  AutoImportState,
 } from "../types/catalog";
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -54,6 +56,11 @@ export const api = {
   },
   async markNotificationRead(id: number): Promise<{ ok: boolean }> {
     return request<{ ok: boolean }>(`${API}/notifications/${id}/read`, {
+      method: "POST",
+    });
+  },
+  async markAllNotificationsRead(): Promise<{ updated: number }> {
+    return request<{ updated: number }>(`${API}/notifications/read-all`, {
       method: "POST",
     });
   },
@@ -117,6 +124,36 @@ export const api = {
   async deleteProductType(id: number): Promise<{ deleted: boolean }> {
     return request<{ deleted: boolean }>(`${API}/product-types/${id}`, {
       method: "DELETE",
+    });
+  },
+  async xmlServerSettings(): Promise<XmlServerSetting> {
+    return request<XmlServerSetting>(`${API}/xml-server-settings`);
+  },
+  async updateXmlServerSettings(payload: {
+    protocol: string;
+    host: string;
+    port: number;
+    username: string;
+    password: string;
+    xml_dir: string;
+  }): Promise<XmlServerSetting> {
+    return request<XmlServerSetting>(`${API}/xml-server-settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  },
+  async testXmlServerSettings(): Promise<{ success: boolean; message: string }> {
+    return request<{ success: boolean; message: string }>(`${API}/xml-server-settings/test`, {
+      method: "POST",
+    });
+  },
+  async autoImportState(): Promise<AutoImportState> {
+    return request<AutoImportState>(`${API}/auto-import-state`);
+  },
+  async runAutoImportNow(): Promise<{ started: boolean }> {
+    return request<{ started: boolean }>(`${API}/auto-import/run`, {
+      method: "POST",
     });
   },
   async upload(file: File): Promise<Meta> {

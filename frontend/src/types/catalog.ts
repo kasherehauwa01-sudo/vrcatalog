@@ -7,7 +7,7 @@ export type Product = {
   product_type?: string;
   product_type_name?: string;
   quantity: number;
-  image_url?: string;
+  images: { order: number; url: string }[];
   retail_price?: number;
   prices: { price_type: string; value: number }[];
 };
@@ -39,6 +39,8 @@ export type ServiceLog = {
   level: string;
   event: string;
   message: string;
+  error_type?: string;
+  traceback?: string;
   created_at: string;
 };
 
@@ -63,4 +65,27 @@ export type Warehouse = {
   code: string;
   name: string;
   created_at: string;
+};
+
+export type XmlServerSetting = {
+  id: number;
+  protocol: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  xml_dir: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AutoImportState = {
+  status: string;
+  last_run_at?: string;
+  processed_files: number;
+  successful_files: number;
+  failed_files: number;
+  last_error?: string;
+  is_running: boolean;
+  updated_at?: string;
 };
