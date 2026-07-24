@@ -59,12 +59,12 @@ def product_detail(product_id: int, db: Session = Depends(get_db)):
     product = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.analogs), selectinload(Product.barcodes)).get(product_id)
     if not product:
         raise HTTPException(404, "Товар не найден")
+    db.add(ViewHistory(product_id=product_id)); db.commit()
     type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
     product.product_type_name = type_names.get(product.product_type, product.product_type) if product.product_type else None
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
     for stock in product.stocks:
         stock.warehouse_name = warehouse_names.get(stock.warehouse, stock.warehouse)
-    db.add(ViewHistory(product_id=product_id)); db.commit()
     return decorate(product)
 
 @router.get("/filters")

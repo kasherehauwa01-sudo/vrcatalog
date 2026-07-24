@@ -127,7 +127,6 @@ function App() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [productTypes, setProductTypes] = useState<ProductType[]>([]);
   const [warehouseCodes, setWarehouseCodes] = useState<string[]>([]);
-  const [productTypeCodes, setProductTypeCodes] = useState<string[]>([]);
   const [warehouseDialogOpen, setWarehouseDialogOpen] = useState(false);
   const [warehouseForm, setWarehouseForm] = useState<{
     id?: number;
@@ -210,7 +209,6 @@ function App() {
     setWarehouses(await api.warehouses());
     setWarehouseCodes((await api.warehouseCodes()).codes);
     setProductTypes(await api.productTypes());
-    setProductTypeCodes((await api.productTypeCodes()).codes);
   };
   const openWarehouseDialog = (warehouse?: Warehouse) => {
     setWarehouseForm(
@@ -935,9 +933,9 @@ function App() {
           <DialogContent>
             <Stack spacing={2} sx={{ mt: 1 }}>
               <TextField
-                select
                 required
                 label="Код Вида товара"
+                placeholder="Например: 1"
                 value={productTypeForm.code}
                 onChange={(e) =>
                   setProductTypeForm((current) => ({
@@ -945,13 +943,7 @@ function App() {
                     code: e.target.value,
                   }))
                 }
-              >
-                {productTypeCodes.map((code) => (
-                  <MenuItem key={code} value={code}>
-                    {code}
-                  </MenuItem>
-                ))}
-              </TextField>
+              />
               <TextField
                 required
                 label="Наименование"
