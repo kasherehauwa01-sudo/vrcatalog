@@ -913,8 +913,13 @@ function App() {
                     <Typography variant="h6">Фильтры</Typography>
                     <Chip size="small" color="primary" label={filteredCount} />
                   </Stack>
-                  <Button sx={{ mt: 1 }} size="small" onClick={resetFilters}>
-                    Сбросить фильтры
+                  <Button
+                    sx={{ mt: 1 }}
+                    size="small"
+                    variant="outlined"
+                    onClick={() => setFiltersOpen((value) => !value)}
+                  >
+                    {filtersOpen ? "Свернуть фильтры" : "Развернуть фильтры"}
                   </Button>
                   {meta.errors && (
                     <Typography sx={{ mt: 1 }} color="error">
@@ -985,7 +990,60 @@ function App() {
                     >
                       Удалить выбранные
                     </Button>
-                  </Stack>
+                    {meta.errors && (
+                      <Typography sx={{ mt: 1 }} color="error">
+                        Ошибки импорта: {meta.errors}
+                      </Typography>
+                    )}
+                    <Divider sx={{ my: 2 }} />
+                    <List disablePadding>
+                      {Object.entries(labels).map(([key, label]) => (
+                        <Box key={key} sx={{ mb: 2 }}>
+                          <Typography
+                            variant="subtitle2"
+                            color="text.secondary"
+                            sx={{ mb: 1 }}
+                          >
+                            {label}
+                          </Typography>
+                          <Stack direction="row" flexWrap="wrap" gap={1}>
+                            {(filters[key] ?? []).slice(0, 24).map((v) => (
+                              <Chip
+                                clickable
+                                color={
+                                  (active[key] ?? []).includes(v)
+                                    ? "primary"
+                                    : "default"
+                                }
+                                variant={
+                                  (active[key] ?? []).includes(v)
+                                    ? "filled"
+                                    : "outlined"
+                                }
+                                key={v}
+                                label={v}
+                                onClick={() => toggleFilter(key, v)}
+                              />
+                            ))}
+                          </Stack>
+                        </Box>
+                      ))}
+                    </List>
+                    <Divider sx={{ my: 2 }} />
+                    <Stack spacing={1}>
+                      <Button href={api.exportUrl("xlsx", params)}>
+                        Экспорт Excel
+                      </Button>
+                      <Button
+                        color="error"
+                        variant="outlined"
+                        disabled={!selectedIds.length}
+                        onClick={deleteSelected}
+                      >
+                        Удалить выбранные
+                      </Button>
+                    </Stack>
+                  </Collapse>
                 </CardContent>
               </Card>
 
