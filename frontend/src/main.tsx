@@ -41,7 +41,6 @@ import {
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
-import FavoriteBorderIcon from "@mui/icons-material/FavoriteBorder";
 import SearchIcon from "@mui/icons-material/Search";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import { api } from "./api/client";
@@ -51,6 +50,8 @@ import type {
   Product,
   ProductDetail,
   ProductType,
+  XmlServerSetting,
+  AutoImportState,
   ServiceLog,
   Warehouse,
 } from "./types/catalog";
@@ -102,6 +103,11 @@ const labels: Record<string, string> = {
   warehouse: "Склады",
 };
 const updateScriptPath = "/var/www/html/vr/update_vrcatalog.sh";
+const clientsUrl = "https://kvasmix.ru/vr/clients/";
+const formatMoscowDate = (value: string) =>
+  new Date(value).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
+const getLogStage = (log: ServiceLog) =>
+  log.message.match(/Этап:\n([^\n]+)/)?.[1] ?? log.event;
 
 function App() {
   const [search, setSearch] = useState("");
@@ -119,6 +125,7 @@ function App() {
   >("settings");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
+  const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [filteredCount, setFilteredCount] = useState(0);
@@ -139,6 +146,10 @@ function App() {
     code: string;
     name: string;
   }>({ code: "", name: "" });
+  const [xmlServerForm, setXmlServerForm] = useState<XmlServerSetting | null>(null);
+  const [autoImportState, setAutoImportState] = useState<AutoImportState | null>(null);
+  const [ftpTestMessage, setFtpTestMessage] = useState<string | null>(null);
+  const [manualImportMessage, setManualImportMessage] = useState<string | null>(null);
   const params = useMemo(() => {
     const p = new URLSearchParams({ search });
     Object.entries(active).forEach(
@@ -159,6 +170,11 @@ function App() {
       .then((result) => setUnreadNotifications(result.count));
   };
   useEffect(reload, [params]);
+  useEffect(() => {
+    if (tab === "settings" && settingsTab === "settings") {
+      openGeneralSettings();
+    }
+  }, [tab, settingsTab]);
   const upload = async (file?: File) => {
     if (!file) return;
     setLoading(true);
@@ -203,6 +219,11 @@ function App() {
   const openLogs = async () => {
     setSettingsTab("logs");
     setLogs(await api.logs());
+  };
+  const openGeneralSettings = async () => {
+    setSettingsTab("settings");
+    setXmlServerForm(await api.xmlServerSettings());
+    setAutoImportState(await api.autoImportState());
   };
   const openMappings = async () => {
     setSettingsTab("mappings");
@@ -283,6 +304,13 @@ function App() {
       .unreadNotifications()
       .then((result) => setUnreadNotifications(result.count));
   };
+  const readAllNotifications = async () => {
+    await api.markAllNotificationsRead();
+    setNotifications(await api.notifications());
+    api
+      .unreadNotifications()
+      .then((result) => setUnreadNotifications(result.count));
+  };
 
   return (
     <ThemeProvider theme={theme}>
@@ -304,23 +332,7 @@ function App() {
             borderColor: alpha("#0284c7", 0.14),
           }}
         >
-          <Toolbar sx={{ gap: 2, py: 1 }}>
-            <TextField
-              fullWidth
-              size="small"
-              placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              InputProps={{
-                startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
-              }}
-              sx={{
-                "& .MuiOutlinedInput-root": {
-                  bgcolor: alpha("#ffffff", 0.86),
-                  borderRadius: 999,
-                },
-              }}
-            />
+          <Toolbar sx={{ gap: 2, py: 1, justifyContent: "flex-end" }}>
             <Button
               variant="contained"
               startIcon={<UploadFileIcon />}
@@ -359,12 +371,19 @@ function App() {
           >
             <Tabs
               value={tab}
-              onChange={(_, value) => setTab(value)}
+              onChange={(_, value) => {
+                if (value === "clients") {
+                  window.location.href = clientsUrl;
+                  return;
+                }
+                setTab(value);
+              }}
               textColor="primary"
               indicatorColor="primary"
               variant="scrollable"
             >
               <Tab value="catalog" label="Каталог" />
+              <Tab value="clients" label="Контрагенты" />
               <Tab
                 value="notifications"
                 label={
@@ -392,12 +411,58 @@ function App() {
             </Tabs>
           </Paper>
 
+          {tab === "catalog" && (
+            <Paper
+              sx={{
+                mb: 3,
+                p: 1,
+                bgcolor: alpha("#ffffff", 0.78),
+                border: "1px solid rgba(2,132,199,.14)",
+              }}
+              elevation={0}
+            >
+              <TextField
+                fullWidth
+                size="small"
+                placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                InputProps={{
+                  startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
+                }}
+                sx={{
+                  "& .MuiOutlinedInput-root": {
+                    bgcolor: alpha("#ffffff", 0.86),
+                    borderRadius: 999,
+                  },
+                }}
+              />
+            </Paper>
+          )}
+
           {tab === "notifications" && (
             <Card>
               <CardContent>
-                <Typography variant="h6" sx={{ mb: 2 }}>
-                  Уведомления
-                </Typography>
+                <Stack
+                  direction="row"
+                  justifyContent="space-between"
+                  alignItems="center"
+                  sx={{ mb: 2 }}
+                >
+                  <Box>
+                    <Typography variant="h6">Уведомления</Typography>
+                    <Typography color="text.secondary">
+                      Отображаются только ошибки.
+                    </Typography>
+                  </Box>
+                  <Button
+                    variant="outlined"
+                    disabled={!notifications.some((notification) => !notification.is_read)}
+                    onClick={readAllNotifications}
+                  >
+                    Прочитать все
+                  </Button>
+                </Stack>
                 <TableContainer>
                   <Table>
                     <TableHead>
@@ -423,7 +488,7 @@ function App() {
                           }}
                         >
                           <TableCell>
-                            {new Date(notification.created_at).toLocaleString()}
+                            {formatMoscowDate(notification.created_at)}
                           </TableCell>
                           <TableCell>
                             <Typography
@@ -457,7 +522,7 @@ function App() {
                       ? openLogs()
                       : value === "mappings"
                         ? openMappings()
-                        : setSettingsTab(value)
+                        : openGeneralSettings()
                   }
                   sx={{ mb: 2 }}
                 >
@@ -490,6 +555,133 @@ function App() {
                         ),
                       }}
                     />
+                    <Divider sx={{ my: 3 }} />
+                    <Typography variant="h6">Подключение к серверу XML</Typography>
+                    {xmlServerForm && (
+                      <Stack spacing={2} sx={{ mt: 2 }}>
+                        <TextField
+                          select
+                          label="Протокол"
+                          value={xmlServerForm.protocol}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, protocol: e.target.value })
+                          }
+                        >
+                          <MenuItem value="FTP">FTP</MenuItem>
+                        </TextField>
+                        <TextField
+                          label="Хост"
+                          value={xmlServerForm.host}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, host: e.target.value })
+                          }
+                        />
+                        <TextField
+                          label="Порт"
+                          type="number"
+                          value={xmlServerForm.port}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, port: Number(e.target.value) })
+                          }
+                        />
+                        <TextField
+                          label="Логин"
+                          value={xmlServerForm.username}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, username: e.target.value })
+                          }
+                        />
+                        <TextField
+                          label="Пароль"
+                          type="password"
+                          value={xmlServerForm.password}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, password: e.target.value })
+                          }
+                        />
+                        <TextField
+                          label="Каталог для XML"
+                          value={xmlServerForm.xml_dir}
+                          onChange={(e) =>
+                            setXmlServerForm({ ...xmlServerForm, xml_dir: e.target.value })
+                          }
+                        />
+                        <Stack direction="row" gap={1} flexWrap="wrap">
+                          <Button
+                            variant="contained"
+                            onClick={async () => {
+                              const saved = await api.updateXmlServerSettings(xmlServerForm);
+                              setXmlServerForm(saved);
+                            }}
+                          >
+                            Сохранить подключение
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={async () => {
+                              await api.updateXmlServerSettings(xmlServerForm);
+                              const result = await api.testXmlServerSettings();
+                              setFtpTestMessage(result.message);
+                            }}
+                          >
+                            Проверить подключение
+                          </Button>
+                        </Stack>
+                        {ftpTestMessage && (
+                          <Typography sx={{ whiteSpace: "pre-line" }}>{ftpTestMessage}</Typography>
+                        )}
+                      </Stack>
+                    )}
+                    <Divider sx={{ my: 3 }} />
+                    <Typography variant="h6">Автоматическая загрузка XML</Typography>
+                    <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mt: 2 }}>
+                      <Button
+                        variant="contained"
+                        onClick={async () => {
+                          const result = await api.runAutoImportNow();
+                          setManualImportMessage(
+                            result.started
+                              ? "Принудительный импорт XML запущен."
+                              : "Импорт уже выполняется.",
+                          );
+                          setAutoImportState(await api.autoImportState());
+                        }}
+                      >
+                        Запустить импорт
+                      </Button>
+                    </Stack>
+                    {manualImportMessage && (
+                      <Typography sx={{ mt: 1 }}>{manualImportMessage}</Typography>
+                    )}
+                    <Typography fontWeight={800} sx={{ mt: 2 }}>
+                      Статус автозагрузки
+                    </Typography>
+                    <Typography>
+                      {autoImportState?.is_running
+                        ? "🟢 Работает"
+                        : autoImportState?.status === "error"
+                          ? "⚠ Ошибка"
+                          : autoImportState?.status === "stopped"
+                            ? "🔴 Остановлена"
+                            : "🟢 Работает"}
+                    </Typography>
+                    <Typography fontWeight={800} sx={{ mt: 2 }}>
+                      Последняя автозагрузка
+                    </Typography>
+                    {autoImportState?.last_run_at ? (
+                      <Stack spacing={0.5} sx={{ mt: 1 }}>
+                        <Typography>Дата: {formatMoscowDate(autoImportState.last_run_at)}</Typography>
+                        <Typography>Статус: {autoImportState.status === "error" ? "Ошибка" : "Успешно"}</Typography>
+                        <Typography>Обработано файлов: {autoImportState.processed_files}</Typography>
+                        <Typography>Успешно: {autoImportState.successful_files}</Typography>
+                        <Typography>Ошибок: {autoImportState.failed_files}</Typography>
+                        {autoImportState.last_error && (
+                          <Typography sx={{ whiteSpace: "pre-line" }}>Причина: {autoImportState.last_error}</Typography>
+                        )}
+                      </Stack>
+                    ) : (
+                      <Typography sx={{ mt: 1 }}>Автозагрузка еще не выполнялась.</Typography>
+                    )}
                   </Box>
                 )}
                 {settingsTab === "mappings" && (
@@ -564,6 +756,7 @@ function App() {
                       <Button
                         variant="contained"
                         onClick={() => openProductTypeDialog()}
+                        sx={{ whiteSpace: "nowrap" }}
                       >
                         Добавить вид
                       </Button>
@@ -572,7 +765,7 @@ function App() {
                       <Table size="small">
                         <TableHead>
                           <TableRow>
-                            <TableCell>Наименование</TableCell>
+                            <TableCell>Вид товара</TableCell>
                             <TableCell>Код</TableCell>
                             <TableCell align="right">Действия</TableCell>
                           </TableRow>
@@ -611,32 +804,65 @@ function App() {
                         <TableRow>
                           <TableCell>Дата</TableCell>
                           <TableCell>Уровень</TableCell>
-                          <TableCell>Событие</TableCell>
+                          <TableCell>Этап</TableCell>
+                          <TableCell>Тип ошибки</TableCell>
                           <TableCell>Сообщение</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
                         {logs.map((log) => (
-                          <TableRow key={log.id}>
-                            <TableCell>
-                              {new Date(log.created_at).toLocaleString()}
-                            </TableCell>
-                            <TableCell>
-                              <Chip
-                                size="small"
-                                color={
-                                  log.level === "error"
-                                    ? "error"
-                                    : log.level === "warning"
-                                      ? "warning"
-                                      : "primary"
-                                }
-                                label={log.level}
-                              />
-                            </TableCell>
-                            <TableCell>{log.event}</TableCell>
-                            <TableCell>{log.message}</TableCell>
-                          </TableRow>
+                          <React.Fragment key={log.id}>
+                            <TableRow
+                              hover={!!log.traceback}
+                              onClick={() =>
+                                log.traceback &&
+                                setExpandedLogId((current) =>
+                                  current === log.id ? null : log.id,
+                                )
+                              }
+                              sx={{ cursor: log.traceback ? "pointer" : "default" }}
+                            >
+                              <TableCell>
+                                {formatMoscowDate(log.created_at)}
+                              </TableCell>
+                              <TableCell>
+                                <Chip
+                                  size="small"
+                                  color={
+                                    log.level === "error"
+                                      ? "error"
+                                      : log.level === "warning"
+                                        ? "warning"
+                                        : "primary"
+                                  }
+                                  label={log.level}
+                                />
+                              </TableCell>
+                              <TableCell>{getLogStage(log)}</TableCell>
+                              <TableCell>{log.error_type ?? "—"}</TableCell>
+                              <TableCell sx={{ whiteSpace: "pre-line" }}>
+                                {log.message}
+                                {log.traceback && (
+                                  <Typography color="primary" variant="caption" display="block">
+                                    {expandedLogId === log.id
+                                      ? "Скрыть traceback"
+                                      : "Показать traceback"}
+                                  </Typography>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                            {expandedLogId === log.id && log.traceback && (
+                              <TableRow>
+                                <TableCell colSpan={5}>
+                                  <Paper variant="outlined" sx={{ p: 2, bgcolor: "#f8fafc" }}>
+                                    <Typography component="pre" sx={{ m: 0, whiteSpace: "pre-wrap" }}>
+                                      {log.traceback}
+                                    </Typography>
+                                  </Paper>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </React.Fragment>
                         ))}
                       </TableBody>
                     </Table>
@@ -739,12 +965,12 @@ function App() {
                           onChange={toggleAll}
                         />
                       </TableCell>
+                      <TableCell>Фото</TableCell>
                       <TableCell>Наименование</TableCell>
                       <TableCell>Артикул</TableCell>
                       <TableCell>Код</TableCell>
-                      <TableCell>Раздел</TableCell>
                       <TableCell align="right">Цена</TableCell>
-                      <TableCell align="right">Количество</TableCell>
+                      <TableCell align="right">Количество Авиаторов</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -764,25 +990,37 @@ function App() {
                           />
                         </TableCell>
                         <TableCell>
-                          <Typography>{p.name}</Typography>
-                        </TableCell>
-                        <TableCell>{p.article ?? "—"}</TableCell>
-                        <TableCell>{p.code}</TableCell>
-                        <TableCell>
-                          {p.section ? (
-                            <Chip size="small" label={p.section} />
+                          {p.images[0] ? (
+                            <Box
+                              component="img"
+                              src={p.images[0].url}
+                              alt={p.name}
+                              sx={{
+                                width: 56,
+                                height: 56,
+                                objectFit: "contain",
+                                borderRadius: 2,
+                                bgcolor: "#e0f2fe",
+                              }}
+                            />
                           ) : (
                             "—"
                           )}
                         </TableCell>
-                        <TableCell align="right">
+                        <TableCell>
+                          <Typography>{p.name}</Typography>
+                        </TableCell>
+                        <TableCell>{p.article ?? "—"}</TableCell>
+                        <TableCell>{p.code}</TableCell>
+                        <TableCell align="right" sx={{ minWidth: 180 }}>
                           {visiblePrices(p).length
                             ? visiblePrices(p).map((price) => (
                                 <Typography
                                   key={price.price_type}
                                   variant="body2"
+                                  sx={{ whiteSpace: "nowrap" }}
                                 >
-                                  {price.price_type}: {price.value}
+                                  {price.price_type}: {price.value} руб.
                                 </Typography>
                               ))
                             : "—"}
@@ -811,26 +1049,50 @@ function App() {
                 <Typography variant="h5" fontWeight={900}>
                   {detail.name}
                 </Typography>
-                {detail.image_url ? (
-                  <Box
-                    component="img"
-                    src={detail.image_url}
-                    alt={detail.name}
-                    onClick={() => setImagePreviewUrl(detail.image_url ?? null)}
-                    sx={{
-                      width: "100%",
-                      maxHeight: 420,
-                      objectFit: "contain",
-                      borderRadius: 4,
-                      bgcolor: "#e0f2fe",
-                      cursor: "zoom-in",
-                    }}
-                  />
+                {detail.images.length ? (
+                  <Stack spacing={1.25}>
+                    <Box
+                      component="img"
+                      src={detail.images[0].url}
+                      alt={detail.name}
+                      onClick={() => setImagePreviewUrl(detail.images[0].url)}
+                      sx={{
+                        width: "100%",
+                        maxHeight: 260,
+                        objectFit: "contain",
+                        borderRadius: 4,
+                        bgcolor: "#e0f2fe",
+                        cursor: "zoom-in",
+                      }}
+                    />
+                    {detail.images.length > 1 && (
+                      <Stack direction="row" gap={1} flexWrap="wrap">
+                        {detail.images.map((image) => (
+                          <Box
+                            component="img"
+                            key={image.order}
+                            src={image.url}
+                            alt={`${detail.name} — фото ${image.order}`}
+                            onClick={() => setImagePreviewUrl(image.url)}
+                            sx={{
+                              width: 64,
+                              height: 64,
+                              objectFit: "contain",
+                              borderRadius: 2,
+                              bgcolor: "#e0f2fe",
+                              cursor: "zoom-in",
+                              border: "1px solid rgba(2,132,199,.18)",
+                            }}
+                          />
+                        ))}
+                      </Stack>
+                    )}
+                  </Stack>
                 ) : (
                   <Paper
                     variant="outlined"
                     sx={{
-                      height: 260,
+                      height: 180,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
@@ -841,85 +1103,98 @@ function App() {
                     <Typography>Изображение отсутствует</Typography>
                   </Paper>
                 )}
-                <Stack direction="row" gap={1} flexWrap="wrap">
-                  <Button startIcon={<FavoriteBorderIcon />}>
-                    В избранное
-                  </Button>
-                  <Button onClick={() => copy(detail.article)}>
-                    Копировать артикул
-                  </Button>
-                  <Button onClick={() => copy(detail.code)}>
-                    Копировать код
-                  </Button>
-                  <Button
-                    onClick={() =>
-                      copy(detail.barcodes.map((b) => b.value).join(", "))
-                    }
-                  >
-                    Штрихкоды
-                  </Button>
-                </Stack>
+                {detail.stocks.length > 0 && (
+                  <>
+                    <Typography fontWeight={800}>Остатки по складам</Typography>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Склад</TableCell>
+                          <TableCell align="right">Остаток</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {detail.stocks.map((s) => (
+                          <TableRow key={s.warehouse}>
+                            <TableCell>{s.warehouse_name ?? s.warehouse}</TableCell>
+                            <TableCell align="right">{s.quantity}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </>
+                )}
                 <Paper variant="outlined" sx={{ p: 2 }}>
-                  <Typography>Код: {detail.code}</Typography>
-                  <Typography>Артикул: {detail.article ?? "—"}</Typography>
-                  <Typography>Раздел: {detail.section}</Typography>
-                  <Typography>Вид товара: {detail.product_type_name ?? detail.product_type ?? "—"}</Typography>
-                  <Typography>
-                    Производитель: {detail.manufacturer ?? "—"}
-                  </Typography>
-                  <Typography>Менеджер: {detail.manager ?? "—"}</Typography>
-                  <Typography>Бренд: {detail.brand ?? "—"}</Typography>
-                  <Typography>Материал: {detail.material ?? "—"}</Typography>
-                  <Typography>Цвет: {detail.color ?? "—"}</Typography>
-                  <Typography>
-                    Сертификат: {detail.certificate ?? "—"}
-                  </Typography>
-                  <Typography>
-                    Штрихкоды:{" "}
-                    {detail.barcodes.length
-                      ? detail.barcodes.map((b) => b.value).join(", ")
-                      : "—"}
-                  </Typography>
-                  <Typography sx={{ mt: 1 }}>{detail.description}</Typography>
-                </Paper>
-                <Typography fontWeight={800}>Цены</Typography>
-                {detail.prices.map((p) => (
-                  <Typography key={p.price_type}>
-                    {p.price_type}: {p.value}
-                  </Typography>
-                ))}
-                <Typography fontWeight={800}>Характеристики</Typography>
-                {detail.properties.map((p, index) => (
-                  <Typography key={`${p.property_code ?? p.name}-${index}`}>
-                    {p.name}:{" "}
-                    {p.name === "Вид товара" || p.name === "ВидТовара"
-                      ? detail.product_type_name ?? p.value ?? "—"
-                      : p.value ?? "—"}
-                  </Typography>
-                ))}
-                <Typography fontWeight={800}>Остатки по складам</Typography>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Склад</TableCell>
-                      <TableCell align="right">Остаток</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {detail.stocks.map((s) => (
-                      <TableRow key={s.warehouse}>
-                        <TableCell>{s.warehouse_name ?? s.warehouse}</TableCell>
-                        <TableCell align="right">{s.quantity}</TableCell>
-                      </TableRow>
+                  {[
+                    ["Код", detail.code],
+                    ["Артикул", detail.article],
+                    ["Раздел", detail.section],
+                    ["Вид товара", detail.product_type_name ?? detail.product_type],
+                    ["Производитель", detail.manufacturer],
+                    ["Менеджер", detail.manager],
+                    ["Бренд", detail.brand],
+                    ["Материал", detail.material],
+                    ["Цвет", detail.color],
+                    ["Сертификат", detail.certificate],
+                    ["Штрихкоды", detail.barcodes.map((b) => b.value).join(", ")],
+                    ["Описание", detail.description],
+                  ]
+                    .filter(([, value]) => value)
+                    .map(([label, value]) => (
+                      <Typography key={label} sx={{ mt: label === "Описание" ? 1 : 0 }}>
+                        <Box component="span" fontWeight={800}>
+                          {label}:
+                        </Box>{" "}
+                        {value}
+                      </Typography>
                     ))}
-                  </TableBody>
-                </Table>
-                <Typography fontWeight={800}>Аналоги</Typography>
-                {detail.analogs.map((a) => (
-                  <Typography key={a.code}>
-                    {a.code} {a.name}
-                  </Typography>
-                ))}
+                </Paper>
+                {detail.properties.some((p) =>
+                  p.name === "Вид товара" || p.name === "ВидТовара"
+                    ? Boolean(detail.product_type_name ?? p.value)
+                    : Boolean(p.value),
+                ) && (
+                  <>
+                    <Typography fontWeight={800}>Характеристики</Typography>
+                    {detail.properties
+                      .map((p) => ({
+                        ...p,
+                        displayValue:
+                          p.name === "Вид товара" || p.name === "ВидТовара"
+                            ? detail.product_type_name ?? p.value
+                            : p.value,
+                      }))
+                      .filter((p) => p.displayValue)
+                      .map((p, index) => (
+                        <Typography key={`${p.property_code ?? p.name}-${index}`}>
+                          <Box component="span" fontWeight={800}>
+                            {p.name}:
+                          </Box>{" "}
+                          {p.displayValue}
+                        </Typography>
+                      ))}
+                  </>
+                )}
+                {detail.prices.length > 0 && (
+                  <>
+                    <Typography fontWeight={800}>Цены</Typography>
+                    {detail.prices.map((p) => (
+                      <Typography key={p.price_type} sx={{ whiteSpace: "nowrap" }}>
+                        {p.price_type}: {p.value} руб.
+                      </Typography>
+                    ))}
+                  </>
+                )}
+                {detail.analogs.length > 0 && (
+                  <>
+                    <Typography fontWeight={800}>Аналоги</Typography>
+                    {detail.analogs.map((a) => (
+                      <Typography key={a.code}>
+                        {a.code} {a.name}
+                      </Typography>
+                    ))}
+                  </>
+                )}
               </Stack>
             )}
           </Box>
@@ -1054,13 +1329,57 @@ function App() {
             >
               Закрыть
             </Button>
+            {imagePreviewUrl && detail && detail.images.length > 1 && (
+              <>
+                <Button
+                  variant="contained"
+                  onClick={() => {
+                    const currentIndex = detail.images.findIndex(
+                      (image) => image.url === imagePreviewUrl,
+                    );
+                    const previousIndex = currentIndex <= 0
+                      ? detail.images.length - 1
+                      : currentIndex - 1;
+                    setImagePreviewUrl(detail.images[previousIndex].url);
+                  }}
+                  sx={{
+                    position: "absolute",
+                    left: 16,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                  }}
+                >
+                  Назад
+                </Button>
+                <Button
+                  variant="contained"
+                  onClick={() => {
+                    const currentIndex = detail.images.findIndex(
+                      (image) => image.url === imagePreviewUrl,
+                    );
+                    const nextIndex = currentIndex >= detail.images.length - 1
+                      ? 0
+                      : currentIndex + 1;
+                    setImagePreviewUrl(detail.images[nextIndex].url);
+                  }}
+                  sx={{
+                    position: "absolute",
+                    right: 16,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                  }}
+                >
+                  Вперёд
+                </Button>
+              </>
+            )}
             {imagePreviewUrl && (
               <Box
                 component="img"
                 src={imagePreviewUrl}
                 alt="Увеличенное изображение товара"
                 sx={{
-                  maxWidth: "100%",
+                  maxWidth: { xs: "100%", md: "calc(100% - 180px)" },
                   maxHeight: "86vh",
                   objectFit: "contain",
                 }}
