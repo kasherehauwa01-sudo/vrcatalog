@@ -1,6 +1,7 @@
 import type {
   Meta,
   Product,
+  ProductPage,
   ProductDetail,
   ServiceLog,
   Notification,
@@ -26,11 +27,15 @@ export const api = {
   async meta(): Promise<Meta> {
     return request<Meta>(`${API}/meta`);
   },
-  async filters(): Promise<Record<string, string[]>> {
-    return request<Record<string, string[]>>(`${API}/filters`);
+  async filters(params?: URLSearchParams): Promise<Record<string, string[]>> {
+    const query = params?.toString();
+    return request<Record<string, string[]>>(`${API}/filters${query ? `?${query}` : ""}`);
   },
   async products(params: URLSearchParams): Promise<Product[]> {
     return request<Product[]>(`${API}/products?${params}`);
+  },
+  async searchProducts(params: URLSearchParams): Promise<ProductPage> {
+    return request<ProductPage>(`${API}/products/search?${params}`);
   },
   async productCount(params: URLSearchParams): Promise<{ count: number }> {
     return request<{ count: number }>(`${API}/products/count?${params}`);
