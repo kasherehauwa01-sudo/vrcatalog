@@ -1,9 +1,124 @@
-from sqlalchemy import func
+from math import ceil
+
+from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.catalog import ImportRun, Price, Product, Stock, WarehouseSetting, ProductTypeSetting
+from app.models.catalog import ImportRun, Price, Product, ProductProperty, Stock, WarehouseSetting, ProductTypeSetting
 
 FILTER_FIELDS = ["section", "manufacturer", "brand", "manager", "country", "material", "color"]
+SORT_FIELDS = {
+    "id": Product.id,
+    "name": Product.name,
+    "article": Product.article,
+    "code": Product.code,
+    "quantity": Product.quantity,
+}
+
+
+def _values(value):
+    if not value:
+        return []
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
+def catalog_product_query(db: Session, params):
+    """Build the validated catalog query; all values remain SQLAlchemy bind parameters."""
+    q = db.query(Product).options(
+        selectinload(Product.prices),
+        selectinload(Product.stocks),
+        selectinload(Product.properties),
+        selectinload(Product.images),
+    )
+    search = str(params.get("search") or "").strip()
+    if search:
+        pattern = f"%{search}%"
+        search_conditions = [cast(Product.id, String).ilike(pattern), Product.search_text.ilike(pattern)]
+        q = q.filter(or_(*search_conditions))
+
+    if params.get("id") is not None:
+        q = q.filter(Product.id == params["id"])
+    if name := str(params.get("name") or "").strip():
+        q = q.filter(Product.name.ilike(f"%{name}%"))
+    if article := str(params.get("article") or "").strip():
+        q = q.filter(Product.article.ilike(f"%{article}%"))
+
+    for field in FILTER_FIELDS:
+        values = _values(params.get(field))
+        if values:
+            q = q.filter(getattr(Product, field).in_(values))
+
+    type_values = _values(params.get("product_type"))
+    if type_values:
+        configured_codes = [
+            code
+            for code, in db.query(ProductTypeSetting.code)
+            .filter(ProductTypeSetting.name.in_(type_values))
+            .all()
+        ]
+        q = q.filter(Product.product_type.in_([*type_values, *configured_codes]))
+
+    availability = params.get("availability")
+    if availability == "in_stock":
+        q = q.filter(Product.quantity > 0)
+    elif availability == "out_of_stock":
+        q = q.filter(Product.quantity <= 0)
+
+    if params.get("quantity_from") is not None:
+        q = q.filter(Product.quantity >= params["quantity_from"])
+    if params.get("quantity_to") is not None:
+        q = q.filter(Product.quantity <= params["quantity_to"])
+
+    price_conditions = []
+    if params.get("price_from") is not None:
+        price_conditions.append(Price.price_value >= params["price_from"])
+    if params.get("price_to") is not None:
+        price_conditions.append(Price.price_value <= params["price_to"])
+    if price_conditions:
+        q = q.filter(Product.prices.any(and_(*price_conditions)))
+
+    warehouse_values = _values(params.get("warehouse"))
+    if warehouse_values:
+        configured_codes = [
+            code
+            for code, in db.query(WarehouseSetting.code)
+            .filter(WarehouseSetting.name.in_(warehouse_values))
+            .all()
+        ]
+        q = q.filter(Product.stocks.any(Stock.warehouse.in_([*warehouse_values, *configured_codes])))
+
+    property_filters = params.get("properties") or {}
+    for property_name, values in property_filters.items():
+        q = q.filter(
+            Product.properties.any(
+                and_(ProductProperty.name == property_name, ProductProperty.value.in_(values))
+            )
+        )
+    return q
+
+
+def paginated_products(db: Session, params):
+    q = catalog_product_query(db, params)
+    total = q.order_by(None).count()
+    sort = params.get("sort", "id")
+    if sort == "price":
+        sort_column = (
+            select(func.min(Price.price_value))
+            .where(Price.product_id == Product.id)
+            .correlate(Product)
+            .scalar_subquery()
+        )
+    else:
+        sort_column = SORT_FIELDS[sort]
+    direction = sort_column.desc() if params.get("order") == "desc" else sort_column.asc()
+    page = params["page"]
+    page_size = params["page_size"]
+    items = q.order_by(direction, Product.id.asc()).offset((page - 1) * page_size).limit(page_size).all()
+    return items, {
+        "page": page,
+        "pageSize": page_size,
+        "totalItems": total,
+        "totalPages": ceil(total / page_size) if total else 0,
+    }
 
 def product_query(db: Session, params):
     q = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.images))
@@ -48,6 +163,17 @@ def list_filters(db: Session):
     warehouse_codes = [code for code, in db.query(Stock.warehouse).filter(Stock.warehouse.isnot(None)).distinct().order_by(Stock.warehouse).all()]
     data["warehouse"] = [warehouse_names.get(code, code) for code in warehouse_codes]
     data["availability"] = ["В наличии", "Нет в наличии"]
+    property_rows = (
+        db.query(ProductProperty.name, ProductProperty.value)
+        .filter(ProductProperty.value.isnot(None))
+        .distinct()
+        .order_by(ProductProperty.name, ProductProperty.value)
+        .all()
+    )
+    for property_name, value in property_rows:
+        key = f"property:{property_name}"
+        if len(data.setdefault(key, [])) < 100:
+            data[key].append(value)
     return data
 
 def meta(db: Session):

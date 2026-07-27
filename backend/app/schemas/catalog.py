@@ -32,6 +32,18 @@ class ProductListOut(BaseModel):
     retail_price: float | None = None
     prices: list[PriceOut] = []
     model_config = ConfigDict(from_attributes=True)
+
+
+class PaginationOut(BaseModel):
+    page: int
+    pageSize: int
+    totalItems: int
+    totalPages: int
+
+
+class ProductPageOut(BaseModel):
+    items: list[ProductListOut]
+    pagination: PaginationOut
 class ProductDetailOut(ProductListOut):
     description: str | None; manufacturer: str | None; brand: str | None; manager: str | None; country: str | None; material: str | None; color: str | None; certificate: str | None; tags: str | None
     prices: list[PriceOut]; stocks: list[StockOut]; properties: list[PropertyOut]; analogs: list[AnalogOut]; barcodes: list[BarcodeOut]
