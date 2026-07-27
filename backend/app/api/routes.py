@@ -3,7 +3,9 @@ import tempfile
 from io import StringIO, BytesIO
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from sqlalchemy.orm import Session, selectinload
@@ -11,8 +13,8 @@ from sqlalchemy.orm import Session, selectinload
 from app.db.session import get_db
 from app.importer.xml_importer import XMLCatalogImporter
 from app.models.catalog import Favorite, Notification, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ServiceLogOut, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
-from app.services.catalog import decorate, list_filters, meta, product_query
+from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ServiceLogOut, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.services.catalog import decorate, list_filters, meta, paginated_products, product_query
 from app.services.logging import add_log
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
 
@@ -48,6 +50,77 @@ def products(db: Session = Depends(get_db), limit: int = 60, offset: int = 0, se
 def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None):
     params = locals(); params.pop("db")
     return {"count": product_query(db, params).count()}
+
+
+@router.get("/products/search", response_model=ProductPageOut)
+def search_products(
+    db: Session = Depends(get_db),
+    search: Annotated[str | None, Query(max_length=255)] = None,
+    id: Annotated[int | None, Query(ge=1)] = None,
+    name: Annotated[str | None, Query(max_length=512)] = None,
+    article: Annotated[str | None, Query(max_length=255)] = None,
+    barcode: Annotated[str | None, Query(max_length=2000)] = None,
+    section: Annotated[str | None, Query(max_length=2000)] = None,
+    manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
+    brand: Annotated[str | None, Query(max_length=2000)] = None,
+    manager: Annotated[str | None, Query(max_length=2000)] = None,
+    country: Annotated[str | None, Query(max_length=2000)] = None,
+    material: Annotated[str | None, Query(max_length=2000)] = None,
+    color: Annotated[str | None, Query(max_length=2000)] = None,
+    product_type: Annotated[str | None, Query(alias="productType", max_length=2000)] = None,
+    warehouse: Annotated[str | None, Query(max_length=2000)] = None,
+    availability: Literal["all", "in_stock", "out_of_stock"] = "all",
+    quantity_from: Annotated[float | None, Query(alias="quantityFrom")] = None,
+    quantity_to: Annotated[float | None, Query(alias="quantityTo")] = None,
+    price_from: Annotated[float | None, Query(alias="priceFrom", ge=0)] = None,
+    price_to: Annotated[float | None, Query(alias="priceTo", ge=0)] = None,
+    property: Annotated[list[str] | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(alias="pageSize")] = 20,
+    sort: Literal["id", "name", "article", "code", "price", "quantity"] = "id",
+    order: Literal["asc", "desc"] = "asc",
+):
+    if page_size not in {20, 50, 100}:
+        raise HTTPException(422, "pageSize должен быть равен 20, 50 или 100")
+    if quantity_from is not None and quantity_to is not None and quantity_from > quantity_to:
+        raise HTTPException(422, "Минимальное количество не может быть больше максимального")
+    if price_from is not None and price_to is not None and price_from > price_to:
+        raise HTTPException(422, "Минимальная цена не может быть больше максимальной")
+    properties: dict[str, list[str]] = {}
+    for item in property or []:
+        property_name, separator, value = item.partition(":")
+        if not separator or not property_name.strip() or not value.strip():
+            raise HTTPException(422, "Свойство должно иметь формат «Название:Значение»")
+        properties.setdefault(property_name.strip(), []).append(value.strip())
+    params = {
+        "search": search,
+        "id": id,
+        "name": name,
+        "article": article,
+        "barcode": barcode,
+        "section": section,
+        "manufacturer": manufacturer,
+        "brand": brand,
+        "manager": manager,
+        "country": country,
+        "material": material,
+        "color": color,
+        "product_type": product_type,
+        "warehouse": warehouse,
+        "availability": availability,
+        "quantity_from": quantity_from,
+        "quantity_to": quantity_to,
+        "price_from": price_from,
+        "price_to": price_to,
+        "properties": properties,
+        "page": page,
+        "page_size": page_size,
+        "sort": sort,
+        "order": order,
+    }
+    items, pagination = paginated_products(db, params)
+    type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
+    return {"items": [decorate(item, type_names) for item in items], "pagination": pagination}
 
 @router.delete("/products")
 def delete_products(product_ids: list[int] = Body(...), db: Session = Depends(get_db)):
@@ -103,8 +176,32 @@ def run_auto_import_now():
     return {"started": started}
 
 @router.get("/filters")
-def filters(db: Session = Depends(get_db)):
-    return list_filters(db)
+def filters(
+    db: Session = Depends(get_db),
+    brand: str | None = None,
+    manager: str | None = None,
+    manufacturer: str | None = None,
+    country: str | None = None,
+    product_type: str | None = Query(None, alias="productType"),
+    warehouse: str | None = None,
+    barcode: str | None = None,
+    property: list[str] | None = Query(None),
+):
+    properties: dict[str, list[str]] = {}
+    for item in property or []:
+        property_name, separator, value = item.partition(":")
+        if separator and property_name.strip() and value.strip():
+            properties.setdefault(property_name.strip(), []).append(value.strip())
+    return list_filters(db, {
+        "brand": brand,
+        "manager": manager,
+        "manufacturer": manufacturer,
+        "country": country,
+        "product_type": product_type,
+        "warehouse": warehouse,
+        "barcode": barcode,
+        "properties": properties,
+    })
 
 @router.get("/meta", response_model=MetaOut)
 def get_meta(db: Session = Depends(get_db)):
@@ -247,8 +344,14 @@ def notification_read(notification_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 @router.get("/logs", response_model=list[ServiceLogOut])
-def logs(db: Session = Depends(get_db), limit: int = 200):
-    return db.query(ServiceLog).order_by(ServiceLog.created_at.desc()).limit(limit).all()
+def logs(db: Session = Depends(get_db)):
+    return (
+        db.query(ServiceLog)
+        .filter(ServiceLog.level == "error")
+        .order_by(ServiceLog.created_at.desc(), ServiceLog.id.desc())
+        .limit(100)
+        .all()
+    )
 
 @router.get("/export.csv")
 def export_csv(db: Session = Depends(get_db), search: str | None = None):
