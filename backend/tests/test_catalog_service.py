@@ -10,10 +10,12 @@ from app.models.catalog import (
     Product,
     ProductProperty,
     ProductTypeSetting,
+    ServiceLog,
     Stock,
     WarehouseSetting,
 )
 from app.services.catalog import catalog_product_query, list_filters, paginated_products
+from app.services.logging import add_log
 
 
 class CatalogProductQueryTests(unittest.TestCase):
@@ -95,6 +97,31 @@ class CatalogProductQueryTests(unittest.TestCase):
 
     def test_empty_result(self):
         self.assertEqual(self.query(search="несуществующий товар"), [])
+
+
+class ServiceLoggingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.engine = create_engine("sqlite://", future=True)
+        Base.metadata.create_all(cls.engine)
+
+    def setUp(self):
+        self.db = Session(self.engine)
+        self.db.query(ServiceLog).delete()
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_keeps_only_latest_one_hundred_errors(self):
+        add_log(self.db, "info", "Не сохранять")
+        for index in range(105):
+            add_log(self.db, f"error_{index}", "Ошибка", level="error")
+        self.db.commit()
+
+        logs = self.db.query(ServiceLog).order_by(ServiceLog.id).all()
+        self.assertEqual(len(logs), 100)
+        self.assertTrue(all(log.level == "error" for log in logs))
+        self.assertEqual(logs[0].event, "error_5")
 
 
 if __name__ == "__main__":

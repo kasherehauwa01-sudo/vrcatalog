@@ -51,7 +51,6 @@ import UploadFileIcon from "@mui/icons-material/UploadFile";
 import { api } from "./api/client";
 import type {
   Meta,
-  Notification,
   Product,
   ProductDetail,
   ProductType,
@@ -165,13 +164,11 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [detail, setDetail] = useState<ProductDetail | null>(null);
-  const [tab, setTab] = useState<"catalog" | "settings" | "notifications">("catalog");
+  const [tab, setTab] = useState<"catalog" | "settings">("catalog");
   const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "logs">("settings");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 20, totalItems: 0, totalPages: 0 });
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [openFilterGroups, setOpenFilterGroups] = useState<Record<string, boolean>>({});
@@ -214,7 +211,7 @@ function App() {
     finally { setLoading(false); }
   };
   useEffect(() => { reload(); }, [params.toString()]);
-  useEffect(() => { Promise.all([api.meta(), api.filters(), api.unreadNotifications()]).then(([m, f, u]) => { setMeta(m); setFilters(f); setUnreadNotifications(u.count); }); }, []);
+  useEffect(() => { Promise.all([api.meta(), api.filters()]).then(([m, f]) => { setMeta(m); setFilters(f); }); }, []);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const normalized = search.trim();
@@ -406,27 +403,7 @@ function App() {
     reload();
   };
   const visiblePrices = (product: Product) => product.prices;
-  const openNotifications = async () => {
-    setTab("notifications");
-    setNotifications(await api.notifications());
-    api
-      .unreadNotifications()
-      .then((result) => setUnreadNotifications(result.count));
-  };
-  const readNotification = async (id: number) => {
-    await api.markNotificationRead(id);
-    setNotifications(await api.notifications());
-    api
-      .unreadNotifications()
-      .then((result) => setUnreadNotifications(result.count));
-  };
-  const readAllNotifications = async () => {
-    await api.markAllNotificationsRead();
-    setNotifications(await api.notifications());
-    api
-      .unreadNotifications()
-      .then((result) => setUnreadNotifications(result.count));
-  };
+
 
   return (
     <ThemeProvider theme={theme}>
@@ -484,29 +461,6 @@ function App() {
             >
               <Tab value="catalog" label="Каталог" />
               <Tab value="clients" label="Контрагенты" />
-              <Tab
-                value="notifications"
-                label={
-                  <Box component="span" sx={{ position: "relative" }}>
-                    Уведомления
-                    {unreadNotifications > 0 && (
-                      <Box
-                        component="span"
-                        sx={{
-                          position: "absolute",
-                          right: -10,
-                          top: 0,
-                          width: 8,
-                          height: 8,
-                          bgcolor: "error.main",
-                          borderRadius: "50%",
-                        }}
-                      />
-                    )}
-                  </Box>
-                }
-                onClick={openNotifications}
-              />
               <Tab value="settings" label="Настройки" />
             </Tabs>
           </Paper>
@@ -562,99 +516,8 @@ function App() {
                 >
                   Фильтр{activeConditionCount ? ` (${activeConditionCount})` : ""}
                 </Button>
-                <Button
-                  variant="contained"
-                  startIcon={<UploadFileIcon />}
-                  component="label"
-                  sx={{
-                    fontSize: 12,
-                    whiteSpace: "nowrap",
-                    px: 2,
-                    ml: { md: "20px" },
-                  }}
-                >
-                  Загрузить XML
-                  <input
-                    hidden
-                    type="file"
-                    accept=".xml"
-                    onChange={(e) => upload(e.target.files?.[0])}
-                  />
-                </Button>
               </Stack>
             </Paper>
-          )}
-
-          {tab === "notifications" && (
-            <Card>
-              <CardContent>
-                <Stack
-                  direction="row"
-                  justifyContent="space-between"
-                  alignItems="center"
-                  sx={{ mb: 2 }}
-                >
-                  <Box>
-                    <Typography variant="h6">Уведомления</Typography>
-                    <Typography color="text.secondary">
-                      Отображаются только ошибки.
-                    </Typography>
-                  </Box>
-                  <Button
-                    variant="outlined"
-                    disabled={!notifications.some((notification) => !notification.is_read)}
-                    onClick={readAllNotifications}
-                  >
-                    Прочитать все
-                  </Button>
-                </Stack>
-                <TableContainer>
-                  <Table>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Дата</TableCell>
-                        <TableCell>Заголовок</TableCell>
-                        <TableCell>Описание</TableCell>
-                        <TableCell>Статус</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {notifications.map((notification) => (
-                        <TableRow
-                          hover
-                          key={notification.id}
-                          onClick={() => readNotification(notification.id)}
-                          sx={{
-                            cursor: "pointer",
-                            bgcolor: notification.is_read
-                              ? "inherit"
-                              : "rgba(239,68,68,.08)",
-                            fontWeight: notification.is_read ? 400 : 800,
-                          }}
-                        >
-                          <TableCell>
-                            {formatMoscowDate(notification.created_at)}
-                          </TableCell>
-                          <TableCell>
-                            <Typography
-                              fontWeight={notification.is_read ? 400 : 800}
-                            >
-                              {notification.title}
-                            </Typography>
-                          </TableCell>
-                          <TableCell sx={{ whiteSpace: "pre-line" }}>
-                            {notification.message}
-                          </TableCell>
-                          <TableCell>
-                            {notification.is_read ? "прочитано" : "новое"}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </CardContent>
-            </Card>
           )}
 
           {tab === "settings" && (
@@ -678,6 +541,20 @@ function App() {
                 {settingsTab === "settings" && (
                   <Box>
                     <Typography variant="h6">Настройки</Typography>
+                    <Button
+                      variant="contained"
+                      startIcon={<UploadFileIcon />}
+                      component="label"
+                      sx={{ mt: 2 }}
+                    >
+                      Загрузить XML
+                      <input
+                        hidden
+                        type="file"
+                        accept=".xml"
+                        onChange={(event) => upload(event.target.files?.[0])}
+                      />
+                    </Button>
                     <Typography color="text.secondary" sx={{ mt: 1, mb: 2 }}>
                       Путь к скрипту обновления каталога на сервере. Нажмите на
                       иконку, чтобы скопировать значение.
@@ -955,7 +832,7 @@ function App() {
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {logs.map((log) => (
+                        {logs.filter((log) => log.level === "error").map((log) => (
                           <React.Fragment key={log.id}>
                             <TableRow
                               hover={!!log.traceback}
@@ -1039,6 +916,9 @@ function App() {
                   <Button startIcon={<RefreshIcon />} onClick={reload}>Повторить</Button>
                 </Paper>
               )}
+              <Typography color="text.secondary" fontWeight={700}>
+                Найдено товаров: {pagination.totalItems}
+              </Typography>
               <TableContainer component={Card} sx={{ position: "relative" }}>
                 {loading && <LinearProgress />}
                 <Table aria-label="Список товаров">
@@ -1087,6 +967,92 @@ function App() {
             {Object.entries(filterLabels).map(([key, label]) => <Box key={key}><Button fullWidth onClick={() => toggleFilterGroup(key)} sx={{ justifyContent: "space-between" }}>{label}<span>{openFilterGroups[key] ? "−" : "+"}</span></Button><Collapse in={!!openFilterGroups[key]} unmountOnExit><Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>{(filters[key] ?? []).slice(0, 100).map((value) => <Chip key={value} clickable label={value} color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"} variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"} onClick={() => toggleFilter(key, value)} />)}</Stack></Collapse></Box>)}
             {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
             <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}><Button variant="contained" onClick={applyFilters}>Применить</Button><Button onClick={resetFilters}>Сбросить</Button><Button onClick={() => setFiltersOpen(false)}>Закрыть</Button></Stack>
+          </Stack>
+        </Drawer>
+        <Drawer
+          anchor="left"
+          open={filtersOpen}
+          onClose={() => setFiltersOpen(false)}
+          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
+        >
+          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="h6">Фильтр товаров</Typography>
+              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
+                <CloseIcon />
+              </IconButton>
+            </Stack>
+            <TextField
+              label="Название"
+              value={draftFields.name}
+              onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
+            />
+            <TextField
+              select
+              label="Наличие"
+              value={draftFields.availability}
+              onChange={(event) => setDraftFields({ ...draftFields, availability: event.target.value })}
+            >
+              <MenuItem value="all">Все</MenuItem>
+              <MenuItem value="in_stock">В наличии</MenuItem>
+              <MenuItem value="out_of_stock">Нет в наличии</MenuItem>
+            </TextField>
+            <Stack direction="row" spacing={1}>
+              <TextField fullWidth label="Количество от" type="number" value={draftFields.quantityFrom} onChange={(event) => setDraftFields({ ...draftFields, quantityFrom: event.target.value })} />
+              <TextField fullWidth label="Количество до" type="number" value={draftFields.quantityTo} onChange={(event) => setDraftFields({ ...draftFields, quantityTo: event.target.value })} />
+            </Stack>
+            <Stack direction="row" spacing={1}>
+              <TextField fullWidth label="Цена от" type="number" value={draftFields.priceFrom} onChange={(event) => setDraftFields({ ...draftFields, priceFrom: event.target.value })} inputProps={{ min: 0 }} />
+              <TextField fullWidth label="Цена до" type="number" value={draftFields.priceTo} onChange={(event) => setDraftFields({ ...draftFields, priceTo: event.target.value })} inputProps={{ min: 0 }} />
+            </Stack>
+            <Divider />
+            {Object.entries(filterLabels).map(([key, label]) => (
+              <Box key={key}>
+                <Button
+                  fullWidth
+                  onClick={() => toggleFilterGroup(key)}
+                  sx={{ justifyContent: "space-between" }}
+                >
+                  {label}
+                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
+                </Button>
+                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
+                  {searchableFilterLabels.has(label) && (
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label={`Поиск: ${label}`}
+                      value={filterValueSearch[key] ?? ""}
+                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
+                      sx={{ mt: 1 }}
+                    />
+                  )}
+                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
+                    {visibleFilterValues(key).map((value) => (
+                      <Chip
+                        key={value}
+                        clickable
+                        label={value}
+                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
+                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
+                        onClick={() => toggleFilter(key, value)}
+                      />
+                    ))}
+                    {visibleFilterValues(key).length === 0 && (
+                      <Typography variant="body2" color="text.secondary">
+                        Значения не найдены
+                      </Typography>
+                    )}
+                  </Stack>
+                </Collapse>
+              </Box>
+            ))}
+            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
+            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
+              <Button variant="contained" onClick={applyFilters}>Применить</Button>
+              <Button onClick={resetFilters}>Сбросить</Button>
+              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
+            </Stack>
           </Stack>
         </Drawer>
         <Drawer

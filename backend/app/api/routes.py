@@ -318,8 +318,14 @@ def notification_read(notification_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 @router.get("/logs", response_model=list[ServiceLogOut])
-def logs(db: Session = Depends(get_db), limit: int = 200):
-    return db.query(ServiceLog).order_by(ServiceLog.created_at.desc()).limit(limit).all()
+def logs(db: Session = Depends(get_db)):
+    return (
+        db.query(ServiceLog)
+        .filter(ServiceLog.level == "error")
+        .order_by(ServiceLog.created_at.desc(), ServiceLog.id.desc())
+        .limit(100)
+        .all()
+    )
 
 @router.get("/export.csv")
 def export_csv(db: Session = Depends(get_db), search: str | None = None):
