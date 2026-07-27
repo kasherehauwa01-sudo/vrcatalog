@@ -103,9 +103,25 @@ const labels: Record<string, string> = {
   country: "Страна",
   material: "Материал",
   color: "Цвет",
+  barcode: "Штрихкод",
   product_type: "Вид товара",
   warehouse: "Склады",
 };
+const mainFilterOrder = [
+  "Бренд", "Вид товара", "Склады", "Коллекция", "Менеджер",
+  "Производитель", "Страна", "Комната", "Праздник", "Тематика",
+  "HoReCa", "Выгружать на сайт", "Штрихкод",
+];
+const propertyFilterOrder = [
+  "Материал", "Цвет", "Вкоробке", "Вид", "Вид ручки", "Высота",
+  "Диаметр", "Для индукционных плит", "Единица измерения", "Код маркировки",
+  "Количество ярусов", "Комплектность", "Литраж", "Маркировка Сатурн",
+  "Материал основной", "Набор", "Назначение", "Наличие крышки",
+  "Наличие основы", "Наличие подставки", "Наличие рисунка", "Наличие свистка",
+  "Напиток", "Наполнитель", "Объем", "Особенности", "Покрытие", "Размер",
+  "Серия", "Символ года", "ТВ товары", "Теги скидок", "Форм-фактор",
+  "Форма", "Цифра",
+];
 type FilterFields = {
   name: string;
   availability: string;
@@ -150,6 +166,7 @@ function App() {
   const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ name: p.get("name") ?? "", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
   const [search, setSearch] = useState(initialParams.get("search") ?? "");
   const [filters, setFilters] = useState<Record<string, string[]>>({});
+  const [propertyOptions, setPropertyOptions] = useState<Record<string, string[]>>({});
   const filterLabels = useMemo(() => Object.keys(filters).reduce<Record<string, string>>((result, key) => {
     if (labels[key]) result[key] = labels[key];
     else if (key.startsWith("property:")) result[key] = key.slice("property:".length);
@@ -171,6 +188,7 @@ function App() {
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 20, totalItems: 0, totalPages: 0 });
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [propertyPickerOpen, setPropertyPickerOpen] = useState(false);
   const [openFilterGroups, setOpenFilterGroups] = useState<Record<string, boolean>>({});
   const [filterValueSearch, setFilterValueSearch] = useState<Record<string, string>>({});
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -211,7 +229,7 @@ function App() {
     finally { setLoading(false); }
   };
   useEffect(() => { reload(); }, [params.toString()]);
-  useEffect(() => { Promise.all([api.meta(), api.filters()]).then(([m, f]) => { setMeta(m); setFilters(f); }); }, []);
+  useEffect(() => { Promise.all([api.meta(), api.filters()]).then(([m, f]) => { setMeta(m); setFilters(f); setPropertyOptions(f); }); }, []);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const normalized = search.trim();
@@ -307,9 +325,36 @@ function App() {
   };
   const activeConditionCount = Object.values(active).reduce((sum, values) => sum + values.length, 0) + Object.entries(filterFields).filter(([, value]) => value && value !== "all").length;
   const searchableFilterLabels = new Set(["Раздел", "Производитель", "Бренд", "Материал", "Коллекция"]);
-  const visibleFilterValues = (key: string) => {
+  const entriesForOrder = (options: Record<string, string[]>, order: string[]) => {
+    const entries = Object.entries(options).map(([key, values]) => ({
+      key,
+      values,
+      label: labels[key] ?? (key.startsWith("property:") ? key.slice("property:".length) : key),
+    }));
+    return order.flatMap((wantedLabel) => {
+      const match = entries.find(({ label }) => label.toLocaleLowerCase("ru-RU") === wantedLabel.toLocaleLowerCase("ru-RU"));
+      return match ? [match] : [];
+    });
+  };
+  const mainFilterEntries = entriesForOrder(filters, mainFilterOrder);
+  const propertyFilterEntries = entriesForOrder(propertyOptions, propertyFilterOrder);
+  const openPropertyPicker = async () => {
+    const dependentParams = new URLSearchParams();
+    mainFilterEntries.forEach(({ key }) => {
+      const values = draftActive[key] ?? [];
+      if (!values.length) return;
+      if (key.startsWith("property:")) {
+        values.forEach((value) => dependentParams.append("property", `${key.slice("property:".length)}:${value}`));
+      } else {
+        dependentParams.set(key === "product_type" ? "productType" : key, values.join(","));
+      }
+    });
+    setPropertyOptions(await api.filters(dependentParams));
+    setPropertyPickerOpen(true);
+  };
+  const visibleFilterValues = (key: string, options = filters) => {
     const searchValue = (filterValueSearch[key] ?? "").trim().toLocaleLowerCase("ru-RU");
-    return (filters[key] ?? [])
+    return (options[key] ?? [])
       .filter((value) => !searchValue || value.toLocaleLowerCase("ru-RU").includes(searchValue))
       .slice(0, 100);
   };
@@ -1399,6 +1444,108 @@ function App() {
             </Stack>
           </Stack>
         </Drawer>
+        <Drawer
+          anchor="left"
+          open={filtersOpen}
+          onClose={() => setFiltersOpen(false)}
+          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
+        >
+          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="h6">Фильтр товаров</Typography>
+              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
+                <CloseIcon />
+              </IconButton>
+            </Stack>
+            {mainFilterEntries.map(({ key, label }) => (
+              <Box key={key}>
+                <Button
+                  fullWidth
+                  onClick={() => toggleFilterGroup(key)}
+                  sx={{ justifyContent: "space-between" }}
+                >
+                  {label}
+                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
+                </Button>
+                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
+                  {searchableFilterLabels.has(label) && (
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label={`Поиск: ${label}`}
+                      value={filterValueSearch[key] ?? ""}
+                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
+                      sx={{ mt: 1 }}
+                    />
+                  )}
+                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
+                    {visibleFilterValues(key).map((value) => (
+                      <Chip
+                        key={value}
+                        clickable
+                        label={value}
+                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
+                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
+                        onClick={() => toggleFilter(key, value)}
+                      />
+                    ))}
+                    {visibleFilterValues(key).length === 0 && (
+                      <Typography variant="body2" color="text.secondary">
+                        Значения не найдены
+                      </Typography>
+                    )}
+                  </Stack>
+                </Collapse>
+              </Box>
+            ))}
+            <Button variant="outlined" onClick={openPropertyPicker}>
+              Подобрать по свойствам
+            </Button>
+            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
+            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
+              <Button variant="contained" onClick={applyFilters}>Применить</Button>
+              <Button onClick={resetFilters}>Сбросить</Button>
+              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
+            </Stack>
+          </Stack>
+        </Drawer>
+        <Dialog
+          open={propertyPickerOpen}
+          onClose={() => setPropertyPickerOpen(false)}
+          fullWidth
+          maxWidth="md"
+        >
+          <DialogTitle>Подобрать по свойствам</DialogTitle>
+          <DialogContent>
+            <Stack spacing={2} sx={{ mt: 1 }}>
+              {propertyFilterEntries.length === 0 && (
+                <Typography color="text.secondary">
+                  Для товаров, выбранных основными фильтрами, дополнительные свойства не найдены.
+                </Typography>
+              )}
+              {propertyFilterEntries.map(({ key, label }) => (
+                <Box key={key}>
+                  <Typography fontWeight={800} sx={{ mb: 1 }}>{label}</Typography>
+                  <Stack direction="row" flexWrap="wrap" gap={1}>
+                    {visibleFilterValues(key, propertyOptions).map((value) => (
+                      <Chip
+                        key={value}
+                        clickable
+                        label={value}
+                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
+                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
+                        onClick={() => toggleFilter(key, value)}
+                      />
+                    ))}
+                  </Stack>
+                </Box>
+              ))}
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setPropertyPickerOpen(false)}>Готово</Button>
+          </DialogActions>
+        </Dialog>
         <Drawer
           anchor="right"
           open={!!detail}

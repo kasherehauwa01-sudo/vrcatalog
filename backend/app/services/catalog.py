@@ -3,23 +3,20 @@ from math import ceil
 from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.catalog import ImportRun, Price, Product, ProductProperty, Stock, WarehouseSetting, ProductTypeSetting
+from app.models.catalog import Barcode, ImportRun, Price, Product, ProductProperty, Stock, WarehouseSetting, ProductTypeSetting
 
 FILTER_FIELDS = ["section", "manufacturer", "brand", "manager", "country", "material", "color"]
 EXCLUDED_PROPERTY_FILTERS = {
     "ID",
     "АкцияДоллар",
     "Артикул",
-    "Вкоробке",
     "ВесНетто",
-    "Единица измерения",
     "Код",
     "МинимальнаяНаценка",
     "Описание",
     "Сертификат",
     "Спецпредложение",
     "Тег",
-    "Теги Скидок",
     "Шарики",
     "Вид товара",
     "ВидТовара",
@@ -39,14 +36,16 @@ def _values(value):
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
-def catalog_product_query(db: Session, params):
+def catalog_product_query(db: Session, params, eager_load: bool = True):
     """Build the validated catalog query; all values remain SQLAlchemy bind parameters."""
-    q = db.query(Product).options(
-        selectinload(Product.prices),
-        selectinload(Product.stocks),
-        selectinload(Product.properties),
-        selectinload(Product.images),
-    )
+    q = db.query(Product)
+    if eager_load:
+        q = q.options(
+            selectinload(Product.prices),
+            selectinload(Product.stocks),
+            selectinload(Product.properties),
+            selectinload(Product.images),
+        )
     search = str(params.get("search") or "").strip()
     if search:
         pattern = f"%{search}%"
@@ -59,6 +58,9 @@ def catalog_product_query(db: Session, params):
         q = q.filter(Product.name.ilike(f"%{name}%"))
     if article := str(params.get("article") or "").strip():
         q = q.filter(Product.article.ilike(f"%{article}%"))
+    barcode_values = _values(params.get("barcode"))
+    if barcode_values:
+        q = q.filter(Product.barcodes.any(Barcode.value.in_(barcode_values)))
 
     for field in FILTER_FIELDS:
         values = _values(params.get(field))
@@ -182,28 +184,48 @@ def product_query(db: Session, params):
         if params.get("stock_max"): q = q.filter(Stock.quantity <= float(params["stock_max"]))
     return q.distinct()
 
-def list_filters(db: Session):
-    data = {field: [v[0] for v in db.query(getattr(Product, field)).filter(getattr(Product, field).isnot(None)).distinct().order_by(getattr(Product, field)).all()] for field in FILTER_FIELDS}
+def list_filters(db: Session, params=None):
+    base_ids = None
+    if params:
+        base_ids = catalog_product_query(db, params, eager_load=False).with_entities(Product.id).subquery()
+    def product_scope(query):
+        return query.filter(Product.id.in_(select(base_ids.c.id))) if base_ids is not None else query
+
+    data = {
+        field: [v[0] for v in product_scope(db.query(getattr(Product, field))).filter(getattr(Product, field).isnot(None)).distinct().order_by(getattr(Product, field)).all()]
+        for field in FILTER_FIELDS
+    }
     type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
-    type_codes = [code for code, in db.query(Product.product_type).filter(Product.product_type.isnot(None)).distinct().order_by(Product.product_type).all()]
+    type_codes = [code for code, in product_scope(db.query(Product.product_type)).filter(Product.product_type.isnot(None)).distinct().order_by(Product.product_type).all()]
     data["product_type"] = list(dict.fromkeys(type_names[code] for code in type_codes if code in type_names))
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
-    warehouse_codes = [code for code, in db.query(Stock.warehouse).filter(Stock.warehouse.isnot(None), Stock.quantity > 0).distinct().order_by(Stock.warehouse).all()]
+    warehouse_query = db.query(Stock.warehouse).join(Product, Product.id == Stock.product_id)
+    if base_ids is not None:
+        warehouse_query = warehouse_query.filter(Product.id.in_(select(base_ids.c.id)))
+    warehouse_codes = [code for code, in warehouse_query.filter(Stock.warehouse.isnot(None), Stock.quantity > 0).distinct().order_by(Stock.warehouse).all()]
     data["warehouse"] = [warehouse_names.get(code, code) for code in warehouse_codes]
     data["availability"] = ["В наличии", "Нет в наличии"]
+    property_query = db.query(ProductProperty.name, ProductProperty.value).join(Product)
+    if base_ids is not None:
+        property_query = property_query.filter(Product.id.in_(select(base_ids.c.id)))
     property_rows = (
-        db.query(ProductProperty.name, ProductProperty.value)
+        property_query
         .filter(ProductProperty.value.isnot(None))
         .distinct()
         .order_by(ProductProperty.name, ProductProperty.value)
         .all()
     )
     for property_name, value in property_rows:
-        if property_name.strip() in EXCLUDED_PROPERTY_FILTERS:
+        normalized_name = property_name.strip().casefold()
+        if property_name.strip() in EXCLUDED_PROPERTY_FILTERS or normalized_name in {"производитель", "страна", "бренд", "менеджер", "материал", "цвет"}:
             continue
         key = f"property:{property_name}"
         if len(data.setdefault(key, [])) < 100:
             data[key].append(value)
+    barcode_query = db.query(Barcode.value).join(Product)
+    if base_ids is not None:
+        barcode_query = barcode_query.filter(Product.id.in_(select(base_ids.c.id)))
+    data["barcode"] = [value for value, in barcode_query.distinct().order_by(Barcode.value).limit(100).all()]
     return data
 
 def meta(db: Session):

@@ -27,8 +27,9 @@ export const api = {
   async meta(): Promise<Meta> {
     return request<Meta>(`${API}/meta`);
   },
-  async filters(): Promise<Record<string, string[]>> {
-    return request<Record<string, string[]>>(`${API}/filters`);
+  async filters(params?: URLSearchParams): Promise<Record<string, string[]>> {
+    const query = params?.toString();
+    return request<Record<string, string[]>>(`${API}/filters${query ? `?${query}` : ""}`);
   },
   async products(params: URLSearchParams): Promise<Product[]> {
     return request<Product[]>(`${API}/products?${params}`);

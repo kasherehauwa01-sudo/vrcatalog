@@ -59,6 +59,7 @@ def search_products(
     id: Annotated[int | None, Query(ge=1)] = None,
     name: Annotated[str | None, Query(max_length=512)] = None,
     article: Annotated[str | None, Query(max_length=255)] = None,
+    barcode: Annotated[str | None, Query(max_length=2000)] = None,
     section: Annotated[str | None, Query(max_length=2000)] = None,
     manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
     brand: Annotated[str | None, Query(max_length=2000)] = None,
@@ -96,6 +97,7 @@ def search_products(
         "id": id,
         "name": name,
         "article": article,
+        "barcode": barcode,
         "section": section,
         "manufacturer": manufacturer,
         "brand": brand,
@@ -174,8 +176,32 @@ def run_auto_import_now():
     return {"started": started}
 
 @router.get("/filters")
-def filters(db: Session = Depends(get_db)):
-    return list_filters(db)
+def filters(
+    db: Session = Depends(get_db),
+    brand: str | None = None,
+    manager: str | None = None,
+    manufacturer: str | None = None,
+    country: str | None = None,
+    product_type: str | None = Query(None, alias="productType"),
+    warehouse: str | None = None,
+    barcode: str | None = None,
+    property: list[str] | None = Query(None),
+):
+    properties: dict[str, list[str]] = {}
+    for item in property or []:
+        property_name, separator, value = item.partition(":")
+        if separator and property_name.strip() and value.strip():
+            properties.setdefault(property_name.strip(), []).append(value.strip())
+    return list_filters(db, {
+        "brand": brand,
+        "manager": manager,
+        "manufacturer": manufacturer,
+        "country": country,
+        "product_type": product_type,
+        "warehouse": warehouse,
+        "barcode": barcode,
+        "properties": properties,
+    })
 
 @router.get("/meta", response_model=MetaOut)
 def get_meta(db: Session = Depends(get_db)):
