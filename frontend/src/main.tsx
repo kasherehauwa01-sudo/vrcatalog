@@ -32,6 +32,8 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TablePagination,
+  TableSortLabel,
   Tabs,
   TextField,
   ThemeProvider,
@@ -39,7 +41,10 @@ import {
   createTheme,
 } from "@mui/material";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import CloseIcon from "@mui/icons-material/Close";
 import DeleteIcon from "@mui/icons-material/Delete";
+import FilterListIcon from "@mui/icons-material/FilterList";
+import RefreshIcon from "@mui/icons-material/Refresh";
 import EditIcon from "@mui/icons-material/Edit";
 import SearchIcon from "@mui/icons-material/Search";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
@@ -102,6 +107,22 @@ const labels: Record<string, string> = {
   product_type: "Вид товара",
   warehouse: "Склады",
 };
+type FilterFields = {
+  name: string;
+  availability: string;
+  quantityFrom: string;
+  quantityTo: string;
+  priceFrom: string;
+  priceTo: string;
+};
+const filterFieldLabels: Record<keyof FilterFields, string> = {
+  name: "Название",
+  availability: "Наличие",
+  quantityFrom: "Количество от",
+  quantityTo: "Количество до",
+  priceFrom: "Цена от",
+  priceTo: "Цена до",
+};
 const updateScriptPath = "/var/www/html/vr/update_vrcatalog.sh";
 const clientsUrl = "https://kvasmix.ru/vr/clients/";
 const formatMoscowDate = (value: string) =>
@@ -110,69 +131,102 @@ const getLogStage = (log: ServiceLog) =>
   log.message.match(/Этап:\n([^\n]+)/)?.[1] ?? log.event;
 
 function App() {
-  const [search, setSearch] = useState("");
+  const initialParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const multiFromUrl = (p: URLSearchParams) => {
+    const result = Object.keys(labels).reduce<Record<string, string[]>>((values, key) => {
+      const value = p.get(key === "product_type" ? "productType" : key);
+      if (value) values[key] = value.split(",").filter(Boolean);
+      return values;
+    }, {});
+    p.getAll("property").forEach((item) => {
+      const [name, ...valueParts] = item.split(":");
+      if (name && valueParts.length) (result[`property:${name}`] ??= []).push(valueParts.join(":"));
+    });
+    return result;
+  };
+  const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ name: p.get("name") ?? "", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
+  const [search, setSearch] = useState(initialParams.get("search") ?? "");
   const [filters, setFilters] = useState<Record<string, string[]>>({});
-  const [active, setActive] = useState<Record<string, string[]>>({});
+  const filterLabels = useMemo(() => Object.keys(filters).reduce<Record<string, string>>((result, key) => {
+    if (labels[key]) result[key] = labels[key];
+    else if (key.startsWith("property:")) result[key] = key.slice("property:".length);
+    return result;
+  }, { ...labels }), [filters]);
+  const [active, setActive] = useState<Record<string, string[]>>(() => multiFromUrl(initialParams));
+  const [draftActive, setDraftActive] = useState<Record<string, string[]>>(() => multiFromUrl(initialParams));
+  const [filterFields, setFilterFields] = useState(() => fieldsFromUrl(initialParams));
+  const [draftFields, setDraftFields] = useState(() => fieldsFromUrl(initialParams));
   const [products, setProducts] = useState<Product[]>([]);
   const [meta, setMeta] = useState<Meta>({ product_count: 0 });
   const [loading, setLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [detail, setDetail] = useState<ProductDetail | null>(null);
-  const [tab, setTab] = useState<"catalog" | "settings" | "notifications">(
-    "catalog",
-  );
-  const [settingsTab, setSettingsTab] = useState<
-    "settings" | "mappings" | "logs"
-  >("settings");
+  const [tab, setTab] = useState<"catalog" | "settings" | "notifications">("catalog");
+  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "logs">("settings");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
-  const [filteredCount, setFilteredCount] = useState(0);
-  const [openFilterGroups, setOpenFilterGroups] = useState<
-    Record<string, boolean>
-  >({});
+  const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 20, totalItems: 0, totalPages: 0 });
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [openFilterGroups, setOpenFilterGroups] = useState<Record<string, boolean>>({});
+  const [filterValueSearch, setFilterValueSearch] = useState<Record<string, string>>({});
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [productTypes, setProductTypes] = useState<ProductType[]>([]);
   const [warehouseCodes, setWarehouseCodes] = useState<string[]>([]);
   const [warehouseDialogOpen, setWarehouseDialogOpen] = useState(false);
-  const [warehouseForm, setWarehouseForm] = useState<{
-    id?: number;
-    code: string;
-    name: string;
-  }>({ code: "", name: "" });
+  const [warehouseForm, setWarehouseForm] = useState<{ id?: number; code: string; name: string }>({ code: "", name: "" });
   const [productTypeDialogOpen, setProductTypeDialogOpen] = useState(false);
-  const [productTypeForm, setProductTypeForm] = useState<{
-    id?: number;
-    code: string;
-    name: string;
-  }>({ code: "", name: "" });
+  const [productTypeForm, setProductTypeForm] = useState<{ id?: number; code: string; name: string }>({ code: "", name: "" });
   const [xmlServerForm, setXmlServerForm] = useState<XmlServerSetting | null>(null);
   const [autoImportState, setAutoImportState] = useState<AutoImportState | null>(null);
   const [ftpTestMessage, setFtpTestMessage] = useState<string | null>(null);
   const [manualImportMessage, setManualImportMessage] = useState<string | null>(null);
-  const params = useMemo(() => {
-    const p = new URLSearchParams({ search });
-    Object.entries(active).forEach(
-      ([k, v]) => v.length && p.set(k, v.join(",")),
-    );
-    return p;
-  }, [search, active]);
-  const reload = () => {
-    api.products(params).then((items) => {
-      setProducts(items);
-      setSelectedIds([]);
-    });
-    api.productCount(params).then((result) => setFilteredCount(result.count));
-    api.meta().then(setMeta);
-    api.filters().then(setFilters);
-    api
-      .unreadNotifications()
-      .then((result) => setUnreadNotifications(result.count));
+  const [queryVersion, setQueryVersion] = useState(0);
+  const params = useMemo(() => new URLSearchParams(window.location.search), [queryVersion]);
+  const replaceCatalogParams = (next: URLSearchParams) => {
+    const query = next.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    setQueryVersion((value) => value + 1);
   };
-  useEffect(reload, [params]);
+  const updateParams = (changes: Record<string, string | number | null>, resetPage = true) => {
+    const next = new URLSearchParams(window.location.search);
+    Object.entries(changes).forEach(([key, value]) => {
+      const normalized = String(value ?? "").trim();
+      if (normalized && normalized !== "all") next.set(key, normalized); else next.delete(key);
+    });
+    if (resetPage) next.delete("page");
+    replaceCatalogParams(next);
+  };
+  const reload = async () => {
+    setLoading(true); setCatalogError(null);
+    try {
+      const result = await api.searchProducts(params);
+      setProducts(result.items); setPagination(result.pagination); setSelectedIds([]);
+    } catch (error) { setCatalogError(error instanceof Error ? error.message : "Не удалось получить товары"); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { reload(); }, [params.toString()]);
+  useEffect(() => { Promise.all([api.meta(), api.filters(), api.unreadNotifications()]).then(([m, f, u]) => { setMeta(m); setFilters(f); setUnreadNotifications(u.count); }); }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const normalized = search.trim();
+      const currentSearch = new URLSearchParams(window.location.search).get("search") ?? "";
+      if (normalized !== currentSearch) updateParams({ search: normalized });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  useEffect(() => {
+    const restore = () => {
+      const restored = new URLSearchParams(window.location.search);
+      const restoredActive = multiFromUrl(restored); const restoredFields = fieldsFromUrl(restored);
+      setSearch(restored.get("search") ?? ""); setActive(restoredActive); setDraftActive(restoredActive); setFilterFields(restoredFields); setDraftFields(restoredFields); setQueryVersion((value) => value + 1);
+    };
+    window.addEventListener("popstate", restore); return () => window.removeEventListener("popstate", restore);
+  }, []);
   useEffect(() => {
     if (tab === "settings" && settingsTab === "settings") {
       openGeneralSettings();
@@ -202,7 +256,7 @@ function App() {
       ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id],
     );
   const toggleFilter = (key: string, value: string) =>
-    setActive((current) => {
+    setDraftActive((current) => {
       const values = current[key] ?? [];
       return {
         ...current,
@@ -211,7 +265,57 @@ function App() {
           : [...values, value],
       };
     });
-  const resetFilters = () => setActive({});
+  const applyFilters = () => {
+    const next = new URLSearchParams(window.location.search);
+    next.delete("property");
+    Object.keys(filterLabels).forEach((key) => {
+      if (key.startsWith("property:")) {
+        (draftActive[key] ?? []).forEach((value) => next.append("property", `${key.slice(9)}:${value}`));
+        return;
+      }
+      const parameter = key === "product_type" ? "productType" : key;
+      const values = draftActive[key] ?? [];
+      if (values.length) next.set(parameter, values.join(",")); else next.delete(parameter);
+    });
+    Object.entries(draftFields).forEach(([key, value]) => {
+      if (value && value !== "all") next.set(key, value.trim()); else next.delete(key);
+    });
+    next.delete("page");
+    setActive(draftActive); setFilterFields(draftFields); replaceCatalogParams(next); setFiltersOpen(false);
+  };
+  const resetFilters = () => {
+    const emptyFields = fieldsFromUrl(new URLSearchParams());
+    setDraftActive({}); setActive({}); setDraftFields(emptyFields); setFilterFields(emptyFields);
+    const next = new URLSearchParams(window.location.search);
+    [...Object.keys(labels), "productType", "property", ...Object.keys(emptyFields)].forEach((key) => next.delete(key));
+    next.delete("page"); replaceCatalogParams(next);
+  };
+  const removeFilter = (key: string, value?: string) => {
+    if (key in filterLabels) {
+      const values = (active[key] ?? []).filter((item) => item !== value);
+      const updated = { ...active, [key]: values }; setActive(updated); setDraftActive(updated);
+      if (key.startsWith("property:")) {
+        const next = new URLSearchParams(window.location.search); next.delete("property");
+        Object.entries(updated).filter(([activeKey]) => activeKey.startsWith("property:")).forEach(([activeKey, activeValues]) => activeValues.forEach((item) => next.append("property", `${activeKey.slice(9)}:${item}`)));
+        next.delete("page"); replaceCatalogParams(next);
+      } else updateParams({ [key === "product_type" ? "productType" : key]: values.join(",") });
+    } else {
+      const updated = { ...filterFields, [key]: key === "availability" ? "all" : "" };
+      setFilterFields(updated); setDraftFields(updated); updateParams({ [key]: null });
+    }
+  };
+  const activeConditionCount = Object.values(active).reduce((sum, values) => sum + values.length, 0) + Object.entries(filterFields).filter(([, value]) => value && value !== "all").length;
+  const searchableFilterLabels = new Set(["Раздел", "Производитель", "Бренд", "Материал", "Коллекция"]);
+  const visibleFilterValues = (key: string) => {
+    const searchValue = (filterValueSearch[key] ?? "").trim().toLocaleLowerCase("ru-RU");
+    return (filters[key] ?? [])
+      .filter((value) => !searchValue || value.toLocaleLowerCase("ru-RU").includes(searchValue))
+      .slice(0, 100);
+  };
+  const changeSort = (field: string) => {
+    const currentSort = params.get("sort");
+    updateParams({ sort: field, order: currentSort === field && params.get("order") === "asc" ? "desc" : "asc" });
+  };
   const toggleFilterGroup = (key: string) =>
     setOpenFilterGroups((current) => ({
       ...current,
@@ -424,8 +528,19 @@ function App() {
                   placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") updateParams({ search: search.trim() });
+                  }}
+                  aria-label="Поиск товаров"
                   InputProps={{
                     startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
+                    endAdornment: search ? (
+                      <InputAdornment position="end">
+                        <IconButton aria-label="Очистить поиск" onClick={() => { setSearch(""); updateParams({ search: null }); }}>
+                          <CloseIcon />
+                        </IconButton>
+                      </InputAdornment>
+                    ) : undefined,
                   }}
                   sx={{
                     flex: 1,
@@ -435,6 +550,14 @@ function App() {
                     },
                   }}
                 />
+                <Button
+                  variant="outlined"
+                  startIcon={<FilterListIcon />}
+                  onClick={() => { setDraftActive(active); setDraftFields(filterFields); setFiltersOpen(true); }}
+                  sx={{ ml: { md: 1 }, mt: { xs: 1, md: 0 }, whiteSpace: "nowrap" }}
+                >
+                  Фильтр{activeConditionCount ? ` (${activeConditionCount})` : ""}
+                </Button>
                 <Button
                   variant="contained"
                   startIcon={<UploadFileIcon />}
@@ -891,243 +1014,148 @@ function App() {
           )}
 
           {tab === "catalog" && (
-            <Stack
-              direction={{ xs: "column", md: "row" }}
-              spacing={3}
-              alignItems="flex-start"
-            >
-              <Card
-                sx={{
-                  width: { xs: "100%", md: 304 },
-                  flexShrink: 0,
-                  position: { md: "sticky" },
-                  top: 96,
-                }}
-              >
-                <CardContent>
-                  <Stack
-                    direction="row"
-                    justifyContent="space-between"
-                    alignItems="center"
-                  >
-                    <Typography variant="h6">Фильтры</Typography>
-                    <Chip size="small" color="primary" label={filteredCount} />
+            <Stack spacing={2}>
+              {activeConditionCount > 0 && (
+                <Paper variant="outlined" sx={{ p: 1.5 }}>
+                  <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
+                    <Typography variant="body2" fontWeight={700}>Активные условия:</Typography>
+                    {Object.entries(active).flatMap(([key, values]) => values.map((value) => (
+                      <Chip key={`${key}-${value}`} label={`${filterLabels[key]}: ${value}`} onDelete={() => removeFilter(key, value)} />
+                    )))}
+                    {Object.entries(filterFields).filter(([, value]) => value && value !== "all").map(([key, value]) => (
+                      <Chip key={key} label={`${filterFieldLabels[key as keyof FilterFields]}: ${value === "in_stock" ? "В наличии" : value === "out_of_stock" ? "Нет в наличии" : value}`} onDelete={() => removeFilter(key)} />
+                    ))}
+                    <Button size="small" onClick={resetFilters}>Очистить все</Button>
                   </Stack>
-                  <Button
-                    sx={{ mt: 1 }}
-                    size="small"
-                    variant="outlined"
-                    onClick={() => setFiltersOpen((value) => !value)}
-                  >
-                    {filtersOpen ? "Свернуть фильтры" : "Развернуть фильтры"}
-                  </Button>
-                  {meta.errors && (
-                    <Typography sx={{ mt: 1 }} color="error">
-                      Ошибки импорта: {meta.errors}
-                    </Typography>
-                  )}
-                  <Divider sx={{ my: 2 }} />
-                  <List disablePadding>
-                    {Object.entries(labels).map(([key, label]) => {
-                      const groupOpen = !!openFilterGroups[key];
-                      return (
-                        <Box key={key} sx={{ mb: 1.5 }}>
-                          <Stack
-                            direction="row"
-                            justifyContent="space-between"
-                            alignItems="center"
-                            sx={{ mb: groupOpen ? 1 : 0 }}
-                          >
-                            <Typography
-                              variant="subtitle2"
-                              color="text.secondary"
-                            >
-                              {label}
-                            </Typography>
-                            <Button
-                              size="small"
-                              onClick={() => toggleFilterGroup(key)}
-                            >
-                              {groupOpen ? "Свернуть" : "Развернуть"}
-                            </Button>
-                          </Stack>
-                          <Collapse in={groupOpen} timeout="auto" unmountOnExit>
-                            <Stack direction="row" flexWrap="wrap" gap={1}>
-                              {(filters[key] ?? []).slice(0, 24).map((v) => (
-                                <Chip
-                                  clickable
-                                  color={
-                                    (active[key] ?? []).includes(v)
-                                      ? "primary"
-                                      : "default"
-                                  }
-                                  variant={
-                                    (active[key] ?? []).includes(v)
-                                      ? "filled"
-                                      : "outlined"
-                                  }
-                                  key={v}
-                                  label={v}
-                                  onClick={() => toggleFilter(key, v)}
-                                />
-                              ))}
-                            </Stack>
-                          </Collapse>
-                        </Box>
-                      );
-                    })}
-                  </List>
-                  <Divider sx={{ my: 2 }} />
-                  <Stack spacing={1}>
-                    <Button href={api.exportUrl("xlsx", params)}>
-                      Экспорт Excel
-                    </Button>
-                    <Button
-                      color="error"
-                      variant="outlined"
-                      disabled={!selectedIds.length}
-                      onClick={deleteSelected}
-                    >
-                      Удалить выбранные
-                    </Button>
-                    {meta.errors && (
-                      <Typography sx={{ mt: 1 }} color="error">
-                        Ошибки импорта: {meta.errors}
-                      </Typography>
-                    )}
-                    <Divider sx={{ my: 2 }} />
-                    <List disablePadding>
-                      {Object.entries(labels).map(([key, label]) => (
-                        <Box key={key} sx={{ mb: 2 }}>
-                          <Typography
-                            variant="subtitle2"
-                            color="text.secondary"
-                            sx={{ mb: 1 }}
-                          >
-                            {label}
-                          </Typography>
-                          <Stack direction="row" flexWrap="wrap" gap={1}>
-                            {(filters[key] ?? []).slice(0, 24).map((v) => (
-                              <Chip
-                                clickable
-                                color={
-                                  (active[key] ?? []).includes(v)
-                                    ? "primary"
-                                    : "default"
-                                }
-                                variant={
-                                  (active[key] ?? []).includes(v)
-                                    ? "filled"
-                                    : "outlined"
-                                }
-                                key={v}
-                                label={v}
-                                onClick={() => toggleFilter(key, v)}
-                              />
-                            ))}
-                          </Stack>
-                        </Box>
-                      ))}
-                    </List>
-                    <Divider sx={{ my: 2 }} />
-                    <Stack spacing={1}>
-                      <Button href={api.exportUrl("xlsx", params)}>
-                        Экспорт Excel
-                      </Button>
-                      <Button
-                        color="error"
-                        variant="outlined"
-                        disabled={!selectedIds.length}
-                        onClick={deleteSelected}
-                      >
-                        Удалить выбранные
-                      </Button>
-                    </Stack>
-                  </Collapse>
-                </CardContent>
-              </Card>
-
-              <TableContainer component={Card} sx={{ flex: 1 }}>
-                <Table>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell padding="checkbox">
-                        <Checkbox
-                          checked={allSelected}
-                          indeterminate={selectedIds.length > 0 && !allSelected}
-                          onChange={toggleAll}
-                        />
-                      </TableCell>
-                      <TableCell>Фото</TableCell>
-                      <TableCell>Наименование</TableCell>
-                      <TableCell>Артикул</TableCell>
-                      <TableCell>Код</TableCell>
-                      <TableCell align="right">Цена</TableCell>
-                      <TableCell align="right">Количество Авиаторов</TableCell>
-                    </TableRow>
-                  </TableHead>
+                </Paper>
+              )}
+              {catalogError && (
+                <Paper variant="outlined" sx={{ p: 2 }}>
+                  <Typography color="error">{catalogError}</Typography>
+                  <Button startIcon={<RefreshIcon />} onClick={reload}>Повторить</Button>
+                </Paper>
+              )}
+              <TableContainer component={Card} sx={{ position: "relative" }}>
+                {loading && <LinearProgress />}
+                <Table aria-label="Список товаров">
+                  <TableHead><TableRow>
+                    <TableCell padding="checkbox"><Checkbox aria-label="Выбрать все товары на странице" checked={allSelected} indeterminate={selectedIds.length > 0 && !allSelected} onChange={toggleAll} /></TableCell>
+                    <TableCell>Фото</TableCell>
+                    {[ ["name", "Наименование"], ["article", "Артикул"], ["code", "Код"] ].map(([field, label]) => (
+                      <TableCell key={field}><TableSortLabel active={(params.get("sort") ?? "id") === field} direction={params.get("sort") === field && params.get("order") === "desc" ? "desc" : "asc"} onClick={() => changeSort(field)}>{label}</TableSortLabel></TableCell>
+                    ))}
+                    <TableCell align="right"><TableSortLabel active={params.get("sort") === "price"} direction={params.get("sort") === "price" && params.get("order") === "desc" ? "desc" : "asc"} onClick={() => changeSort("price")}>Цена</TableSortLabel></TableCell>
+                    <TableCell align="right"><TableSortLabel active={params.get("sort") === "quantity"} direction={params.get("sort") === "quantity" && params.get("order") === "desc" ? "desc" : "asc"} onClick={() => changeSort("quantity")}>Количество Авиаторов</TableSortLabel></TableCell>
+                  </TableRow></TableHead>
                   <TableBody>
+                    {!loading && products.length === 0 && <TableRow><TableCell colSpan={7} align="center" sx={{ py: 8 }}><Typography variant="h6">{activeConditionCount || search.trim() ? "По заданным условиям товары не найдены" : "Каталог пока пуст"}</Typography><Typography color="text.secondary">{activeConditionCount || search.trim() ? "Попробуйте изменить или сбросить фильтры" : "Загрузите XML-файл, чтобы добавить товары"}</Typography></TableCell></TableRow>}
                     {products.map((p) => (
-                      <TableRow
-                        hover
-                        key={p.id}
-                        selected={selectedIds.includes(p.id)}
-                        onClick={() => api.product(p.id).then(setDetail)}
-                        sx={{ cursor: "pointer" }}
-                      >
-                        <TableCell padding="checkbox">
-                          <Checkbox
-                            checked={selectedIds.includes(p.id)}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={() => toggleSelected(p.id)}
-                          />
-                        </TableCell>
-                        <TableCell>
-                          {p.images[0] ? (
-                            <Box
-                              component="img"
-                              src={p.images[0].url}
-                              alt={p.name}
-                              sx={{
-                                width: 56,
-                                height: 56,
-                                objectFit: "contain",
-                                borderRadius: 2,
-                                bgcolor: "#e0f2fe",
-                              }}
-                            />
-                          ) : (
-                            "—"
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Typography>{p.name}</Typography>
-                        </TableCell>
-                        <TableCell>{p.article ?? "—"}</TableCell>
-                        <TableCell>{p.code}</TableCell>
-                        <TableCell align="right" sx={{ minWidth: 180 }}>
-                          {visiblePrices(p).length
-                            ? visiblePrices(p).map((price) => (
-                                <Typography
-                                  key={price.price_type}
-                                  variant="body2"
-                                  sx={{ whiteSpace: "nowrap" }}
-                                >
-                                  {price.price_type}: {price.value} руб.
-                                </Typography>
-                              ))
-                            : "—"}
-                        </TableCell>
+                      <TableRow hover key={p.id} selected={selectedIds.includes(p.id)} onClick={() => api.product(p.id).then(setDetail)} sx={{ cursor: "pointer" }}>
+                        <TableCell padding="checkbox"><Checkbox aria-label={`Выбрать ${p.name}`} checked={selectedIds.includes(p.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelected(p.id)} /></TableCell>
+                        <TableCell>{p.images[0] ? <Box component="img" src={p.images[0].url} alt={p.name} sx={{ width: 56, height: 56, objectFit: "contain", borderRadius: 2, bgcolor: "#e0f2fe" }} /> : "—"}</TableCell>
+                        <TableCell><Typography>{p.name}</Typography></TableCell><TableCell>{p.article ?? "—"}</TableCell><TableCell>{p.code}</TableCell>
+                        <TableCell align="right" sx={{ minWidth: 180 }}>{visiblePrices(p).length ? visiblePrices(p).map((price) => <Typography key={price.price_type} variant="body2" sx={{ whiteSpace: "nowrap" }}>{price.price_type}: {price.value} руб.</Typography>) : "—"}</TableCell>
                         <TableCell align="right">{p.quantity}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
+                <TablePagination component="div" count={pagination.totalItems} page={Math.max(0, pagination.page - 1)} onPageChange={(_, page) => updateParams({ page: page + 1 }, false)} rowsPerPage={pagination.pageSize} onRowsPerPageChange={(event) => updateParams({ pageSize: event.target.value })} rowsPerPageOptions={[20, 50, 100]} labelRowsPerPage="Строк на странице" labelDisplayedRows={({ from, to, count }) => `${from}–${to} из ${count}`} />
               </TableContainer>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                <Button href={api.exportUrl("xlsx", params)}>Экспорт Excel</Button>
+                <Button color="error" variant="outlined" disabled={!selectedIds.length} onClick={deleteSelected}>Удалить выбранные</Button>
+              </Stack>
             </Stack>
           )}
         </Container>
 
+        <Drawer
+          anchor="left"
+          open={filtersOpen}
+          onClose={() => setFiltersOpen(false)}
+          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
+        >
+          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="h6">Фильтр товаров</Typography>
+              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
+                <CloseIcon />
+              </IconButton>
+            </Stack>
+            <TextField
+              label="Название"
+              value={draftFields.name}
+              onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
+            />
+            <TextField
+              select
+              label="Наличие"
+              value={draftFields.availability}
+              onChange={(event) => setDraftFields({ ...draftFields, availability: event.target.value })}
+            >
+              <MenuItem value="all">Все</MenuItem>
+              <MenuItem value="in_stock">В наличии</MenuItem>
+              <MenuItem value="out_of_stock">Нет в наличии</MenuItem>
+            </TextField>
+            <Stack direction="row" spacing={1}>
+              <TextField fullWidth label="Количество от" type="number" value={draftFields.quantityFrom} onChange={(event) => setDraftFields({ ...draftFields, quantityFrom: event.target.value })} />
+              <TextField fullWidth label="Количество до" type="number" value={draftFields.quantityTo} onChange={(event) => setDraftFields({ ...draftFields, quantityTo: event.target.value })} />
+            </Stack>
+            <Stack direction="row" spacing={1}>
+              <TextField fullWidth label="Цена от" type="number" value={draftFields.priceFrom} onChange={(event) => setDraftFields({ ...draftFields, priceFrom: event.target.value })} inputProps={{ min: 0 }} />
+              <TextField fullWidth label="Цена до" type="number" value={draftFields.priceTo} onChange={(event) => setDraftFields({ ...draftFields, priceTo: event.target.value })} inputProps={{ min: 0 }} />
+            </Stack>
+            <Divider />
+            {Object.entries(filterLabels).map(([key, label]) => (
+              <Box key={key}>
+                <Button
+                  fullWidth
+                  onClick={() => toggleFilterGroup(key)}
+                  sx={{ justifyContent: "space-between" }}
+                >
+                  {label}
+                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
+                </Button>
+                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
+                  {searchableFilterLabels.has(label) && (
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label={`Поиск: ${label}`}
+                      value={filterValueSearch[key] ?? ""}
+                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
+                      sx={{ mt: 1 }}
+                    />
+                  )}
+                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
+                    {visibleFilterValues(key).map((value) => (
+                      <Chip
+                        key={value}
+                        clickable
+                        label={value}
+                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
+                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
+                        onClick={() => toggleFilter(key, value)}
+                      />
+                    ))}
+                    {visibleFilterValues(key).length === 0 && (
+                      <Typography variant="body2" color="text.secondary">
+                        Значения не найдены
+                      </Typography>
+                    )}
+                  </Stack>
+                </Collapse>
+              </Box>
+            ))}
+            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
+            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
+              <Button variant="contained" onClick={applyFilters}>Применить</Button>
+              <Button onClick={resetFilters}>Сбросить</Button>
+              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
+            </Stack>
+          </Stack>
+        </Drawer>
         <Drawer
           anchor="right"
           open={!!detail}
