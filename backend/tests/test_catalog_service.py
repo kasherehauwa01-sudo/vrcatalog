@@ -4,8 +4,16 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
-from app.models.catalog import Barcode, Price, Product
-from app.services.catalog import catalog_product_query, paginated_products
+from app.models.catalog import (
+    Barcode,
+    Price,
+    Product,
+    ProductProperty,
+    ProductTypeSetting,
+    Stock,
+    WarehouseSetting,
+)
+from app.services.catalog import catalog_product_query, list_filters, paginated_products
 
 
 class CatalogProductQueryTests(unittest.TestCase):
@@ -16,9 +24,10 @@ class CatalogProductQueryTests(unittest.TestCase):
 
     def setUp(self):
         self.db = Session(self.engine)
-        self.db.query(Product).delete()
+        for model in (Barcode, Price, Stock, ProductProperty, Product, ProductTypeSetting, WarehouseSetting):
+            self.db.query(model).delete()
         self.products = [
-            Product(code="CHAIR-1", name="Стул Альфа", article="SKU-001", section="Мебель", brand="Alpha", quantity=5, search_text="стул альфа chair-1 sku-001 alpha"),
+            Product(code="CHAIR-1", name="Стул Альфа", article="SKU-001", section="Мебель", brand="Alpha", product_type="TYPE-1", quantity=5, search_text="стул альфа chair-1 sku-001 alpha"),
             Product(code="PAN-2", name="Сковорода Beta", article="SKU-002", section="Посуда", brand="Beta", quantity=0, search_text="сковорода beta pan-2 sku-002 460000000002"),
             Product(code="TABLE-3", name="Стол большой", article="ART-003", section="Мебель", brand="Alpha", quantity=12, search_text="стол большой table-3 art-003 alpha"),
         ]
@@ -26,6 +35,21 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.products[1].prices = [Price(price_type="Розничная", price_value=3000)]
         self.products[2].prices = [Price(price_type="Розничная", price_value=5000)]
         self.products[1].barcodes = [Barcode(value="460000000002")]
+        self.products[0].stocks = [Stock(warehouse="WH1", quantity=0)]
+        self.products[1].stocks = [Stock(warehouse="WH1", quantity=3)]
+        self.products[2].stocks = [Stock(warehouse="WH2", quantity=4)]
+        self.products[0].properties = [
+            ProductProperty(name="Коллекция", value="Лето"),
+            ProductProperty(name="Артикул", value="Скрытое значение"),
+            ProductProperty(name="Вид товара", value="TYPE-1"),
+        ]
+        self.db.add_all(
+            [
+                ProductTypeSetting(code="TYPE-1", name="Стулья"),
+                WarehouseSetting(code="WH1", name="Основной"),
+                WarehouseSetting(code="WH2", name="Резервный"),
+            ]
+        )
         self.db.add_all(self.products)
         self.db.commit()
 
@@ -51,6 +75,17 @@ class CatalogProductQueryTests(unittest.TestCase):
 
     def test_multiple_values_are_or_within_one_filter(self):
         self.assertEqual(len(self.query(section="Мебель,Посуда", brand="Alpha")), 2)
+
+    def test_warehouse_filter_requires_positive_stock_in_selected_warehouse(self):
+        self.assertEqual([p.code for p in self.query(warehouse="Основной")], ["PAN-2"])
+
+    def test_filter_metadata_hides_excluded_properties_and_uses_mapping_names(self):
+        filters = list_filters(self.db)
+        self.assertNotIn("property:Артикул", filters)
+        self.assertNotIn("property:Вид товара", filters)
+        self.assertEqual(filters["property:Коллекция"], ["Лето"])
+        self.assertEqual(filters["product_type"], ["Стулья"])
+        self.assertEqual(filters["warehouse"], ["Основной", "Резервный"])
 
     def test_sorting_and_server_pagination(self):
         params = {"page": 1, "page_size": 20, "sort": "price", "order": "desc"}

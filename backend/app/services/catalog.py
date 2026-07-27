@@ -6,6 +6,24 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.catalog import ImportRun, Price, Product, ProductProperty, Stock, WarehouseSetting, ProductTypeSetting
 
 FILTER_FIELDS = ["section", "manufacturer", "brand", "manager", "country", "material", "color"]
+EXCLUDED_PROPERTY_FILTERS = {
+    "ID",
+    "АкцияДоллар",
+    "Артикул",
+    "Вкоробке",
+    "ВесНетто",
+    "Единица измерения",
+    "Код",
+    "МинимальнаяНаценка",
+    "Описание",
+    "Сертификат",
+    "Спецпредложение",
+    "Тег",
+    "Теги Скидок",
+    "Шарики",
+    "Вид товара",
+    "ВидТовара",
+}
 SORT_FIELDS = {
     "id": Product.id,
     "name": Product.name,
@@ -84,7 +102,14 @@ def catalog_product_query(db: Session, params):
             .filter(WarehouseSetting.name.in_(warehouse_values))
             .all()
         ]
-        q = q.filter(Product.stocks.any(Stock.warehouse.in_([*warehouse_values, *configured_codes])))
+        q = q.filter(
+            Product.stocks.any(
+                and_(
+                    Stock.warehouse.in_([*warehouse_values, *configured_codes]),
+                    Stock.quantity > 0,
+                )
+            )
+        )
 
     property_filters = params.get("properties") or {}
     for property_name, values in property_filters.items():
@@ -141,7 +166,10 @@ def product_query(db: Session, params):
         warehouse_values = [item.strip() for item in str(warehouse).split(",") if item.strip()]
         if warehouse_values:
             configured_codes = [code for code, in db.query(WarehouseSetting.code).filter(WarehouseSetting.name.in_(warehouse_values)).all()]
-            q = q.join(Stock).filter(Stock.warehouse.in_(list(dict.fromkeys([*warehouse_values, *configured_codes]))))
+            q = q.join(Stock).filter(
+                Stock.warehouse.in_(list(dict.fromkeys([*warehouse_values, *configured_codes]))),
+                Stock.quantity > 0,
+            )
     if params.get("in_stock") == "true":
         q = q.filter(Product.quantity > 0)
     if params.get("price_min") or params.get("price_max"):
@@ -158,9 +186,9 @@ def list_filters(db: Session):
     data = {field: [v[0] for v in db.query(getattr(Product, field)).filter(getattr(Product, field).isnot(None)).distinct().order_by(getattr(Product, field)).all()] for field in FILTER_FIELDS}
     type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
     type_codes = [code for code, in db.query(Product.product_type).filter(Product.product_type.isnot(None)).distinct().order_by(Product.product_type).all()]
-    data["product_type"] = [type_names.get(code, code) for code in type_codes]
+    data["product_type"] = list(dict.fromkeys(type_names[code] for code in type_codes if code in type_names))
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
-    warehouse_codes = [code for code, in db.query(Stock.warehouse).filter(Stock.warehouse.isnot(None)).distinct().order_by(Stock.warehouse).all()]
+    warehouse_codes = [code for code, in db.query(Stock.warehouse).filter(Stock.warehouse.isnot(None), Stock.quantity > 0).distinct().order_by(Stock.warehouse).all()]
     data["warehouse"] = [warehouse_names.get(code, code) for code in warehouse_codes]
     data["availability"] = ["В наличии", "Нет в наличии"]
     property_rows = (
@@ -171,6 +199,8 @@ def list_filters(db: Session):
         .all()
     )
     for property_name, value in property_rows:
+        if property_name.strip() in EXCLUDED_PROPERTY_FILTERS:
+            continue
         key = f"property:{property_name}"
         if len(data.setdefault(key, [])) < 100:
             data[key].append(value)
