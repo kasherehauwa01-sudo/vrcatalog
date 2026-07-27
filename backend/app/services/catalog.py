@@ -6,6 +6,10 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.catalog import Barcode, ImportRun, Price, Product, ProductProperty, Stock, WarehouseSetting, ProductTypeSetting
 
 FILTER_FIELDS = ["section", "manufacturer", "brand", "manager", "country", "material", "color"]
+WAREHOUSE_ORDER = [
+    "Авиаторов", "Козловская", "Цитрус", "Привоз", "Бахтурова", "Ахтубинск",
+    "СтройГрад", "Европа", "Парк Хаус", "ЦУМ", "Простор", "Универ",
+]
 EXCLUDED_PROPERTY_FILTERS = {
     "ID",
     "АкцияДоллар",
@@ -84,6 +88,8 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
         q = q.filter(Product.quantity > 0)
     elif availability == "out_of_stock":
         q = q.filter(Product.quantity <= 0)
+    if params.get("in_stock_only"):
+        q = q.filter(Product.stocks.any(Stock.quantity > 0))
 
     if params.get("quantity_from") is not None:
         q = q.filter(Product.quantity >= params["quantity_from"])
@@ -205,7 +211,12 @@ def list_filters(db: Session, params=None):
     if base_ids is not None:
         warehouse_query = warehouse_query.filter(Product.id.in_(select(base_ids.c.id)))
     warehouse_codes = [code for code, in warehouse_query.filter(Stock.warehouse.isnot(None), Stock.quantity > 0).distinct().order_by(Stock.warehouse).all()]
-    data["warehouse"] = [warehouse_names.get(code, code) for code in warehouse_codes]
+    warehouse_values = [warehouse_names.get(code, code) for code in warehouse_codes]
+    warehouse_rank = {name: index for index, name in enumerate(WAREHOUSE_ORDER)}
+    data["warehouse"] = sorted(
+        warehouse_values,
+        key=lambda name: (warehouse_rank.get(name, len(WAREHOUSE_ORDER)), name.casefold()),
+    )
     data["availability"] = ["В наличии", "Нет в наличии"]
     property_query = db.query(ProductProperty.name, ProductProperty.value).join(Product)
     if base_ids is not None:

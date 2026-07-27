@@ -71,6 +71,7 @@ def search_products(
     product_type: Annotated[str | None, Query(alias="productType", max_length=2000)] = None,
     warehouse: Annotated[str | None, Query(max_length=2000)] = None,
     availability: Literal["all", "in_stock", "out_of_stock"] = "all",
+    in_stock_only: Annotated[bool, Query(alias="inStockOnly")] = True,
     quantity_from: Annotated[float | None, Query(alias="quantityFrom")] = None,
     quantity_to: Annotated[float | None, Query(alias="quantityTo")] = None,
     price_from: Annotated[float | None, Query(alias="priceFrom", ge=0)] = None,
@@ -110,6 +111,7 @@ def search_products(
         "product_type": product_type,
         "warehouse": warehouse,
         "availability": availability,
+        "in_stock_only": in_stock_only,
         "quantity_from": quantity_from,
         "quantity_to": quantity_to,
         "price_from": price_from,
@@ -187,6 +189,7 @@ def filters(
     product_type: str | None = Query(None, alias="productType"),
     warehouse: str | None = None,
     barcode: str | None = None,
+    in_stock_only: bool = Query(True, alias="inStockOnly"),
     property: list[str] | None = Query(None),
 ):
     properties: dict[str, list[str]] = {}
@@ -202,6 +205,7 @@ def filters(
         "product_type": product_type,
         "warehouse": warehouse,
         "barcode": barcode,
+        "in_stock_only": in_stock_only,
         "properties": properties,
     })
 

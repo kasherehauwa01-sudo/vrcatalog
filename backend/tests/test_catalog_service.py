@@ -39,7 +39,10 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.products[1].barcodes = [Barcode(value="460000000002")]
         self.products[0].stocks = [Stock(warehouse="WH1", quantity=0)]
         self.products[1].stocks = [Stock(warehouse="WH1", quantity=3)]
-        self.products[2].stocks = [Stock(warehouse="WH2", quantity=4)]
+        self.products[2].stocks = [
+            Stock(warehouse="WH2", quantity=4),
+            Stock(warehouse="WH3", quantity=2),
+        ]
         self.products[0].properties = [
             ProductProperty(name="Коллекция", value="Лето"),
             ProductProperty(name="Артикул", value="Скрытое значение"),
@@ -52,6 +55,7 @@ class CatalogProductQueryTests(unittest.TestCase):
                 ProductTypeSetting(code="TYPE-1", name="Стулья"),
                 WarehouseSetting(code="WH1", name="Основной"),
                 WarehouseSetting(code="WH2", name="Резервный"),
+                WarehouseSetting(code="WH3", name="Авиаторов"),
             ]
         )
         self.db.add_all(self.products)
@@ -84,6 +88,12 @@ class CatalogProductQueryTests(unittest.TestCase):
     def test_warehouse_filter_requires_positive_stock_in_selected_warehouse(self):
         self.assertEqual([p.code for p in self.query(warehouse="Основной")], ["PAN-2"])
 
+    def test_default_stock_scope_uses_positive_warehouse_balances(self):
+        self.assertEqual(
+            [p.code for p in self.query(in_stock_only=True)],
+            ["PAN-2", "TABLE-3"],
+        )
+
     def test_filter_metadata_hides_excluded_properties_and_uses_mapping_names(self):
         filters = list_filters(self.db)
         self.assertNotIn("property:Артикул", filters)
@@ -91,7 +101,7 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertNotIn("property:Производитель", filters)
         self.assertEqual(filters["property:Коллекция"], ["Лето"])
         self.assertEqual(filters["product_type"], ["Стулья"])
-        self.assertEqual(filters["warehouse"], ["Основной", "Резервный"])
+        self.assertEqual(filters["warehouse"], ["Авиаторов", "Основной", "Резервный"])
         self.assertEqual(filters["barcode"], ["460000000002"])
 
     def test_property_options_are_limited_by_main_filters(self):
