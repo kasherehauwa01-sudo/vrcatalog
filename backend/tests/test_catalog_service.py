@@ -93,6 +93,10 @@ class CatalogProductQueryTests(unittest.TestCase):
             [p.code for p in self.query(in_stock_only=True)],
             ["PAN-2", "TABLE-3"],
         )
+        self.assertEqual(
+            [p.code for p in self.query(in_stock_only=False)],
+            ["CHAIR-1", "PAN-2", "TABLE-3"],
+        )
 
     def test_filter_metadata_hides_excluded_properties_and_uses_mapping_names(self):
         filters = list_filters(self.db)
