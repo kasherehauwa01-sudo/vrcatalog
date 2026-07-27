@@ -43,7 +43,6 @@ import {
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import CloseIcon from "@mui/icons-material/Close";
 import DeleteIcon from "@mui/icons-material/Delete";
-import FilterListIcon from "@mui/icons-material/FilterList";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import EditIcon from "@mui/icons-material/Edit";
 import SearchIcon from "@mui/icons-material/Search";
@@ -108,7 +107,7 @@ const labels: Record<string, string> = {
   warehouse: "Склады",
 };
 const mainFilterOrder = [
-  "Бренд", "Вид товара", "Склады", "Коллекция", "Менеджер",
+  "Раздел", "Бренд", "Вид товара", "Склады", "Коллекция", "Менеджер",
   "Производитель", "Страна", "Комната", "Праздник", "Тематика",
   "HoReCa", "Выгружать на сайт", "Штрихкод",
 ];
@@ -123,18 +122,20 @@ const propertyFilterOrder = [
   "Форма", "Цифра",
 ];
 type FilterFields = {
+  code: string;
+  article: string;
   name: string;
   availability: string;
   quantityFrom: string;
   quantityTo: string;
   priceFrom: string;
   priceTo: string;
-  // Keep these optional keys during rolling deployments: older JSX revisions
-  // may still reference them, but the current filter drawer does not render them.
+  // Compatibility with an older deployed JSX revision; not rendered now.
   id?: string;
-  article?: string;
 };
 const filterFieldLabels: Partial<Record<keyof FilterFields, string>> = {
+  code: "Код",
+  article: "Артикул",
   name: "Название",
   availability: "Наличие",
   quantityFrom: "Количество от",
@@ -163,7 +164,7 @@ function App() {
     });
     return result;
   };
-  const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ name: p.get("name") ?? "", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
+  const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ code: p.get("code") ?? "", article: p.get("article") ?? "", name: p.get("name") ?? "", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
   const [search, setSearch] = useState(initialParams.get("search") ?? "");
   const [filters, setFilters] = useState<Record<string, string[]>>({});
   const [propertyOptions, setPropertyOptions] = useState<Record<string, string[]>>({});
@@ -531,6 +532,11 @@ function App() {
                   placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
+                  onClick={() => {
+                    setDraftActive(active);
+                    setDraftFields(filterFields);
+                    setFiltersOpen(true);
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") updateParams({ search: search.trim() });
                   }}
@@ -553,14 +559,6 @@ function App() {
                     },
                   }}
                 />
-                <Button
-                  variant="outlined"
-                  startIcon={<FilterListIcon />}
-                  onClick={() => { setDraftActive(active); setDraftFields(filterFields); setFiltersOpen(true); }}
-                  sx={{ ml: { md: 1 }, mt: { xs: 1, md: 0 }, whiteSpace: "nowrap" }}
-                >
-                  Фильтр{activeConditionCount ? ` (${activeConditionCount})` : ""}
-                </Button>
               </Stack>
             </Paper>
           )}
@@ -1457,6 +1455,123 @@ function App() {
                 <CloseIcon />
               </IconButton>
             </Stack>
+            {mainFilterEntries.map(({ key, label }) => (
+              <Box key={key}>
+                <Button
+                  fullWidth
+                  onClick={() => toggleFilterGroup(key)}
+                  sx={{ justifyContent: "space-between" }}
+                >
+                  {label}
+                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
+                </Button>
+                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
+                  {searchableFilterLabels.has(label) && (
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label={`Поиск: ${label}`}
+                      value={filterValueSearch[key] ?? ""}
+                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
+                      sx={{ mt: 1 }}
+                    />
+                  )}
+                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
+                    {visibleFilterValues(key).map((value) => (
+                      <Chip
+                        key={value}
+                        clickable
+                        label={value}
+                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
+                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
+                        onClick={() => toggleFilter(key, value)}
+                      />
+                    ))}
+                    {visibleFilterValues(key).length === 0 && (
+                      <Typography variant="body2" color="text.secondary">
+                        Значения не найдены
+                      </Typography>
+                    )}
+                  </Stack>
+                </Collapse>
+              </Box>
+            ))}
+            <Button variant="outlined" onClick={openPropertyPicker}>
+              Подобрать по свойствам
+            </Button>
+            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
+            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
+              <Button variant="contained" onClick={applyFilters}>Применить</Button>
+              <Button onClick={resetFilters}>Сбросить</Button>
+              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
+            </Stack>
+          </Stack>
+        </Drawer>
+        <Dialog
+          open={propertyPickerOpen}
+          onClose={() => setPropertyPickerOpen(false)}
+          fullWidth
+          maxWidth="md"
+        >
+          <DialogTitle>Подобрать по свойствам</DialogTitle>
+          <DialogContent>
+            <Stack spacing={2} sx={{ mt: 1 }}>
+              {propertyFilterEntries.length === 0 && (
+                <Typography color="text.secondary">
+                  Для товаров, выбранных основными фильтрами, дополнительные свойства не найдены.
+                </Typography>
+              )}
+              {propertyFilterEntries.map(({ key, label }) => (
+                <Box key={key}>
+                  <Typography fontWeight={800} sx={{ mb: 1 }}>{label}</Typography>
+                  <Stack direction="row" flexWrap="wrap" gap={1}>
+                    {visibleFilterValues(key, propertyOptions).map((value) => (
+                      <Chip
+                        key={value}
+                        clickable
+                        label={value}
+                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
+                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
+                        onClick={() => toggleFilter(key, value)}
+                      />
+                    ))}
+                  </Stack>
+                </Box>
+              ))}
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setPropertyPickerOpen(false)}>Готово</Button>
+          </DialogActions>
+        </Dialog>
+        <Drawer
+          anchor="left"
+          open={filtersOpen}
+          onClose={() => setFiltersOpen(false)}
+          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
+        >
+          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="h6">Фильтр товаров</Typography>
+              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
+                <CloseIcon />
+              </IconButton>
+            </Stack>
+            <TextField
+              label="Поиск по коду"
+              value={draftFields.code}
+              onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
+            />
+            <TextField
+              label="Поиск по артикулу"
+              value={draftFields.article}
+              onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
+            />
+            <TextField
+              label="Поиск по наименованию"
+              value={draftFields.name}
+              onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
+            />
             {mainFilterEntries.map(({ key, label }) => (
               <Box key={key}>
                 <Button

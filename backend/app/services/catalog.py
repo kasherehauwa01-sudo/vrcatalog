@@ -56,6 +56,8 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
         q = q.filter(Product.id == params["id"])
     if name := str(params.get("name") or "").strip():
         q = q.filter(Product.name.ilike(f"%{name}%"))
+    if code := str(params.get("code") or "").strip():
+        q = q.filter(Product.code.ilike(f"%{code}%"))
     if article := str(params.get("article") or "").strip():
         q = q.filter(Product.article.ilike(f"%{article}%"))
     barcode_values = _values(params.get("barcode"))

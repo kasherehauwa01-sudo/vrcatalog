@@ -67,6 +67,7 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual([p.code for p in self.query(search="  СТУЛ  ")], ["CHAIR-1"])
         self.assertEqual([p.code for p in self.query(search="sku-002")], ["PAN-2"])
         self.assertEqual([p.code for p in self.query(search="000002")], ["PAN-2"])
+        self.assertEqual([p.code for p in self.query(code="chair")], ["CHAIR-1"])
 
     def test_category_availability_and_price_filters_use_and_logic(self):
         result = self.query(section="Мебель", availability="in_stock", price_from=1000, price_to=2000)
