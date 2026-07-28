@@ -2102,6 +2102,25 @@ function App() {
                       </Typography>
                     ))}
                 </Paper>
+                <Paper
+                  variant="outlined"
+                  sx={{ p: 2, bgcolor: (currentTheme) => alpha(currentTheme.palette.primary.main, 0.04) }}
+                >
+                  <Stack spacing={1}>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                        Дата загрузки:
+                      </Typography>
+                      <Typography>{detail.created_at}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                        Дата обновления:
+                      </Typography>
+                      <Typography>{detail.updated_at}</Typography>
+                    </Box>
+                  </Stack>
+                </Paper>
                 {detail.properties.some((p) =>
                   p.name === "Вид товара" || p.name === "ВидТовара"
                     ? Boolean(detail.product_type_name ?? p.value)

@@ -1,5 +1,8 @@
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_serializer
+
+
+PRODUCT_DATE_FORMAT = "%d.%m.%Y %H:%M"
 
 class PriceOut(BaseModel):
     price_type: str
@@ -49,6 +52,11 @@ class ProductDetailOut(ProductListOut):
     created_at: datetime
     updated_at: datetime
     prices: list[PriceOut]; stocks: list[StockOut]; properties: list[PropertyOut]; analogs: list[AnalogOut]; barcodes: list[BarcodeOut]
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_product_date(self, value: datetime) -> str:
+        """Возвращает даты карточки товара в едином человекочитаемом формате."""
+        return value.strftime(PRODUCT_DATE_FORMAT)
 class MetaOut(BaseModel):
     last_import: datetime | None
     product_count: int
