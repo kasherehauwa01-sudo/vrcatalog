@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from app.models.catalog import (
 )
 from app.services.catalog import catalog_product_query, list_filters, paginated_products
 from app.services.logging import add_log
+from app.schemas.catalog import ProductDetailOut
 
 
 class CatalogProductQueryTests(unittest.TestCase):
@@ -145,6 +147,40 @@ class ServiceLoggingTests(unittest.TestCase):
         self.assertEqual(len(logs), 100)
         self.assertTrue(all(log.level == "error" for log in logs))
         self.assertEqual(logs[0].event, "error_5")
+
+
+class ProductDetailSchemaTests(unittest.TestCase):
+    def test_formats_product_dates_consistently(self):
+        payload = ProductDetailOut(
+            id=1,
+            code="TEST-1",
+            name="Тестовый товар",
+            article=None,
+            section=None,
+            product_type=None,
+            quantity=0,
+            created_at=datetime(2026, 7, 28, 13, 0),
+            updated_at=datetime(2026, 7, 28, 13, 15),
+            description=None,
+            manufacturer=None,
+            brand=None,
+            manager=None,
+            country=None,
+            material=None,
+            color=None,
+            certificate=None,
+            tags=None,
+            prices=[],
+            stocks=[],
+            properties=[],
+            analogs=[],
+            barcodes=[],
+        )
+
+        result = payload.model_dump(mode="json")
+
+        self.assertEqual(result["created_at"], "28.07.2026 13:00")
+        self.assertEqual(result["updated_at"], "28.07.2026 13:15")
 
 
 if __name__ == "__main__":
