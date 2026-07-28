@@ -22,6 +22,8 @@ export type ProductPage = {
 };
 
 export type ProductDetail = Product & {
+  created_at: string;
+  updated_at: string;
   description?: string;
   manufacturer?: string;
   brand?: string;

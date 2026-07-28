@@ -39,6 +39,12 @@ class Product(Base):
     certificate: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[str | None] = mapped_column(Text)
     search_text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
 
     prices: Mapped[list["Price"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     stocks: Mapped[list["Stock"]] = relationship(cascade="all, delete-orphan", back_populates="product")

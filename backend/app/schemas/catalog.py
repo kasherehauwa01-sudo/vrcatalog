@@ -46,6 +46,8 @@ class ProductPageOut(BaseModel):
     pagination: PaginationOut
 class ProductDetailOut(ProductListOut):
     description: str | None; manufacturer: str | None; brand: str | None; manager: str | None; country: str | None; material: str | None; color: str | None; certificate: str | None; tags: str | None
+    created_at: datetime
+    updated_at: datetime
     prices: list[PriceOut]; stocks: list[StockOut]; properties: list[PropertyOut]; analogs: list[AnalogOut]; barcodes: list[BarcodeOut]
 class MetaOut(BaseModel):
     last_import: datetime | None

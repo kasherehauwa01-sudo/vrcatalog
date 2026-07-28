@@ -269,6 +269,10 @@ class XMLCatalogImporter:
             add_log(db, "xml_product_images_updated", "Обновлены изображения")
         if not changed:
             add_log(db, "xml_product_no_changes", "Изменений нет.")
+        else:
+            # Связанные цены, остатки и изображения не вызывают onupdate у products,
+            # поэтому фиксируем время любого фактического изменения явно.
+            existing.updated_at = datetime.utcnow()
         existing._import_changed = changed
         return existing
 
