@@ -39,6 +39,7 @@ import {
   Tabs,
   TextField,
   ThemeProvider,
+  Tooltip,
   Typography,
   createTheme,
 } from "@mui/material";
@@ -128,6 +129,7 @@ type FilterFields = {
   article: string;
   name: string;
   inStockOnly: string;
+  onlyNew: string;
   availability: string;
   quantityFrom: string;
   quantityTo: string;
@@ -141,6 +143,7 @@ const filterFieldLabels: Partial<Record<keyof FilterFields, string>> = {
   article: "Артикул",
   name: "Название",
   inStockOnly: "Только в наличии",
+  onlyNew: "Только новинки",
   availability: "Наличие",
   quantityFrom: "Количество от",
   quantityTo: "Количество до",
@@ -168,7 +171,7 @@ function App() {
     });
     return result;
   };
-  const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ code: p.get("code") ?? "", article: p.get("article") ?? "", name: p.get("name") ?? "", inStockOnly: p.get("inStockOnly") ?? "true", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
+  const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ code: p.get("code") ?? "", article: p.get("article") ?? "", name: p.get("name") ?? "", inStockOnly: p.get("inStockOnly") ?? "true", onlyNew: p.get("onlyNew") ?? "false", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
   const [search, setSearch] = useState(initialParams.get("search") ?? "");
   const [filters, setFilters] = useState<Record<string, string[]>>({});
   const [propertyOptions, setPropertyOptions] = useState<Record<string, string[]>>({});
@@ -192,7 +195,7 @@ function App() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
-  const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 20, totalItems: 0, totalPages: 0 });
+  const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 100, totalItems: 0, totalPages: 0 });
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [propertyPickerOpen, setPropertyPickerOpen] = useState(false);
   const [openCharacteristicGroups, setOpenCharacteristicGroups] = useState<Record<string, boolean>>({});
@@ -326,13 +329,13 @@ function App() {
         next.delete("page"); replaceCatalogParams(next);
       } else updateParams({ [key === "product_type" ? "productType" : key]: values.join(",") });
     } else {
-      const resetValue = key === "availability" ? "all" : key === "inStockOnly" ? "false" : "";
+      const resetValue = key === "availability" ? "all" : key === "inStockOnly" || key === "onlyNew" ? "false" : "";
       const updated = { ...filterFields, [key]: resetValue };
       setFilterFields(updated); setDraftFields(updated); updateParams({ [key]: resetValue || null });
     }
   };
   const isActiveFilterField = ([key, value]: [string, string | undefined]) =>
-    Boolean(value && value !== "all" && !(key === "inStockOnly" && value === "false"));
+    Boolean(value && value !== "all" && !(["inStockOnly", "onlyNew"].includes(key) && value === "false"));
   const activeConditionCount = Object.values(active).reduce((sum, values) => sum + values.length, 0) + Object.entries(filterFields).filter(isActiveFilterField).length;
   const searchableFilterLabels = new Set(["Раздел", "Производитель", "Бренд", "Материал", "Коллекция"]);
   const entriesForOrder = (options: Record<string, string[]>, order: string[]) => {
@@ -533,7 +536,7 @@ function App() {
             >
               <Stack
                 direction={{ xs: "column", md: "row" }}
-                spacing={0}
+                spacing={1}
                 alignItems="stretch"
               >
                 <TextField
@@ -569,6 +572,32 @@ function App() {
                     },
                   }}
                 />
+                <FormControlLabel
+                  sx={{ px: 1, m: 0, whiteSpace: "nowrap" }}
+                  control={(
+                    <Checkbox
+                      checked={filterFields.onlyNew === "true"}
+                      onChange={(event) => {
+                        const onlyNew = event.target.checked ? "true" : "false";
+                        setFilterFields((current) => ({ ...current, onlyNew }));
+                        setDraftFields((current) => ({ ...current, onlyNew }));
+                        updateParams({ onlyNew: event.target.checked ? "true" : null });
+                      }}
+                    />
+                  )}
+                  label="Только новинки"
+                />
+                <Button
+                  variant={params.get("sort") === "is_new" ? "contained" : "outlined"}
+                  onClick={() => updateParams(
+                    params.get("sort") === "is_new"
+                      ? { sort: null, order: null }
+                      : { sort: "is_new", order: "desc" },
+                  )}
+                  sx={{ whiteSpace: "nowrap" }}
+                >
+                  Сначала новинки
+                </Button>
               </Stack>
             </Paper>
           )}
@@ -754,7 +783,7 @@ function App() {
                     </Typography>
                     {autoImportState?.last_run_at ? (
                       <Stack spacing={0.5} sx={{ mt: 1 }}>
-                        <Typography>Дата: {formatMoscowDate(autoImportState.last_run_at)}</Typography>
+                        <Typography>Дата: {autoImportState.last_run_at}</Typography>
                         <Typography>Статус: {autoImportState.status === "error" ? "Ошибка" : "Успешно"}</Typography>
                         <Typography>Обработано файлов: {autoImportState.processed_files}</Typography>
                         <Typography>Успешно: {autoImportState.successful_files}</Typography>
@@ -1010,7 +1039,7 @@ function App() {
                     <TableCell padding="checkbox"><Checkbox aria-label="Выбрать все товары на странице" checked={allSelected} indeterminate={selectedIds.length > 0 && !allSelected} onChange={toggleAll} /></TableCell>
                     <TableCell>Фото</TableCell>
                     {[ ["name", "Наименование"], ["article", "Артикул"], ["code", "Код"] ].map(([field, label]) => (
-                      <TableCell key={field}><TableSortLabel active={(params.get("sort") ?? "id") === field} direction={params.get("sort") === field && params.get("order") === "desc" ? "desc" : "asc"} onClick={() => changeSort(field)}>{label}</TableSortLabel></TableCell>
+                      <TableCell key={field}><TableSortLabel active={params.get("sort") === field} direction={params.get("sort") === field && params.get("order") === "desc" ? "desc" : "asc"} onClick={() => changeSort(field)}>{label}</TableSortLabel></TableCell>
                     ))}
                     <TableCell align="right"><TableSortLabel active={params.get("sort") === "price"} direction={params.get("sort") === "price" && params.get("order") === "desc" ? "desc" : "asc"} onClick={() => changeSort("price")}>Цена</TableSortLabel></TableCell>
                     <TableCell align="right"><TableSortLabel active={params.get("sort") === "quantity"} direction={params.get("sort") === "quantity" && params.get("order") === "desc" ? "desc" : "asc"} onClick={() => changeSort("quantity")}>Количество Авиаторов</TableSortLabel></TableCell>
@@ -1020,7 +1049,22 @@ function App() {
                     {products.map((p) => (
                       <TableRow hover key={p.id} selected={selectedIds.includes(p.id)} onClick={() => api.product(p.id).then(setDetail)} sx={{ cursor: "pointer" }}>
                         <TableCell padding="checkbox"><Checkbox aria-label={`Выбрать ${p.name}`} checked={selectedIds.includes(p.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelected(p.id)} /></TableCell>
-                        <TableCell>{p.images[0] ? <Box component="img" src={p.images[0].url} alt={p.name} sx={{ width: 56, height: 56, objectFit: "contain", borderRadius: 2, bgcolor: "#e0f2fe" }} /> : "—"}</TableCell>
+                        <TableCell>
+                          {p.images[0] ? (
+                            <Box sx={{ position: "relative", width: 56, height: 56 }}>
+                              <Box component="img" src={p.images[0].url} alt={p.name} sx={{ width: 56, height: 56, objectFit: "contain", borderRadius: 2, bgcolor: "#e0f2fe" }} />
+                              {p.is_new && (
+                                <Tooltip title="Новинка" arrow>
+                                  <Box
+                                    component="span"
+                                    aria-label="Новинка"
+                                    sx={{ position: "absolute", top: -3, right: -3, width: 12, height: 12, borderRadius: "50%", bgcolor: "#facc15", border: "2px solid #fff", boxShadow: "0 2px 5px rgba(15,23,42,.35)" }}
+                                  />
+                                </Tooltip>
+                              )}
+                            </Box>
+                          ) : "—"}
+                        </TableCell>
                         <TableCell><Typography>{p.name}</Typography></TableCell><TableCell>{p.article ?? "—"}</TableCell><TableCell>{p.code}</TableCell>
                         <TableCell align="right" sx={{ minWidth: 180 }}>{visiblePrices(p).length ? visiblePrices(p).map((price) => <Typography key={price.price_type} variant="body2" sx={{ whiteSpace: "nowrap" }}>{price.price_type}: {price.value} руб.</Typography>) : "—"}</TableCell>
                         <TableCell align="right">{p.quantity}</TableCell>
@@ -2101,6 +2145,31 @@ function App() {
                         {value}
                       </Typography>
                     ))}
+                </Paper>
+                <Paper
+                  variant="outlined"
+                  sx={{ p: 2, bgcolor: (currentTheme) => alpha(currentTheme.palette.primary.main, 0.04) }}
+                >
+                  <Stack spacing={1}>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                        Дата появления товара:
+                      </Typography>
+                      <Typography>{detail.created_at}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                        Новинка:
+                      </Typography>
+                      <Typography>{detail.is_new ? "Да" : "Нет"}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                        Дата обновления:
+                      </Typography>
+                      <Typography>{detail.updated_at}</Typography>
+                    </Box>
+                  </Stack>
                 </Paper>
                 {detail.properties.some((p) =>
                   p.name === "Вид товара" || p.name === "ВидТовара"
