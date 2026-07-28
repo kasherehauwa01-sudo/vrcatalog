@@ -1,7 +1,9 @@
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.catalog import ServiceLog
 
+MAX_ERROR_LOGS = 100
 
 def add_log(
     db: Session,

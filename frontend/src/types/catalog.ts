@@ -11,6 +11,16 @@ export type Product = {
   retail_price?: number;
   prices: { price_type: string; value: number }[];
 };
+export type ProductPage = {
+  items: Product[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+  };
+};
+
 export type ProductDetail = Product & {
   created_at: string;
   updated_at: string;
