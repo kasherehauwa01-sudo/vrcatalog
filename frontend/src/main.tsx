@@ -572,32 +572,6 @@ function App() {
                     },
                   }}
                 />
-                <FormControlLabel
-                  sx={{ px: 1, m: 0, whiteSpace: "nowrap" }}
-                  control={(
-                    <Checkbox
-                      checked={filterFields.onlyNew === "true"}
-                      onChange={(event) => {
-                        const onlyNew = event.target.checked ? "true" : "false";
-                        setFilterFields((current) => ({ ...current, onlyNew }));
-                        setDraftFields((current) => ({ ...current, onlyNew }));
-                        updateParams({ onlyNew: event.target.checked ? "true" : null });
-                      }}
-                    />
-                  )}
-                  label="Только новинки"
-                />
-                <Button
-                  variant={params.get("sort") === "is_new" ? "contained" : "outlined"}
-                  onClick={() => updateParams(
-                    params.get("sort") === "is_new"
-                      ? { sort: null, order: null }
-                      : { sort: "is_new", order: "desc" },
-                  )}
-                  sx={{ whiteSpace: "nowrap" }}
-                >
-                  Сначала новинки
-                </Button>
               </Stack>
             </Paper>
           )}
