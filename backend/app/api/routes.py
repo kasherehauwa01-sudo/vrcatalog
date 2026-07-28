@@ -40,14 +40,14 @@ def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
     return meta(db)
 
 @router.get("/products", response_model=list[ProductListOut])
-def products(db: Session = Depends(get_db), limit: int = 60, offset: int = 0, search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None):
+def products(db: Session = Depends(get_db), limit: int = 60, offset: int = 0, search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False):
     params = locals(); params.pop("db"); params.pop("limit"); params.pop("offset")
     type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
     return [decorate(p, type_names) for p in product_query(db, params).offset(offset).limit(limit).all()]
 
 
 @router.get("/products/count")
-def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None):
+def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False):
     params = locals(); params.pop("db")
     return {"count": product_query(db, params).count()}
 
@@ -72,15 +72,16 @@ def search_products(
     warehouse: Annotated[str | None, Query(max_length=2000)] = None,
     availability: Literal["all", "in_stock", "out_of_stock"] = "all",
     in_stock_only: Annotated[bool, Query(alias="inStockOnly")] = True,
+    only_new: Annotated[bool, Query(alias="onlyNew")] = False,
     quantity_from: Annotated[float | None, Query(alias="quantityFrom")] = None,
     quantity_to: Annotated[float | None, Query(alias="quantityTo")] = None,
     price_from: Annotated[float | None, Query(alias="priceFrom", ge=0)] = None,
     price_to: Annotated[float | None, Query(alias="priceTo", ge=0)] = None,
     property: Annotated[list[str] | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
-    page_size: Annotated[int, Query(alias="pageSize")] = 20,
-    sort: Literal["id", "name", "article", "code", "price", "quantity"] = "id",
-    order: Literal["asc", "desc"] = "asc",
+    page_size: Annotated[int, Query(alias="pageSize")] = 100,
+    sort: Literal["updated_at", "is_new", "id", "name", "article", "code", "price", "quantity"] = "updated_at",
+    order: Literal["asc", "desc"] | None = None,
 ):
     if page_size not in {20, 50, 100}:
         raise HTTPException(422, "pageSize должен быть равен 20, 50 или 100")
@@ -112,6 +113,7 @@ def search_products(
         "warehouse": warehouse,
         "availability": availability,
         "in_stock_only": in_stock_only,
+        "only_new": only_new,
         "quantity_from": quantity_from,
         "quantity_to": quantity_to,
         "price_from": price_from,
