@@ -31,6 +31,7 @@ class ProductImageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 class ProductListOut(BaseModel):
     id: int; code: str; name: str; article: str | None; section: str | None; product_type: str | None = None; product_type_name: str | None = None; quantity: float
+    is_new: bool
     images: list[ProductImageOut] = []
     retail_price: float | None = None
     prices: list[PriceOut] = []

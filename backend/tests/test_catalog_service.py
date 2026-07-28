@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -130,6 +130,31 @@ class CatalogProductQueryTests(unittest.TestCase):
 
         self.assertEqual([product.code for product in items], ["PAN-2", "TABLE-3", "CHAIR-1"])
 
+    def test_only_new_filter_uses_created_at_and_combines_with_other_filters(self):
+        self.products[0].created_at = datetime.utcnow() - timedelta(days=8)
+        self.products[1].created_at = datetime.utcnow() - timedelta(days=6)
+        self.products[2].created_at = datetime.utcnow()
+        self.db.commit()
+
+        result = self.query(only_new=True, section="Мебель")
+
+        self.assertEqual([product.code for product in result], ["TABLE-3"])
+        self.assertFalse(self.products[0].is_new)
+        self.assertTrue(self.products[2].is_new)
+
+    def test_new_products_can_be_sorted_before_old_products(self):
+        self.products[0].created_at = datetime.utcnow() - timedelta(days=8)
+        self.products[1].created_at = datetime.utcnow() - timedelta(days=2)
+        self.products[2].created_at = datetime.utcnow() - timedelta(days=9)
+        self.db.commit()
+
+        items, _ = paginated_products(
+            self.db,
+            {"page": 1, "page_size": 20, "sort": "is_new", "order": "desc"},
+        )
+
+        self.assertEqual(items[0].code, "PAN-2")
+
     def test_empty_result(self):
         self.assertEqual(self.query(search="несуществующий товар"), [])
 
@@ -169,6 +194,7 @@ class ProductDetailSchemaTests(unittest.TestCase):
             section=None,
             product_type=None,
             quantity=0,
+            is_new=True,
             created_at=datetime(2026, 7, 28, 13, 0),
             updated_at=datetime(2026, 7, 28, 13, 15),
             description=None,
