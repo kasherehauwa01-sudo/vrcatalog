@@ -222,6 +222,9 @@ class XMLCatalogImporter:
         """Создает новый товар или применяет только реальные изменения к существующему."""
         existing = existing_products.get(parsed_product.code)
         if existing is None:
+            loaded_at = datetime.utcnow()
+            parsed_product.created_at = loaded_at
+            parsed_product.updated_at = loaded_at
             db.add(parsed_product)
             db.flush()
             parsed_product._import_changed = True

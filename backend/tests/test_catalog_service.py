@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from app.models.catalog import (
 )
 from app.services.catalog import catalog_product_query, list_filters, paginated_products
 from app.services.logging import add_log
+from app.schemas.catalog import ProductDetailOut
 
 
 class CatalogProductQueryTests(unittest.TestCase):
@@ -104,7 +106,7 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertNotIn("property:Вид товара", filters)
         self.assertNotIn("property:Производитель", filters)
         self.assertEqual(filters["property:Коллекция"], ["Лето"])
-        self.assertEqual(filters["product_type"], ["Стулья"])
+        self.assertEqual(filters["product_type"], ["Новинка", "Стулья"])
         self.assertEqual(filters["warehouse"], ["Авиаторов", "Основной", "Резервный"])
         self.assertEqual(filters["barcode"], ["460000000002"])
 
@@ -112,11 +114,62 @@ class CatalogProductQueryTests(unittest.TestCase):
         filters = list_filters(self.db, {"brand": "Beta"})
         self.assertNotIn("property:Наличие свистка", filters)
 
+    def test_new_product_type_filter_finds_products_with_new_characteristic(self):
+        self.products[1].properties.append(ProductProperty(name=" Новинка ", value="Да"))
+        self.db.commit()
+
+        result = self.query(product_type="Новинка")
+
+        self.assertEqual([product.code for product in result], ["PAN-2"])
+
+    def test_new_product_type_filter_uses_or_with_regular_product_types(self):
+        self.products[1].properties.append(ProductProperty(name="Новинка", value="Да"))
+        self.db.commit()
+
+        result = self.query(product_type="Новинка,Стулья")
+
+        self.assertEqual([product.code for product in result], ["CHAIR-1", "PAN-2"])
+
     def test_sorting_and_server_pagination(self):
         params = {"page": 1, "page_size": 20, "sort": "price", "order": "desc"}
         items, pagination = paginated_products(self.db, params)
         self.assertEqual([p.code for p in items], ["TABLE-3", "PAN-2", "CHAIR-1"])
         self.assertEqual(pagination, {"page": 1, "pageSize": 20, "totalItems": 3, "totalPages": 1})
+
+    def test_default_sort_puts_recently_updated_products_first(self):
+        self.products[0].updated_at = datetime(2026, 7, 28, 13, 0)
+        self.products[1].updated_at = datetime(2026, 7, 28, 13, 15)
+        self.products[2].updated_at = datetime(2026, 7, 28, 13, 10)
+        self.db.commit()
+
+        items, _ = paginated_products(self.db, {"page": 1, "page_size": 20})
+
+        self.assertEqual([product.code for product in items], ["PAN-2", "TABLE-3", "CHAIR-1"])
+
+    def test_only_new_filter_uses_created_at_and_combines_with_other_filters(self):
+        self.products[0].created_at = datetime.utcnow() - timedelta(days=8)
+        self.products[1].created_at = datetime.utcnow() - timedelta(days=6)
+        self.products[2].created_at = datetime.utcnow()
+        self.db.commit()
+
+        result = self.query(only_new=True, section="Мебель")
+
+        self.assertEqual([product.code for product in result], ["TABLE-3"])
+        self.assertFalse(self.products[0].is_new)
+        self.assertTrue(self.products[2].is_new)
+
+    def test_new_products_can_be_sorted_before_old_products(self):
+        self.products[0].created_at = datetime.utcnow() - timedelta(days=8)
+        self.products[1].created_at = datetime.utcnow() - timedelta(days=2)
+        self.products[2].created_at = datetime.utcnow() - timedelta(days=9)
+        self.db.commit()
+
+        items, _ = paginated_products(
+            self.db,
+            {"page": 1, "page_size": 20, "sort": "is_new", "order": "desc"},
+        )
+
+        self.assertEqual(items[0].code, "PAN-2")
 
     def test_empty_result(self):
         self.assertEqual(self.query(search="несуществующий товар"), [])
@@ -145,6 +198,41 @@ class ServiceLoggingTests(unittest.TestCase):
         self.assertEqual(len(logs), 100)
         self.assertTrue(all(log.level == "error" for log in logs))
         self.assertEqual(logs[0].event, "error_5")
+
+
+class ProductDetailSchemaTests(unittest.TestCase):
+    def test_formats_product_dates_consistently(self):
+        payload = ProductDetailOut(
+            id=1,
+            code="TEST-1",
+            name="Тестовый товар",
+            article=None,
+            section=None,
+            product_type=None,
+            quantity=0,
+            is_new=True,
+            created_at=datetime(2026, 7, 28, 13, 0),
+            updated_at=datetime(2026, 7, 28, 13, 15),
+            description=None,
+            manufacturer=None,
+            brand=None,
+            manager=None,
+            country=None,
+            material=None,
+            color=None,
+            certificate=None,
+            tags=None,
+            prices=[],
+            stocks=[],
+            properties=[],
+            analogs=[],
+            barcodes=[],
+        )
+
+        result = payload.model_dump(mode="json")
+
+        self.assertEqual(result["created_at"], "28.07.2026 13:00")
+        self.assertEqual(result["updated_at"], "28.07.2026 13:15")
 
 
 if __name__ == "__main__":

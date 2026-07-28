@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,6 +45,11 @@ class Product(Base):
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
     )
+
+    @property
+    def is_new(self) -> bool:
+        """Определяет статус новинки динамически, без хранения отдельного флага."""
+        return self.created_at >= datetime.utcnow() - timedelta(days=7)
 
     prices: Mapped[list["Price"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     stocks: Mapped[list["Stock"]] = relationship(cascade="all, delete-orphan", back_populates="product")
