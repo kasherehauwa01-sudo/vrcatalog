@@ -1,5 +1,16 @@
-from datetime import datetime
-from pydantic import BaseModel, ConfigDict
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+from pydantic import BaseModel, ConfigDict, field_serializer
+
+
+MOSCOW_TIMEZONE = ZoneInfo("Europe/Moscow")
+
+
+def format_moscow_datetime(value: datetime) -> str:
+    """Форматирует хранимую в UTC дату для единого отображения в API."""
+    utc_value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    return utc_value.astimezone(MOSCOW_TIMEZONE).strftime("%d.%m.%Y %H:%M")
 
 class PriceOut(BaseModel):
     price_type: str
@@ -22,14 +33,26 @@ class AnalogOut(BaseModel):
 class BarcodeOut(BaseModel):
     value: str
     model_config = ConfigDict(from_attributes=True)
+class ProductImageOut(BaseModel):
+    order: int
+    url: str
+    model_config = ConfigDict(from_attributes=True)
 class ProductListOut(BaseModel):
-    id: int; code: str; name: str; article: str | None; section: str | None; product_type: str | None = None; product_type_name: str | None = None; quantity: float; image_url: str | None = None
+    id: int; code: str; name: str; article: str | None; section: str | None; product_type: str | None = None; product_type_name: str | None = None; quantity: float
+    images: list[ProductImageOut] = []
     retail_price: float | None = None
     prices: list[PriceOut] = []
     model_config = ConfigDict(from_attributes=True)
 class ProductDetailOut(ProductListOut):
     description: str | None; manufacturer: str | None; brand: str | None; manager: str | None; country: str | None; material: str | None; color: str | None; certificate: str | None; tags: str | None
+    created_at: datetime
+    updated_at: datetime
     prices: list[PriceOut]; stocks: list[StockOut]; properties: list[PropertyOut]; analogs: list[AnalogOut]; barcodes: list[BarcodeOut]
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_product_datetime(self, value: datetime) -> str:
+        """Возвращает даты карточки товара в московском времени."""
+        return format_moscow_datetime(value)
 class MetaOut(BaseModel):
     last_import: datetime | None
     product_count: int
@@ -42,6 +65,8 @@ class ServiceLogOut(BaseModel):
     level: str
     event: str
     message: str
+    error_type: str | None = None
+    traceback: str | None = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -73,3 +98,32 @@ class ProductTypeSettingOut(ProductTypeSettingIn):
     id: int
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+class XmlServerSettingIn(BaseModel):
+    protocol: str = "FTP"
+    host: str
+    port: int
+    username: str
+    password: str
+    xml_dir: str
+
+class XmlServerSettingOut(XmlServerSettingIn):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class AutoImportStateOut(BaseModel):
+    status: str
+    last_run_at: datetime | None = None
+    processed_files: int = 0
+    successful_files: int = 0
+    failed_files: int = 0
+    last_error: str | None = None
+    is_running: bool = False
+    updated_at: datetime | None = None
+    model_config = ConfigDict(from_attributes=True)
+
+class FtpConnectionTestOut(BaseModel):
+    success: bool
+    message: str
