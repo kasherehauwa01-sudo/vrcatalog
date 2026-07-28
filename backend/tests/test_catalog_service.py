@@ -114,17 +114,19 @@ class CatalogProductQueryTests(unittest.TestCase):
         filters = list_filters(self.db, {"brand": "Beta"})
         self.assertNotIn("property:Наличие свистка", filters)
 
-    def test_new_product_type_filter_finds_products_with_new_characteristic(self):
-        self.products[1].properties.append(ProductProperty(name=" Новинка: ", value=" Да "))
-        self.products[2].properties.append(ProductProperty(property_code="Новинка", name="Флаг", value="Да"))
+    def test_new_product_type_filter_finds_products_loaded_within_seven_days(self):
+        self.products[0].created_at = datetime.utcnow() - timedelta(days=8)
+        self.products[1].created_at = datetime.utcnow() - timedelta(days=6)
+        self.products[2].created_at = datetime.utcnow()
         self.db.commit()
 
         result = self.query(product_type="Новинка")
 
         self.assertEqual([product.code for product in result], ["PAN-2", "TABLE-3"])
 
-    def test_new_product_type_filter_ignores_characteristic_with_no_value(self):
-        self.products[0].properties.append(ProductProperty(name="Новинка", value="Нет"))
+    def test_new_product_type_filter_does_not_depend_on_xml_characteristic(self):
+        self.products[0].created_at = datetime.utcnow() - timedelta(days=8)
+        self.products[0].properties.append(ProductProperty(name="Новинка", value="Да"))
         self.db.commit()
 
         result = self.query(product_type="Новинка")
@@ -132,7 +134,9 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual(result, [])
 
     def test_new_product_type_filter_uses_or_with_regular_product_types(self):
-        self.products[1].properties.append(ProductProperty(name="Новинка", value="Да"))
+        self.products[0].created_at = datetime.utcnow() - timedelta(days=8)
+        self.products[1].created_at = datetime.utcnow() - timedelta(days=2)
+        self.products[2].created_at = datetime.utcnow() - timedelta(days=9)
         self.db.commit()
 
         result = self.query(product_type="Новинка,Стулья")
