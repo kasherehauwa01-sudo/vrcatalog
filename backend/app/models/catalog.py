@@ -29,7 +29,6 @@ class Product(Base):
     section: Mapped[str | None] = mapped_column(String(255), index=True)
     product_type: Mapped[str | None] = mapped_column(String(255), index=True)
     description: Mapped[str | None] = mapped_column(Text)
-    image_url: Mapped[str | None] = mapped_column(Text)
     quantity: Mapped[float] = mapped_column(Float, default=0)
     manufacturer: Mapped[str | None] = mapped_column(String(255), index=True)
     brand: Mapped[str | None] = mapped_column(String(255), index=True)
@@ -40,12 +39,19 @@ class Product(Base):
     certificate: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[str | None] = mapped_column(Text)
     search_text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
 
     prices: Mapped[list["Price"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     stocks: Mapped[list["Stock"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     properties: Mapped[list["ProductProperty"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     analogs: Mapped[list["Analog"]] = relationship(cascade="all, delete-orphan", back_populates="product")
     barcodes: Mapped[list["Barcode"]] = relationship(cascade="all, delete-orphan", back_populates="product")
+    images: Mapped[list["ProductImage"]] = relationship(cascade="all, delete-orphan", back_populates="product", order_by="ProductImage.image_order")
 
 
 class Price(Base):
@@ -97,6 +103,26 @@ class Barcode(Base):
     product: Mapped[Product] = relationship(back_populates="barcodes")
 
 
+class ProductImage(Base):
+    __tablename__ = "product_images"
+    __table_args__ = (UniqueConstraint("product_id", "image_order", name="uq_product_images_product_order"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    image_order: Mapped[int] = mapped_column(Integer)
+    image_url: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    product: Mapped[Product] = relationship(back_populates="images")
+
+    @property
+    def order(self) -> int:
+        return self.image_order
+
+    @property
+    def url(self) -> str:
+        return self.image_url
+
+
 class Favorite(Base):
     __tablename__ = "favorites"
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), primary_key=True)
@@ -116,6 +142,8 @@ class ServiceLog(Base):
     level: Mapped[str] = mapped_column(String(32), default="info", index=True)
     event: Mapped[str] = mapped_column(String(255), index=True)
     message: Mapped[str] = mapped_column(Text)
+    error_type: Mapped[str | None] = mapped_column(String(255), index=True)
+    traceback: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -127,6 +155,34 @@ class Notification(Base):
     message: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+
+class XmlServerSetting(Base):
+    __tablename__ = "xml_server_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    protocol: Mapped[str] = mapped_column(String(16), default="FTP")
+    host: Mapped[str] = mapped_column(String(255), default="176.53.160.144")
+    port: Mapped[int] = mapped_column(Integer, default=21)
+    username: Mapped[str] = mapped_column(String(255), default="uploader")
+    password: Mapped[str] = mapped_column(String(255), default="9963396")
+    xml_dir: Mapped[str] = mapped_column(String(512), default="/xml")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AutoImportState(Base):
+    __tablename__ = "auto_import_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), default="stopped")
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime)
+    processed_files: Mapped[int] = mapped_column(Integer, default=0)
+    successful_files: Mapped[int] = mapped_column(Integer, default=0)
+    failed_files: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    is_running: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class WarehouseSetting(Base):
