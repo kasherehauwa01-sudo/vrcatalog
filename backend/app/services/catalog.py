@@ -35,6 +35,7 @@ SORT_FIELDS = {
     "quantity": Product.quantity,
 }
 NEW_PRODUCT_PERIOD = timedelta(days=7)
+NEW_PRODUCT_TYPE_FILTER = "Новинка"
 
 
 def new_product_cutoff() -> datetime:
@@ -83,13 +84,23 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
 
     type_values = _values(params.get("product_type"))
     if type_values:
+        regular_type_values = [value for value in type_values if value != NEW_PRODUCT_TYPE_FILTER]
         configured_codes = [
             code
             for code, in db.query(ProductTypeSetting.code)
-            .filter(ProductTypeSetting.name.in_(type_values))
+            .filter(ProductTypeSetting.name.in_(regular_type_values))
             .all()
         ]
-        q = q.filter(Product.product_type.in_([*type_values, *configured_codes]))
+        type_conditions = []
+        if regular_type_values or configured_codes:
+            type_conditions.append(Product.product_type.in_([*regular_type_values, *configured_codes]))
+        if NEW_PRODUCT_TYPE_FILTER in type_values:
+            type_conditions.append(
+                Product.properties.any(
+                    func.lower(func.trim(ProductProperty.name)) == NEW_PRODUCT_TYPE_FILTER.casefold()
+                )
+            )
+        q = q.filter(or_(*type_conditions))
 
     availability = params.get("availability")
     if availability == "in_stock":
@@ -194,8 +205,18 @@ def product_query(db: Session, params):
     if product_type := params.get("product_type"):
         type_values = [item.strip() for item in str(product_type).split(",") if item.strip()]
         if type_values:
-            configured_codes = [code for code, in db.query(ProductTypeSetting.code).filter(ProductTypeSetting.name.in_(type_values)).all()]
-            q = q.filter(Product.product_type.in_(list(dict.fromkeys([*type_values, *configured_codes]))))
+            regular_type_values = [value for value in type_values if value != NEW_PRODUCT_TYPE_FILTER]
+            configured_codes = [code for code, in db.query(ProductTypeSetting.code).filter(ProductTypeSetting.name.in_(regular_type_values)).all()]
+            type_conditions = []
+            if regular_type_values or configured_codes:
+                type_conditions.append(Product.product_type.in_(list(dict.fromkeys([*regular_type_values, *configured_codes]))))
+            if NEW_PRODUCT_TYPE_FILTER in type_values:
+                type_conditions.append(
+                    Product.properties.any(
+                        func.lower(func.trim(ProductProperty.name)) == NEW_PRODUCT_TYPE_FILTER.casefold()
+                    )
+                )
+            q = q.filter(or_(*type_conditions))
     if warehouse := params.get("warehouse"):
         warehouse_values = [item.strip() for item in str(warehouse).split(",") if item.strip()]
         if warehouse_values:
@@ -231,7 +252,8 @@ def list_filters(db: Session, params=None):
     }
     type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
     type_codes = [code for code, in product_scope(db.query(Product.product_type)).filter(Product.product_type.isnot(None)).distinct().order_by(Product.product_type).all()]
-    data["product_type"] = list(dict.fromkeys(type_names[code] for code in type_codes if code in type_names))
+    configured_types = list(dict.fromkeys(type_names[code] for code in type_codes if code in type_names))
+    data["product_type"] = [NEW_PRODUCT_TYPE_FILTER, *configured_types]
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
     warehouse_query = db.query(Stock.warehouse).join(Product, Product.id == Stock.product_id)
     if base_ids is not None:

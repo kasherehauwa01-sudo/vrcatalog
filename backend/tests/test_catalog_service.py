@@ -106,13 +106,29 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertNotIn("property:Вид товара", filters)
         self.assertNotIn("property:Производитель", filters)
         self.assertEqual(filters["property:Коллекция"], ["Лето"])
-        self.assertEqual(filters["product_type"], ["Стулья"])
+        self.assertEqual(filters["product_type"], ["Новинка", "Стулья"])
         self.assertEqual(filters["warehouse"], ["Авиаторов", "Основной", "Резервный"])
         self.assertEqual(filters["barcode"], ["460000000002"])
 
     def test_property_options_are_limited_by_main_filters(self):
         filters = list_filters(self.db, {"brand": "Beta"})
         self.assertNotIn("property:Наличие свистка", filters)
+
+    def test_new_product_type_filter_finds_products_with_new_characteristic(self):
+        self.products[1].properties.append(ProductProperty(name=" Новинка ", value="Да"))
+        self.db.commit()
+
+        result = self.query(product_type="Новинка")
+
+        self.assertEqual([product.code for product in result], ["PAN-2"])
+
+    def test_new_product_type_filter_uses_or_with_regular_product_types(self):
+        self.products[1].properties.append(ProductProperty(name="Новинка", value="Да"))
+        self.db.commit()
+
+        result = self.query(product_type="Новинка,Стулья")
+
+        self.assertEqual([product.code for product in result], ["CHAIR-1", "PAN-2"])
 
     def test_sorting_and_server_pagination(self):
         params = {"page": 1, "page_size": 20, "sort": "price", "order": "desc"}
