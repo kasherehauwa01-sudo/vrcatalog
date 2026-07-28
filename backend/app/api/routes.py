@@ -79,8 +79,8 @@ def search_products(
     property: Annotated[list[str] | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(alias="pageSize")] = 20,
-    sort: Literal["id", "name", "article", "code", "price", "quantity"] = "id",
-    order: Literal["asc", "desc"] = "asc",
+    sort: Literal["updated_at", "id", "name", "article", "code", "price", "quantity"] = "updated_at",
+    order: Literal["asc", "desc"] | None = None,
 ):
     if page_size not in {20, 50, 100}:
         raise HTTPException(422, "pageSize должен быть равен 20, 50 или 100")

@@ -1010,7 +1010,7 @@ function App() {
                     <TableCell padding="checkbox"><Checkbox aria-label="Выбрать все товары на странице" checked={allSelected} indeterminate={selectedIds.length > 0 && !allSelected} onChange={toggleAll} /></TableCell>
                     <TableCell>Фото</TableCell>
                     {[ ["name", "Наименование"], ["article", "Артикул"], ["code", "Код"] ].map(([field, label]) => (
-                      <TableCell key={field}><TableSortLabel active={(params.get("sort") ?? "id") === field} direction={params.get("sort") === field && params.get("order") === "desc" ? "desc" : "asc"} onClick={() => changeSort(field)}>{label}</TableSortLabel></TableCell>
+                      <TableCell key={field}><TableSortLabel active={params.get("sort") === field} direction={params.get("sort") === field && params.get("order") === "desc" ? "desc" : "asc"} onClick={() => changeSort(field)}>{label}</TableSortLabel></TableCell>
                     ))}
                     <TableCell align="right"><TableSortLabel active={params.get("sort") === "price"} direction={params.get("sort") === "price" && params.get("order") === "desc" ? "desc" : "asc"} onClick={() => changeSort("price")}>Цена</TableSortLabel></TableCell>
                     <TableCell align="right"><TableSortLabel active={params.get("sort") === "quantity"} direction={params.get("sort") === "quantity" && params.get("order") === "desc" ? "desc" : "asc"} onClick={() => changeSort("quantity")}>Количество Авиаторов</TableSortLabel></TableCell>
@@ -2101,6 +2101,25 @@ function App() {
                         {value}
                       </Typography>
                     ))}
+                </Paper>
+                <Paper
+                  variant="outlined"
+                  sx={{ p: 2, bgcolor: (currentTheme) => alpha(currentTheme.palette.primary.main, 0.04) }}
+                >
+                  <Stack spacing={1}>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                        Дата загрузки:
+                      </Typography>
+                      <Typography>{detail.created_at}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                        Дата обновления:
+                      </Typography>
+                      <Typography>{detail.updated_at}</Typography>
+                    </Box>
+                  </Stack>
                 </Paper>
                 {detail.properties.some((p) =>
                   p.name === "Вид товара" || p.name === "ВидТовара"

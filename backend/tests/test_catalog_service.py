@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from app.models.catalog import (
 )
 from app.services.catalog import catalog_product_query, list_filters, paginated_products
 from app.services.logging import add_log
+from app.schemas.catalog import ProductDetailOut
 
 
 class CatalogProductQueryTests(unittest.TestCase):
@@ -118,6 +120,16 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual([p.code for p in items], ["TABLE-3", "PAN-2", "CHAIR-1"])
         self.assertEqual(pagination, {"page": 1, "pageSize": 20, "totalItems": 3, "totalPages": 1})
 
+    def test_default_sort_puts_recently_updated_products_first(self):
+        self.products[0].updated_at = datetime(2026, 7, 28, 13, 0)
+        self.products[1].updated_at = datetime(2026, 7, 28, 13, 15)
+        self.products[2].updated_at = datetime(2026, 7, 28, 13, 10)
+        self.db.commit()
+
+        items, _ = paginated_products(self.db, {"page": 1, "page_size": 20})
+
+        self.assertEqual([product.code for product in items], ["PAN-2", "TABLE-3", "CHAIR-1"])
+
     def test_empty_result(self):
         self.assertEqual(self.query(search="несуществующий товар"), [])
 
@@ -145,6 +157,40 @@ class ServiceLoggingTests(unittest.TestCase):
         self.assertEqual(len(logs), 100)
         self.assertTrue(all(log.level == "error" for log in logs))
         self.assertEqual(logs[0].event, "error_5")
+
+
+class ProductDetailSchemaTests(unittest.TestCase):
+    def test_formats_product_dates_consistently(self):
+        payload = ProductDetailOut(
+            id=1,
+            code="TEST-1",
+            name="Тестовый товар",
+            article=None,
+            section=None,
+            product_type=None,
+            quantity=0,
+            created_at=datetime(2026, 7, 28, 13, 0),
+            updated_at=datetime(2026, 7, 28, 13, 15),
+            description=None,
+            manufacturer=None,
+            brand=None,
+            manager=None,
+            country=None,
+            material=None,
+            color=None,
+            certificate=None,
+            tags=None,
+            prices=[],
+            stocks=[],
+            properties=[],
+            analogs=[],
+            barcodes=[],
+        )
+
+        result = payload.model_dump(mode="json")
+
+        self.assertEqual(result["created_at"], "28.07.2026 13:00")
+        self.assertEqual(result["updated_at"], "28.07.2026 13:15")
 
 
 if __name__ == "__main__":
