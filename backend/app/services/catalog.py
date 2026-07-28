@@ -1,6 +1,7 @@
 from math import ceil
+from datetime import datetime, timedelta
 
-from sqlalchemy import String, and_, cast, func, or_, select
+from sqlalchemy import String, and_, case, cast, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.catalog import Barcode, ImportRun, Price, Product, ProductProperty, Stock, WarehouseSetting, ProductTypeSetting
@@ -26,12 +27,19 @@ EXCLUDED_PROPERTY_FILTERS = {
     "ВидТовара",
 }
 SORT_FIELDS = {
+    "updated_at": Product.updated_at,
     "id": Product.id,
     "name": Product.name,
     "article": Product.article,
     "code": Product.code,
     "quantity": Product.quantity,
 }
+NEW_PRODUCT_PERIOD = timedelta(days=7)
+
+
+def new_product_cutoff() -> datetime:
+    """Возвращает границу семидневного периода новинки в UTC."""
+    return datetime.utcnow() - NEW_PRODUCT_PERIOD
 
 
 def _values(value):
@@ -90,6 +98,8 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
         q = q.filter(Product.quantity <= 0)
     if params.get("in_stock_only"):
         q = q.filter(Product.stocks.any(Stock.quantity > 0))
+    if params.get("only_new"):
+        q = q.filter(Product.created_at >= new_product_cutoff())
 
     if params.get("quantity_from") is not None:
         q = q.filter(Product.quantity >= params["quantity_from"])
@@ -134,8 +144,10 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
 def paginated_products(db: Session, params):
     q = catalog_product_query(db, params)
     total = q.order_by(None).count()
-    sort = params.get("sort", "id")
-    if sort == "price":
+    sort = params.get("sort", "updated_at")
+    if sort == "is_new":
+        sort_column = case((Product.created_at >= new_product_cutoff(), 1), else_=0)
+    elif sort == "price":
         sort_column = (
             select(func.min(Price.price_value))
             .where(Price.product_id == Product.id)
@@ -144,10 +156,22 @@ def paginated_products(db: Session, params):
         )
     else:
         sort_column = SORT_FIELDS[sort]
-    direction = sort_column.desc() if params.get("order") == "desc" else sort_column.asc()
+    requested_order = params.get("order")
+    is_descending = requested_order == "desc" or (
+        requested_order is None and sort in {"updated_at", "is_new"}
+    )
+    direction = sort_column.desc() if is_descending else sort_column.asc()
     page = params["page"]
     page_size = params["page_size"]
-    items = q.order_by(direction, Product.id.asc()).offset((page - 1) * page_size).limit(page_size).all()
+    # По умолчанию сначала показываем недавно измененные и новые товары.
+    # created_at и id обеспечивают стабильный порядок при одинаковом времени обновления.
+    if sort == "updated_at":
+        query_order = (direction, Product.created_at.desc(), Product.id.desc())
+    elif sort == "is_new":
+        query_order = (direction, Product.updated_at.desc(), Product.id.desc())
+    else:
+        query_order = (direction, Product.id.asc())
+    items = q.order_by(*query_order).offset((page - 1) * page_size).limit(page_size).all()
     return items, {
         "page": page,
         "pageSize": page_size,
@@ -182,6 +206,8 @@ def product_query(db: Session, params):
             )
     if params.get("in_stock") == "true":
         q = q.filter(Product.quantity > 0)
+    if params.get("only_new"):
+        q = q.filter(Product.created_at >= new_product_cutoff())
     if params.get("price_min") or params.get("price_max"):
         q = q.join(Price)
         if params.get("price_min"): q = q.filter(Price.price_value >= float(params["price_min"]))
