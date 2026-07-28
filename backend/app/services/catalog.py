@@ -43,6 +43,29 @@ def new_product_cutoff() -> datetime:
     return datetime.utcnow() - NEW_PRODUCT_PERIOD
 
 
+def new_characteristic_condition():
+    """Находит характеристику «Новинка: Да» с учетом вариантов регистра и пробелов."""
+    raw_name = func.trim(ProductProperty.name)
+    raw_code = func.trim(ProductProperty.property_code)
+    raw_value = func.trim(ProductProperty.value)
+    characteristic_name = func.lower(raw_name)
+    characteristic_code = func.lower(raw_code)
+    characteristic_value = func.lower(raw_value)
+    name_pattern = f"%{NEW_PRODUCT_TYPE_FILTER}%"
+    lowercase_name_pattern = f"%{NEW_PRODUCT_TYPE_FILTER.casefold()}%"
+    return Product.properties.any(
+        and_(
+            or_(
+                raw_name.like(name_pattern),
+                raw_code.like(name_pattern),
+                characteristic_name.like(lowercase_name_pattern),
+                characteristic_code.like(lowercase_name_pattern),
+            ),
+            or_(raw_value == "Да", characteristic_value == "да"),
+        )
+    )
+
+
 def _values(value):
     if not value:
         return []
@@ -95,11 +118,7 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
         if regular_type_values or configured_codes:
             type_conditions.append(Product.product_type.in_([*regular_type_values, *configured_codes]))
         if NEW_PRODUCT_TYPE_FILTER in type_values:
-            type_conditions.append(
-                Product.properties.any(
-                    func.lower(func.trim(ProductProperty.name)) == NEW_PRODUCT_TYPE_FILTER.casefold()
-                )
-            )
+            type_conditions.append(new_characteristic_condition())
         q = q.filter(or_(*type_conditions))
 
     availability = params.get("availability")
@@ -211,11 +230,7 @@ def product_query(db: Session, params):
             if regular_type_values or configured_codes:
                 type_conditions.append(Product.product_type.in_(list(dict.fromkeys([*regular_type_values, *configured_codes]))))
             if NEW_PRODUCT_TYPE_FILTER in type_values:
-                type_conditions.append(
-                    Product.properties.any(
-                        func.lower(func.trim(ProductProperty.name)) == NEW_PRODUCT_TYPE_FILTER.casefold()
-                    )
-                )
+                type_conditions.append(new_characteristic_condition())
             q = q.filter(or_(*type_conditions))
     if warehouse := params.get("warehouse"):
         warehouse_values = [item.strip() for item in str(warehouse).split(",") if item.strip()]

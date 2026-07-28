@@ -79,7 +79,7 @@ def search_products(
     price_to: Annotated[float | None, Query(alias="priceTo", ge=0)] = None,
     property: Annotated[list[str] | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
-    page_size: Annotated[int, Query(alias="pageSize")] = 20,
+    page_size: Annotated[int, Query(alias="pageSize")] = 100,
     sort: Literal["updated_at", "is_new", "id", "name", "article", "code", "price", "quantity"] = "updated_at",
     order: Literal["asc", "desc"] | None = None,
 ):

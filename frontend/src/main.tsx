@@ -195,7 +195,7 @@ function App() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
-  const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 20, totalItems: 0, totalPages: 0 });
+  const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 100, totalItems: 0, totalPages: 0 });
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [propertyPickerOpen, setPropertyPickerOpen] = useState(false);
   const [openCharacteristicGroups, setOpenCharacteristicGroups] = useState<Record<string, boolean>>({});
@@ -783,7 +783,7 @@ function App() {
                     </Typography>
                     {autoImportState?.last_run_at ? (
                       <Stack spacing={0.5} sx={{ mt: 1 }}>
-                        <Typography>Дата: {formatMoscowDate(autoImportState.last_run_at)}</Typography>
+                        <Typography>Дата: {autoImportState.last_run_at}</Typography>
                         <Typography>Статус: {autoImportState.status === "error" ? "Ошибка" : "Успешно"}</Typography>
                         <Typography>Обработано файлов: {autoImportState.processed_files}</Typography>
                         <Typography>Успешно: {autoImportState.successful_files}</Typography>

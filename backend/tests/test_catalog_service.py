@@ -115,12 +115,21 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertNotIn("property:Наличие свистка", filters)
 
     def test_new_product_type_filter_finds_products_with_new_characteristic(self):
-        self.products[1].properties.append(ProductProperty(name=" Новинка ", value="Да"))
+        self.products[1].properties.append(ProductProperty(name=" Новинка: ", value=" Да "))
+        self.products[2].properties.append(ProductProperty(property_code="Новинка", name="Флаг", value="Да"))
         self.db.commit()
 
         result = self.query(product_type="Новинка")
 
-        self.assertEqual([product.code for product in result], ["PAN-2"])
+        self.assertEqual([product.code for product in result], ["PAN-2", "TABLE-3"])
+
+    def test_new_product_type_filter_ignores_characteristic_with_no_value(self):
+        self.products[0].properties.append(ProductProperty(name="Новинка", value="Нет"))
+        self.db.commit()
+
+        result = self.query(product_type="Новинка")
+
+        self.assertEqual(result, [])
 
     def test_new_product_type_filter_uses_or_with_regular_product_types(self):
         self.products[1].properties.append(ProductProperty(name="Новинка", value="Да"))
@@ -231,8 +240,8 @@ class ProductDetailSchemaTests(unittest.TestCase):
 
         result = payload.model_dump(mode="json")
 
-        self.assertEqual(result["created_at"], "28.07.2026 13:00")
-        self.assertEqual(result["updated_at"], "28.07.2026 13:15")
+        self.assertEqual(result["created_at"], "28.07.2026 16:00")
+        self.assertEqual(result["updated_at"], "28.07.2026 16:15")
 
 
 if __name__ == "__main__":

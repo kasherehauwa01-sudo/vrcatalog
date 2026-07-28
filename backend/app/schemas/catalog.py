@@ -1,8 +1,15 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, ConfigDict, field_serializer
 
 
 PRODUCT_DATE_FORMAT = "%d.%m.%Y %H:%M"
+MOSCOW_TIMEZONE = timezone(timedelta(hours=3))
+
+
+def format_moscow_datetime(value: datetime) -> str:
+    """Преобразует хранимое время UTC в московское время UTC+3."""
+    utc_value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    return utc_value.astimezone(MOSCOW_TIMEZONE).strftime(PRODUCT_DATE_FORMAT)
 
 class PriceOut(BaseModel):
     price_type: str
@@ -57,7 +64,7 @@ class ProductDetailOut(ProductListOut):
     @field_serializer("created_at", "updated_at")
     def serialize_product_date(self, value: datetime) -> str:
         """Возвращает даты карточки товара в едином человекочитаемом формате."""
-        return value.strftime(PRODUCT_DATE_FORMAT)
+        return format_moscow_datetime(value)
 class MetaOut(BaseModel):
     last_import: datetime | None
     product_count: int
@@ -128,6 +135,11 @@ class AutoImportStateOut(BaseModel):
     is_running: bool = False
     updated_at: datetime | None = None
     model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("last_run_at", "updated_at")
+    def serialize_service_date(self, value: datetime | None) -> str | None:
+        """Форматирует время сервиса, которое уже хранится в московской временной зоне."""
+        return value.strftime(PRODUCT_DATE_FORMAT) if value else None
 
 class FtpConnectionTestOut(BaseModel):
     success: bool
