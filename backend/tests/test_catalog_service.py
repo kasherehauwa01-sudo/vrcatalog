@@ -120,6 +120,16 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual([p.code for p in items], ["TABLE-3", "PAN-2", "CHAIR-1"])
         self.assertEqual(pagination, {"page": 1, "pageSize": 20, "totalItems": 3, "totalPages": 1})
 
+    def test_default_sort_puts_recently_updated_products_first(self):
+        self.products[0].updated_at = datetime(2026, 7, 28, 13, 0)
+        self.products[1].updated_at = datetime(2026, 7, 28, 13, 15)
+        self.products[2].updated_at = datetime(2026, 7, 28, 13, 10)
+        self.db.commit()
+
+        items, _ = paginated_products(self.db, {"page": 1, "page_size": 20})
+
+        self.assertEqual([product.code for product in items], ["PAN-2", "TABLE-3", "CHAIR-1"])
+
     def test_empty_result(self):
         self.assertEqual(self.query(search="несуществующий товар"), [])
 

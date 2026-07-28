@@ -26,6 +26,7 @@ EXCLUDED_PROPERTY_FILTERS = {
     "ВидТовара",
 }
 SORT_FIELDS = {
+    "updated_at": Product.updated_at,
     "id": Product.id,
     "name": Product.name,
     "article": Product.article,
@@ -134,7 +135,7 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
 def paginated_products(db: Session, params):
     q = catalog_product_query(db, params)
     total = q.order_by(None).count()
-    sort = params.get("sort", "id")
+    sort = params.get("sort", "updated_at")
     if sort == "price":
         sort_column = (
             select(func.min(Price.price_value))
@@ -144,10 +145,18 @@ def paginated_products(db: Session, params):
         )
     else:
         sort_column = SORT_FIELDS[sort]
-    direction = sort_column.desc() if params.get("order") == "desc" else sort_column.asc()
+    requested_order = params.get("order")
+    is_descending = requested_order == "desc" or (requested_order is None and sort == "updated_at")
+    direction = sort_column.desc() if is_descending else sort_column.asc()
     page = params["page"]
     page_size = params["page_size"]
-    items = q.order_by(direction, Product.id.asc()).offset((page - 1) * page_size).limit(page_size).all()
+    # По умолчанию сначала показываем недавно измененные и новые товары.
+    # created_at и id обеспечивают стабильный порядок при одинаковом времени обновления.
+    if sort == "updated_at":
+        query_order = (direction, Product.created_at.desc(), Product.id.desc())
+    else:
+        query_order = (direction, Product.id.asc())
+    items = q.order_by(*query_order).offset((page - 1) * page_size).limit(page_size).all()
     return items, {
         "page": page,
         "pageSize": page_size,
