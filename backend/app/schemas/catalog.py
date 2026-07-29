@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from pydantic import BaseModel, ConfigDict, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 
 PRODUCT_DATE_FORMAT = "%d.%m.%Y %H:%M"
@@ -144,3 +144,25 @@ class AutoImportStateOut(BaseModel):
 class FtpConnectionTestOut(BaseModel):
     success: bool
     message: str
+
+
+class InternalProductOut(BaseModel):
+    article: str
+    found: bool
+    product_id: int | None = None
+    name: str | None = None
+    manager_id: int | None = None
+    manager_name: str | None = None
+
+
+class InternalProductResponse(InternalProductOut):
+    ok: bool = True
+
+
+class InternalProductsRequest(BaseModel):
+    articles: list[str] = Field(max_length=1000)
+
+
+class InternalProductsResponse(BaseModel):
+    ok: bool = True
+    items: list[InternalProductOut]

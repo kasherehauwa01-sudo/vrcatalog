@@ -22,6 +22,7 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
       SECRET_KEY: ${SECRET_KEY}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
       BASE_PATH: ${BASE_PATH:-/vr/catalog}
       PORT: 8000
     volumes:

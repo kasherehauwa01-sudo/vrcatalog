@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     port: int = 8000
     upload_dir: str = "/app/uploads"
     secret_key: str = "change-me"
+    internal_api_token: str = ""
     base_path: str = "/vr/catalog"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
