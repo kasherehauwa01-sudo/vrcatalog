@@ -65,6 +65,7 @@ PORT=8080
 DATABASE_URL=postgresql+psycopg://vrcatalog:vrcatalog_password@postgres:5432/vrcatalog
 UPLOAD_DIR=/app/uploads
 SECRET_KEY=change-this-secret-key
+INTERNAL_API_TOKEN=replace-with-a-long-random-token
 POSTGRES_DB=vrcatalog
 POSTGRES_USER=vrcatalog
 POSTGRES_PASSWORD=vrcatalog_password
@@ -72,6 +73,83 @@ VITE_BASE_PATH=/vr/catalog/
 ```
 
 `BASE_PATH` нужен backend для корректного OpenAPI за reverse proxy. `VITE_BASE_PATH` нужен Vite для сборки ассетов под подпапку `/vr/catalog/`. В frontend API-ссылки строятся от `import.meta.env.BASE_URL`, поэтому нет отдельного абсолютного URL `/api`.
+
+`INTERNAL_API_TOKEN` используется только backend-to-backend запросами. Сгенерировать токен можно командой `openssl rand -hex 32`; его нельзя добавлять в frontend или передавать в URL.
+
+## Внутреннее API ответственных менеджеров
+
+Каталог является источником названия товара и ответственного менеджера для других сервисов. Оба endpoint требуют заголовок `X-Internal-Token`, скрыты из OpenAPI/Swagger и возвращают HTTP 401 при отсутствующем или неверном токене.
+
+Один товар (диагностика):
+
+```bash
+curl -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
+  "https://kvasmix.ru/vr/catalog/api/internal/products/by-article/10001"
+```
+
+```json
+{
+  "ok": true,
+  "article": "10001",
+  "found": true,
+  "product_id": 15,
+  "name": "Товар А",
+  "manager_id": null,
+  "manager_name": "Иванов Иван"
+}
+```
+
+Массовый запрос (до 1000 позиций):
+
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
+  -d '{"articles":["10001","10002","00123"]}' \
+  "https://kvasmix.ru/vr/catalog/api/internal/products/by-articles"
+```
+
+```json
+{
+  "ok": true,
+  "items": [
+    {
+      "article": "10001",
+      "found": true,
+      "product_id": 15,
+      "name": "Товар А",
+      "manager_id": null,
+      "manager_name": "Иванов Иван"
+    },
+    {
+      "article": "10002",
+      "found": true,
+      "product_id": 18,
+      "name": "Товар Б",
+      "manager_id": null,
+      "manager_name": null
+    },
+    {
+      "article": "00123",
+      "found": false,
+      "product_id": null,
+      "name": null,
+      "manager_id": null,
+      "manager_name": null
+    }
+  ]
+}
+```
+
+Порядок и повторы сохраняются. Уникальные артикулы ищутся одним SQL-запросом по индексу `ix_products_article`, поэтому повторный артикул не создаёт дополнительного обращения к БД.
+
+### Текущее хранение менеджера и совместимое развитие
+
+Характеристика «Менеджер» импортируется из XML одновременно в универсальную таблицу `product_properties` и в текстовый столбец `products.manager`. Таблицы сотрудников, внутреннего идентификатора менеджера и внешнего ключа на сотрудника сейчас нет, поэтому API возвращает `manager_id: null`, а ФИО — в `manager_name`. Существующий импорт и модель данных не изменяются.
+
+Если стабильный справочник сотрудников появится в источнике данных, безопасный переход состоит из следующих этапов: создать отдельный справочник с уникальным внешним ID; добавить nullable-связь товара с ним; продолжать заполнять и возвращать текстовое имя; сопоставить исторические записи; начать возвращать ID только для надёжно сопоставленных менеджеров. Это сохраняет совместимость потребителей, которые уже используют `manager_name`.
+
+Каждое успешное или отклонённое по токену обращение записывается в `service_logs` с событием `internal_api_request`: дата и время находятся в `created_at`, а JSON в `message` содержит endpoint, число артикулов, длительность, числа найденных/ненайденных товаров и HTTP-код. Токен, заголовки и сами артикулы не журналируются.
 
 ## Быстрый деплой на VPS
 

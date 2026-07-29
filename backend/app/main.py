@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.api.internal_routes import router as internal_router
 from app.core.config import settings
 from app.db.schema_migrations import ensure_price_columns, ensure_product_columns
 from app.db.session import Base, engine
@@ -27,6 +28,7 @@ app = FastAPI(
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(router, prefix="/api")
+app.include_router(internal_router, prefix="/api")
 
 @app.on_event("startup")
 def start_xml_auto_import() -> None:
