@@ -75,6 +75,26 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual([p.code for p in self.query(search="000002")], ["PAN-2"])
         self.assertEqual([p.code for p in self.query(code="chair")], ["CHAIR-1"])
 
+    def test_multiple_codes_can_be_separated_by_spaces_or_commas(self):
+        self.assertEqual(
+            [product.code for product in self.query(code="CHAIR-1, PAN-2")],
+            ["CHAIR-1", "PAN-2"],
+        )
+        self.assertEqual(
+            [product.code for product in self.query(code="CHAIR-1 TABLE-3")],
+            ["CHAIR-1", "TABLE-3"],
+        )
+
+    def test_multiple_articles_can_be_separated_by_spaces_or_commas(self):
+        self.assertEqual(
+            [product.code for product in self.query(article="SKU-001,ART-003")],
+            ["CHAIR-1", "TABLE-3"],
+        )
+        self.assertEqual(
+            [product.code for product in self.query(article="SKU-001 SKU-002")],
+            ["CHAIR-1", "PAN-2"],
+        )
+
     def test_category_availability_and_price_filters_use_and_logic(self):
         result = self.query(section="Мебель", availability="in_stock", price_from=1000, price_to=2000)
         self.assertEqual([p.code for p in result], ["CHAIR-1"])

@@ -1,5 +1,6 @@
 from math import ceil
 from datetime import datetime, timedelta
+import re
 
 from sqlalchemy import String, and_, case, cast, func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -49,6 +50,11 @@ def _values(value):
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
+def _search_values(value) -> list[str]:
+    """Разделяет коды и артикулы по запятым либо любым пробельным символам."""
+    return [item for item in re.split(r"[,\s]+", str(value or "").strip()) if item]
+
+
 def catalog_product_query(db: Session, params, eager_load: bool = True):
     """Build the validated catalog query; all values remain SQLAlchemy bind parameters."""
     q = db.query(Product)
@@ -69,10 +75,12 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
         q = q.filter(Product.id == params["id"])
     if name := str(params.get("name") or "").strip():
         q = q.filter(Product.name.ilike(f"%{name}%"))
-    if code := str(params.get("code") or "").strip():
-        q = q.filter(Product.code.ilike(f"%{code}%"))
-    if article := str(params.get("article") or "").strip():
-        q = q.filter(Product.article.ilike(f"%{article}%"))
+    code_values = _search_values(params.get("code"))
+    if code_values:
+        q = q.filter(or_(*(Product.code.ilike(f"%{code}%") for code in code_values)))
+    article_values = _search_values(params.get("article"))
+    if article_values:
+        q = q.filter(or_(*(Product.article.ilike(f"%{article}%") for article in article_values)))
     barcode_values = _values(params.get("barcode"))
     if barcode_values:
         q = q.filter(Product.barcodes.any(Barcode.value.in_(barcode_values)))

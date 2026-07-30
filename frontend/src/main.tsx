@@ -1618,11 +1618,13 @@ function App() {
             </Stack>
             <TextField
               label="Поиск по коду"
+              helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
+              helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
@@ -1735,11 +1737,13 @@ function App() {
             </Stack>
             <TextField
               label="Поиск по коду"
+              helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
+              helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
@@ -1878,11 +1882,13 @@ function App() {
             </Stack>
             <TextField
               label="Поиск по коду"
+              helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
+              helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
