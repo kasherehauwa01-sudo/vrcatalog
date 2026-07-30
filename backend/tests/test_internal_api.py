@@ -1,0 +1,217 @@
+import json
+import time
+import unittest
+
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
+
+from app.core.config import settings
+from app.db.session import Base, get_db
+from app.main import app
+from app.models.catalog import Product, ServiceLog
+
+
+class InternalProductApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+            future=True,
+        )
+        Base.metadata.create_all(cls.engine)
+
+        def override_db():
+            with Session(cls.engine) as db:
+                yield db
+
+        app.dependency_overrides[get_db] = override_db
+        cls.client = TestClient(app)
+        cls.original_token = settings.internal_api_token
+        settings.internal_api_token = "test-internal-token"
+
+    @classmethod
+    def tearDownClass(cls):
+        settings.internal_api_token = cls.original_token
+        app.dependency_overrides.clear()
+        cls.engine.dispose()
+
+    def setUp(self):
+        with Session(self.engine) as db:
+            db.query(ServiceLog).delete()
+            db.query(Product).delete()
+            db.add_all(
+                [
+                    Product(
+                        code="P-1",
+                        article="10001",
+                        name="Товар А",
+                        manager="Иванов Иван",
+                        search_text="",
+                    ),
+                    Product(
+                        code="P-2",
+                        article="10002",
+                        name="Товар Б",
+                        manager=None,
+                        search_text="",
+                    ),
+                    Product(
+                        code="P-3",
+                        article="00123",
+                        name="Товар с ведущими нулями",
+                        manager="Петров Пётр",
+                        search_text="",
+                    ),
+                ]
+            )
+            db.commit()
+
+    @property
+    def headers(self):
+        return {"X-Internal-Token": "test-internal-token"}
+
+    def test_get_returns_found_product_and_only_contract_fields(self):
+        response = self.client.get(
+            "/api/internal/products/by-article/10001", headers=self.headers
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "ok": True,
+                "article": "10001",
+                "found": True,
+                "product_id": response.json()["product_id"],
+                "name": "Товар А",
+                "manager_id": None,
+                "manager_name": "Иванов Иван",
+            },
+        )
+
+    def test_batch_preserves_order_duplicates_missing_items_and_leading_zeroes(self):
+        response = self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": ["10002", "missing", "00123", "10002"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        items = response.json()["items"]
+        self.assertEqual([item["article"] for item in items], ["10002", "missing", "00123", "10002"])
+        self.assertEqual([item["found"] for item in items], [True, False, True, True])
+        self.assertIsNone(items[0]["manager_name"])
+        self.assertEqual(items[2]["manager_name"], "Петров Пётр")
+        self.assertEqual(items[0], items[3])
+
+    def test_batch_returns_all_missing(self):
+        response = self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": ["none-1", "none-2"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(all(not item["found"] for item in response.json()["items"]))
+
+    def test_batch_accepts_empty_list(self):
+        response = self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": []},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True, "items": []})
+
+    def test_missing_and_invalid_tokens_return_401(self):
+        missing = self.client.get("/api/internal/products/by-article/10001")
+        invalid = self.client.post(
+            "/api/internal/products/by-articles",
+            headers={"X-Internal-Token": "wrong"},
+            json={"articles": ["10001"]},
+        )
+
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(invalid.status_code, 401)
+
+    def test_internal_routes_are_absent_from_openapi(self):
+        paths = self.client.get("/api/openapi.json").json()["paths"]
+        self.assertFalse(any("/internal/products" in path for path in paths))
+
+    def test_request_log_contains_metrics_but_not_token_or_articles(self):
+        self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": ["10001", "missing"]},
+        )
+
+        with Session(self.engine) as db:
+            log = db.query(ServiceLog).one()
+            metrics = json.loads(log.message)
+        self.assertEqual(log.event, "internal_api_request")
+        self.assertEqual(metrics["article_count"], 2)
+        self.assertEqual(metrics["found_count"], 1)
+        self.assertEqual(metrics["not_found_count"], 1)
+        self.assertEqual(metrics["status_code"], 200)
+        self.assertNotIn("test-internal-token", log.message)
+        self.assertNotIn("10001", log.message)
+
+    def test_batch_uses_one_product_select_for_duplicate_articles(self):
+        product_selects = 0
+
+        def count_product_selects(_conn, _cursor, statement, _parameters, _context, _many):
+            nonlocal product_selects
+            normalized = statement.lower()
+            if normalized.lstrip().startswith("select") and "from products" in normalized:
+                product_selects += 1
+
+        event.listen(self.engine, "before_cursor_execute", count_product_selects)
+        try:
+            response = self.client.post(
+                "/api/internal/products/by-articles",
+                headers=self.headers,
+                json={"articles": ["10001", "10001", "10002"]},
+            )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", count_product_selects)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(product_selects, 1)
+
+    def test_batch_performance_for_10_100_and_1000_articles(self):
+        with Session(self.engine) as db:
+            db.add_all(
+                Product(
+                    code=f"LOAD-{index}",
+                    article=f"LOAD-{index:04d}",
+                    name=f"Нагрузочный товар {index}",
+                    manager="Менеджер",
+                    search_text="",
+                )
+                for index in range(1000)
+            )
+            db.commit()
+
+        timings = {}
+        for count in (10, 100, 1000):
+            started_at = time.perf_counter()
+            response = self.client.post(
+                "/api/internal/products/by-articles",
+                headers=self.headers,
+                json={"articles": [f"LOAD-{index:04d}" for index in range(count)]},
+            )
+            timings[count] = time.perf_counter() - started_at
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(response.json()["items"]), count)
+            self.assertTrue(all(item["found"] for item in response.json()["items"]))
+
+        print(f"Internal API timings (seconds): {timings}")
+
+
+if __name__ == "__main__":
+    unittest.main()

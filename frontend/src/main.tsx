@@ -572,32 +572,6 @@ function App() {
                     },
                   }}
                 />
-                <FormControlLabel
-                  sx={{ px: 1, m: 0, whiteSpace: "nowrap" }}
-                  control={(
-                    <Checkbox
-                      checked={filterFields.onlyNew === "true"}
-                      onChange={(event) => {
-                        const onlyNew = event.target.checked ? "true" : "false";
-                        setFilterFields((current) => ({ ...current, onlyNew }));
-                        setDraftFields((current) => ({ ...current, onlyNew }));
-                        updateParams({ onlyNew: event.target.checked ? "true" : null });
-                      }}
-                    />
-                  )}
-                  label="Только новинки"
-                />
-                <Button
-                  variant={params.get("sort") === "is_new" ? "contained" : "outlined"}
-                  onClick={() => updateParams(
-                    params.get("sort") === "is_new"
-                      ? { sort: null, order: null }
-                      : { sort: "is_new", order: "desc" },
-                  )}
-                  sx={{ whiteSpace: "nowrap" }}
-                >
-                  Сначала новинки
-                </Button>
               </Stack>
             </Paper>
           )}
@@ -1644,11 +1618,13 @@ function App() {
             </Stack>
             <TextField
               label="Поиск по коду"
+              helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
+              helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
@@ -1761,11 +1737,13 @@ function App() {
             </Stack>
             <TextField
               label="Поиск по коду"
+              helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
+              helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
@@ -1904,11 +1882,13 @@ function App() {
             </Stack>
             <TextField
               label="Поиск по коду"
+              helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
+              helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
