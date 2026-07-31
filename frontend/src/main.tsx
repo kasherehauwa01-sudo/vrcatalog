@@ -97,6 +97,8 @@ const theme = createTheme({
   },
 });
 
+const SETTINGS_PASSWORD = "8852285";
+
 const labels: Record<string, string> = {
   section: "Раздел",
   manufacturer: "Производитель",
@@ -222,6 +224,10 @@ function App() {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [detail, setDetail] = useState<ProductDetail | null>(null);
   const [tab, setTab] = useState<"catalog" | "settings">("catalog");
+  const [settingsPasswordOpen, setSettingsPasswordOpen] = useState(false);
+  const [settingsPassword, setSettingsPassword] = useState("");
+  const [settingsPasswordError, setSettingsPasswordError] = useState(false);
+  const [settingsUnlocked, setSettingsUnlocked] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "logs">("settings");
   const [openSettingsGroups, setOpenSettingsGroups] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
@@ -310,6 +316,27 @@ function App() {
   };
   const copy = (value?: string) =>
     value && navigator.clipboard.writeText(value);
+  const closeSettingsPassword = () => {
+    setSettingsPasswordOpen(false);
+    setSettingsPassword("");
+    setSettingsPasswordError(false);
+  };
+  const openSettings = () => {
+    if (settingsUnlocked) {
+      setTab("settings");
+      return;
+    }
+    setSettingsPasswordOpen(true);
+  };
+  const unlockSettings = () => {
+    if (settingsPassword !== SETTINGS_PASSWORD) {
+      setSettingsPasswordError(true);
+      return;
+    }
+    setSettingsUnlocked(true);
+    closeSettingsPassword();
+    setTab("settings");
+  };
   const allSelected =
     products.length > 0 && selectedIds.length === products.length;
   const toggleSelected = (id: number) =>
@@ -612,6 +639,10 @@ function App() {
                   window.location.href = clientsUrl;
                   return;
                 }
+                if (value === "settings") {
+                  openSettings();
+                  return;
+                }
                 setTab(value);
               }}
               textColor="primary"
@@ -623,6 +654,33 @@ function App() {
               <Tab value="settings" label="Настройки" />
             </Tabs>
           </Paper>
+
+          <Dialog open={settingsPasswordOpen} onClose={closeSettingsPassword} maxWidth="xs" fullWidth>
+            <DialogTitle>Доступ к настройкам</DialogTitle>
+            <DialogContent>
+              <TextField
+                autoFocus
+                fullWidth
+                type="password"
+                label="Пароль"
+                value={settingsPassword}
+                error={settingsPasswordError}
+                helperText={settingsPasswordError ? "Неверный пароль" : "Введите пароль для доступа к вкладке"}
+                onChange={(event) => {
+                  setSettingsPassword(event.target.value);
+                  setSettingsPasswordError(false);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") unlockSettings();
+                }}
+                sx={{ mt: 1 }}
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={closeSettingsPassword}>Отмена</Button>
+              <Button variant="contained" onClick={unlockSettings}>Войти</Button>
+            </DialogActions>
+          </Dialog>
 
           {tab === "catalog" && (
             <Paper
