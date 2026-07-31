@@ -373,6 +373,11 @@ function App() {
     next.delete("page");
     setActive(draftActive); setFilterFields(draftFields); replaceCatalogParams(next); setFiltersOpen(false);
   };
+  const applyFiltersOnEnter = (event: React.KeyboardEvent) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    applyFilters();
+  };
   const resetFilters = () => {
     const emptyFields = fieldsFromUrl(new URLSearchParams());
     setDraftActive({}); setActive({}); setDraftFields(emptyFields); setFilterFields(emptyFields);
@@ -1224,8 +1229,8 @@ function App() {
           <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
             <Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h6">Фильтр товаров</Typography><IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}><CloseIcon /></IconButton></Stack>
             <TextField label="ID" type="number" value={draftFields.id} onChange={(e) => setDraftFields({ ...draftFields, id: e.target.value })} inputProps={{ min: 1 }} />
-            <TextField label="Название" value={draftFields.name} onChange={(e) => setDraftFields({ ...draftFields, name: e.target.value })} />
-            <TextField label="Артикул" value={draftFields.article} onChange={(e) => setDraftFields({ ...draftFields, article: e.target.value })} />
+            <TextField label="Название" value={draftFields.name} onChange={(e) => setDraftFields({ ...draftFields, name: e.target.value })} onKeyDown={applyFiltersOnEnter} />
+            <TextField label="Артикул" value={draftFields.article} onChange={(e) => setDraftFields({ ...draftFields, article: e.target.value })} onKeyDown={applyFiltersOnEnter} />
             <TextField select label="Наличие" value={draftFields.availability} onChange={(e) => setDraftFields({ ...draftFields, availability: e.target.value })}><MenuItem value="all">Все</MenuItem><MenuItem value="in_stock">В наличии</MenuItem><MenuItem value="out_of_stock">Нет в наличии</MenuItem></TextField>
             <Stack direction="row" spacing={1}><TextField fullWidth label="Количество от" type="number" value={draftFields.quantityFrom} onChange={(e) => setDraftFields({ ...draftFields, quantityFrom: e.target.value })} /><TextField fullWidth label="Количество до" type="number" value={draftFields.quantityTo} onChange={(e) => setDraftFields({ ...draftFields, quantityTo: e.target.value })} /></Stack>
             <Stack direction="row" spacing={1}><TextField fullWidth label="Цена от" type="number" value={draftFields.priceFrom} onChange={(e) => setDraftFields({ ...draftFields, priceFrom: e.target.value })} inputProps={{ min: 0 }} /><TextField fullWidth label="Цена до" type="number" value={draftFields.priceTo} onChange={(e) => setDraftFields({ ...draftFields, priceTo: e.target.value })} inputProps={{ min: 0 }} /></Stack>
@@ -1251,6 +1256,7 @@ function App() {
             <TextField
               label="Название"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <TextField
@@ -1337,6 +1343,7 @@ function App() {
             <TextField
               label="Название"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <TextField
@@ -1423,6 +1430,7 @@ function App() {
             <TextField
               label="Название"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <TextField
@@ -1509,6 +1517,7 @@ function App() {
             <TextField
               label="Название"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <TextField
@@ -1595,6 +1604,7 @@ function App() {
             <TextField
               label="Название"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <TextField
@@ -1784,17 +1794,20 @@ function App() {
               label="Поиск по коду"
               helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
               helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
             <TextField
               label="Поиск по наименованию"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             {mainFilterEntries.map(({ key, label }) => (
@@ -1903,17 +1916,20 @@ function App() {
               label="Поиск по коду"
               helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
               helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
             <TextField
               label="Поиск по наименованию"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <FormControlLabel
@@ -2048,17 +2064,20 @@ function App() {
               label="Поиск по коду"
               helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
               helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
             <TextField
               label="Поиск по наименованию"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <FormControlLabel
