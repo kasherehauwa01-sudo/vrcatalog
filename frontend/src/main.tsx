@@ -157,12 +157,44 @@ const formatMoscowDate = (value: string) =>
 const getLogStage = (log: ServiceLog) =>
   log.message.match(/Этап:\n([^\n]+)/)?.[1] ?? log.event;
 
+const parseFilterValues = (value: string) => {
+  const result: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    const nextChar = value[index + 1];
+    if (char === '"') {
+      if (quoted && nextChar === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === "," && !quoted) {
+      if (current.trim()) result.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) result.push(current.trim());
+  return result;
+};
+
+const serializeFilterValues = (values: string[]) =>
+  values
+    .map((value) =>
+      /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value,
+    )
+    .join(",");
+
 function App() {
   const initialParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const multiFromUrl = (p: URLSearchParams) => {
     const result = Object.keys(labels).reduce<Record<string, string[]>>((values, key) => {
       const value = p.get(key === "product_type" ? "productType" : key);
-      if (value) values[key] = value.split(",").filter(Boolean);
+      if (value) values[key] = parseFilterValues(value);
       return values;
     }, {});
     p.getAll("property").forEach((item) => {
@@ -304,7 +336,7 @@ function App() {
       }
       const parameter = key === "product_type" ? "productType" : key;
       const values = draftActive[key] ?? [];
-      if (values.length) next.set(parameter, values.join(",")); else next.delete(parameter);
+      if (values.length) next.set(parameter, serializeFilterValues(values)); else next.delete(parameter);
     });
     Object.entries(draftFields).forEach(([key, value]) => {
       if (value && value !== "all") next.set(key, value.trim()); else next.delete(key);
@@ -327,7 +359,7 @@ function App() {
         const next = new URLSearchParams(window.location.search); next.delete("property");
         Object.entries(updated).filter(([activeKey]) => activeKey.startsWith("property:")).forEach(([activeKey, activeValues]) => activeValues.forEach((item) => next.append("property", `${activeKey.slice(9)}:${item}`)));
         next.delete("page"); replaceCatalogParams(next);
-      } else updateParams({ [key === "product_type" ? "productType" : key]: values.join(",") });
+      } else updateParams({ [key === "product_type" ? "productType" : key]: serializeFilterValues(values) });
     } else {
       const resetValue = key === "availability" ? "all" : key === "inStockOnly" || key === "onlyNew" ? "false" : "";
       const updated = { ...filterFields, [key]: resetValue };
@@ -360,7 +392,7 @@ function App() {
       if (key.startsWith("property:")) {
         values.forEach((value) => dependentParams.append("property", `${key.slice("property:".length)}:${value}`));
       } else {
-        dependentParams.set(key === "product_type" ? "productType" : key, values.join(","));
+        dependentParams.set(key === "product_type" ? "productType" : key, serializeFilterValues(values));
       }
     });
     setPropertyOptions(await api.filters(dependentParams));
@@ -384,7 +416,7 @@ function App() {
     if (key.startsWith("property:")) {
       next.append("property", `${key.slice("property:".length)}:${value}`);
     } else {
-      next.set(key === "product_type" ? "productType" : key, value);
+      next.set(key === "product_type" ? "productType" : key, serializeFilterValues([value]));
     }
     const query = next.toString();
     return `${window.location.pathname}${query ? `?${query}` : ""}`;
@@ -395,7 +427,7 @@ function App() {
     if (key.startsWith("property:")) {
       next.append("property", `${key.slice("property:".length)}:${value}`);
     } else {
-      next.set(key === "product_type" ? "productType" : key, value);
+      next.set(key === "product_type" ? "productType" : key, serializeFilterValues([value]));
     }
     const nextActive = multiFromUrl(next);
     const nextFields = fieldsFromUrl(next);
