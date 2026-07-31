@@ -372,6 +372,72 @@ function App() {
       .filter((value) => !searchValue || value.toLocaleLowerCase("ru-RU").includes(searchValue))
       .slice(0, 100);
   };
+  const productPropertyValue = (product: ProductDetail, names: string[]) => {
+    const wanted = names.map((name) => name.toLocaleLowerCase("ru-RU"));
+    return product.properties.find((property) =>
+      wanted.includes(property.name.trim().toLocaleLowerCase("ru-RU")),
+    )?.value;
+  };
+  const catalogFilterUrl = (key: string, value: string) => {
+    const next = new URLSearchParams(window.location.search);
+    next.delete("page");
+    if (key.startsWith("property:")) {
+      next.append("property", `${key.slice("property:".length)}:${value}`);
+    } else {
+      next.set(key === "product_type" ? "productType" : key, value);
+    }
+    const query = next.toString();
+    return `${window.location.pathname}${query ? `?${query}` : ""}`;
+  };
+  const openCatalogFilter = (key: string, value: string) => {
+    const next = new URLSearchParams(window.location.search);
+    next.delete("page");
+    if (key.startsWith("property:")) {
+      next.append("property", `${key.slice("property:".length)}:${value}`);
+    } else {
+      next.set(key === "product_type" ? "productType" : key, value);
+    }
+    const nextActive = multiFromUrl(next);
+    const nextFields = fieldsFromUrl(next);
+    setDetail(null);
+    setTab("catalog");
+    setActive(nextActive);
+    setDraftActive(nextActive);
+    setFilterFields(nextFields);
+    setDraftFields(nextFields);
+    replaceCatalogParams(next);
+  };
+  const clickableDetailFilters: Record<string, string> = {
+    Раздел: "section",
+    "Вид товара": "product_type",
+    Производитель: "manufacturer",
+    Менеджер: "manager",
+    Бренд: "brand",
+    "Код маркировки": "property:Код маркировки",
+    Коллекция: "property:Коллекция",
+  };
+  const renderDetailValue = (label: string, value: string) => {
+    const filterKey = clickableDetailFilters[label];
+    if (!filterKey) return value;
+    return (
+      <Box
+        component="a"
+        href={catalogFilterUrl(filterKey, value)}
+        onClick={(event) => {
+          event.preventDefault();
+          openCatalogFilter(filterKey, value);
+        }}
+        sx={{
+          color: "primary.main",
+          fontWeight: 700,
+          textDecoration: "none",
+          "&:hover": { textDecoration: "underline" },
+        }}
+      >
+        {value}
+      </Box>
+    );
+  };
   const changeSort = (field: string) => {
     const currentSort = params.get("sort");
     updateParams({ sort: field, order: currentSort === field && params.get("order") === "asc" ? "desc" : "asc" });
@@ -2110,21 +2176,25 @@ function App() {
                     ["Производитель", detail.manufacturer],
                     ["Менеджер", detail.manager],
                     ["Бренд", detail.brand],
+                    ["Код маркировки", productPropertyValue(detail, ["Код маркировки"])],
+                    ["Коллекция", productPropertyValue(detail, ["Коллекция"])],
                     ["Материал", detail.material],
                     ["Цвет", detail.color],
                     ["Сертификат", detail.certificate],
                     ["Штрихкоды", detail.barcodes.map((b) => b.value).join(", ")],
-                    ["Описание", detail.description],
                   ]
                     .filter(([, value]) => value)
-                    .map(([label, value]) => (
-                      <Typography key={label} sx={{ mt: label === "Описание" ? 1 : 0 }}>
-                        <Box component="span" fontWeight={800}>
-                          {label}:
-                        </Box>{" "}
-                        {value}
-                      </Typography>
-                    ))}
+                    .map(([label, value]) => {
+                      const characteristicLabel = String(label);
+                      return (
+                        <Typography key={characteristicLabel}>
+                          <Box component="span" fontWeight={800}>
+                            {characteristicLabel}:
+                          </Box>{" "}
+                          {renderDetailValue(characteristicLabel, String(value))}
+                        </Typography>
+                      );
+                    })}
                 </Paper>
                 <Paper
                   variant="outlined"
