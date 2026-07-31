@@ -157,12 +157,44 @@ const formatMoscowDate = (value: string) =>
 const getLogStage = (log: ServiceLog) =>
   log.message.match(/Этап:\n([^\n]+)/)?.[1] ?? log.event;
 
+const parseFilterValues = (value: string) => {
+  const result: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    const nextChar = value[index + 1];
+    if (char === '"') {
+      if (quoted && nextChar === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === "," && !quoted) {
+      if (current.trim()) result.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) result.push(current.trim());
+  return result;
+};
+
+const serializeFilterValues = (values: string[]) =>
+  values
+    .map((value) =>
+      /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value,
+    )
+    .join(",");
+
 function App() {
   const initialParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const multiFromUrl = (p: URLSearchParams) => {
     const result = Object.keys(labels).reduce<Record<string, string[]>>((values, key) => {
       const value = p.get(key === "product_type" ? "productType" : key);
-      if (value) values[key] = value.split(",").filter(Boolean);
+      if (value) values[key] = parseFilterValues(value);
       return values;
     }, {});
     p.getAll("property").forEach((item) => {
@@ -304,7 +336,7 @@ function App() {
       }
       const parameter = key === "product_type" ? "productType" : key;
       const values = draftActive[key] ?? [];
-      if (values.length) next.set(parameter, values.join(",")); else next.delete(parameter);
+      if (values.length) next.set(parameter, serializeFilterValues(values)); else next.delete(parameter);
     });
     Object.entries(draftFields).forEach(([key, value]) => {
       if (value && value !== "all") next.set(key, value.trim()); else next.delete(key);
@@ -327,7 +359,7 @@ function App() {
         const next = new URLSearchParams(window.location.search); next.delete("property");
         Object.entries(updated).filter(([activeKey]) => activeKey.startsWith("property:")).forEach(([activeKey, activeValues]) => activeValues.forEach((item) => next.append("property", `${activeKey.slice(9)}:${item}`)));
         next.delete("page"); replaceCatalogParams(next);
-      } else updateParams({ [key === "product_type" ? "productType" : key]: values.join(",") });
+      } else updateParams({ [key === "product_type" ? "productType" : key]: serializeFilterValues(values) });
     } else {
       const resetValue = key === "availability" ? "all" : key === "inStockOnly" || key === "onlyNew" ? "false" : "";
       const updated = { ...filterFields, [key]: resetValue };
@@ -360,7 +392,7 @@ function App() {
       if (key.startsWith("property:")) {
         values.forEach((value) => dependentParams.append("property", `${key.slice("property:".length)}:${value}`));
       } else {
-        dependentParams.set(key === "product_type" ? "productType" : key, values.join(","));
+        dependentParams.set(key === "product_type" ? "productType" : key, serializeFilterValues(values));
       }
     });
     setPropertyOptions(await api.filters(dependentParams));
@@ -371,6 +403,74 @@ function App() {
     return (options[key] ?? [])
       .filter((value) => !searchValue || value.toLocaleLowerCase("ru-RU").includes(searchValue))
       .slice(0, 100);
+  };
+  const productPropertyValue = (product: ProductDetail, names: string[]) => {
+    const normalizeName = (name: string) =>
+      name.toLocaleLowerCase("ru-RU").replace(/[\s_-]+/g, "");
+    const wanted = new Set(names.map(normalizeName));
+    return product.properties.find(
+      (property) => wanted.has(normalizeName(property.name)) && property.value?.trim(),
+    )?.value?.trim();
+  };
+  const catalogFilterUrl = (key: string, value: string) => {
+    const next = new URLSearchParams(window.location.search);
+    next.delete("page");
+    if (key.startsWith("property:")) {
+      next.append("property", `${key.slice("property:".length)}:${value}`);
+    } else {
+      next.set(key === "product_type" ? "productType" : key, serializeFilterValues([value]));
+    }
+    const query = next.toString();
+    return `${window.location.pathname}${query ? `?${query}` : ""}`;
+  };
+  const openCatalogFilter = (key: string, value: string) => {
+    const next = new URLSearchParams(window.location.search);
+    next.delete("page");
+    if (key.startsWith("property:")) {
+      next.append("property", `${key.slice("property:".length)}:${value}`);
+    } else {
+      next.set(key === "product_type" ? "productType" : key, serializeFilterValues([value]));
+    }
+    const nextActive = multiFromUrl(next);
+    const nextFields = fieldsFromUrl(next);
+    setDetail(null);
+    setTab("catalog");
+    setActive(nextActive);
+    setDraftActive(nextActive);
+    setFilterFields(nextFields);
+    setDraftFields(nextFields);
+    replaceCatalogParams(next);
+  };
+  const clickableDetailFilters: Record<string, string> = {
+    Раздел: "section",
+    "Вид товара": "product_type",
+    Производитель: "manufacturer",
+    Менеджер: "manager",
+    Бренд: "brand",
+    "Код маркировки": "property:Код маркировки",
+    Коллекция: "property:Коллекция",
+  };
+  const renderDetailValue = (label: string, value: string) => {
+    const filterKey = clickableDetailFilters[label];
+    if (!filterKey) return value;
+    return (
+      <Box
+        component="a"
+        href={catalogFilterUrl(filterKey, value)}
+        onClick={(event) => {
+          event.preventDefault();
+          openCatalogFilter(filterKey, value);
+        }}
+        sx={{
+          color: "primary.main",
+          fontWeight: 700,
+          textDecoration: "none",
+          "&:hover": { textDecoration: "underline" },
+        }}
+      >
+        {value}
+      </Box>
+    );
   };
   const changeSort = (field: string) => {
     const currentSort = params.get("sort");
@@ -2110,21 +2210,25 @@ function App() {
                     ["Производитель", detail.manufacturer],
                     ["Менеджер", detail.manager],
                     ["Бренд", detail.brand],
+                    ["Код маркировки", productPropertyValue(detail, ["Код маркировки"])],
+                    ["Коллекция", productPropertyValue(detail, ["Коллекция"])],
                     ["Материал", detail.material],
                     ["Цвет", detail.color],
                     ["Сертификат", detail.certificate],
                     ["Штрихкоды", detail.barcodes.map((b) => b.value).join(", ")],
-                    ["Описание", detail.description],
                   ]
                     .filter(([, value]) => value)
-                    .map(([label, value]) => (
-                      <Typography key={label} sx={{ mt: label === "Описание" ? 1 : 0 }}>
-                        <Box component="span" fontWeight={800}>
-                          {label}:
-                        </Box>{" "}
-                        {value}
-                      </Typography>
-                    ))}
+                    .map(([label, value]) => {
+                      const characteristicLabel = String(label);
+                      return (
+                        <Typography key={characteristicLabel}>
+                          <Box component="span" fontWeight={800}>
+                            {characteristicLabel}:
+                          </Box>{" "}
+                          {renderDetailValue(characteristicLabel, String(value))}
+                        </Typography>
+                      );
+                    })}
                 </Paper>
                 <Paper
                   variant="outlined"
