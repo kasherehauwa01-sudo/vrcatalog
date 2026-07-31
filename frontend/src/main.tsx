@@ -405,10 +405,12 @@ function App() {
       .slice(0, 100);
   };
   const productPropertyValue = (product: ProductDetail, names: string[]) => {
-    const wanted = names.map((name) => name.toLocaleLowerCase("ru-RU"));
-    return product.properties.find((property) =>
-      wanted.includes(property.name.trim().toLocaleLowerCase("ru-RU")),
-    )?.value;
+    const normalizeName = (name: string) =>
+      name.toLocaleLowerCase("ru-RU").replace(/[\s_-]+/g, "");
+    const wanted = new Set(names.map(normalizeName));
+    return product.properties.find(
+      (property) => wanted.has(normalizeName(property.name)) && property.value?.trim(),
+    )?.value?.trim();
   };
   const catalogFilterUrl = (key: string, value: string) => {
     const next = new URLSearchParams(window.location.search);
