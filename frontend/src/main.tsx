@@ -214,6 +214,8 @@ function App() {
     else if (key.startsWith("property:")) result[key] = key.slice("property:".length);
     return result;
   }, { ...labels }), [filters]);
+  const filterLabel = (key: string) =>
+    filterLabels[key] ?? (key.startsWith("property:") ? key.slice("property:".length) : key);
   const [active, setActive] = useState<Record<string, string[]>>(() => multiFromUrl(initialParams));
   const [draftActive, setDraftActive] = useState<Record<string, string[]>>(() => multiFromUrl(initialParams));
   const [filterFields, setFilterFields] = useState(() => fieldsFromUrl(initialParams));
@@ -431,13 +433,19 @@ function App() {
       .filter((value) => !searchValue || value.toLocaleLowerCase("ru-RU").includes(searchValue))
       .slice(0, 100);
   };
-  const productPropertyValue = (product: ProductDetail, names: string[]) => {
+  const productProperty = (product: ProductDetail, names: string[]) => {
     const normalizeName = (name: string) =>
       name.toLocaleLowerCase("ru-RU").replace(/[\s_-]+/g, "");
     const wanted = new Set(names.map(normalizeName));
     return product.properties.find(
       (property) => wanted.has(normalizeName(property.name)) && property.value?.trim(),
-    )?.value?.trim();
+    );
+  };
+  const productPropertyValue = (product: ProductDetail, names: string[]) =>
+    productProperty(product, names)?.value?.trim();
+  const productPropertyFilter = (product: ProductDetail, names: string[]) => {
+    const property = productProperty(product, names);
+    return property ? `property:${property.name.trim()}` : undefined;
   };
   const catalogFilterUrl = (key: string, value: string) => {
     const next = new URLSearchParams(window.location.search);
@@ -477,8 +485,8 @@ function App() {
     "Код маркировки": "property:Код маркировки",
     Коллекция: "property:Коллекция",
   };
-  const renderDetailValue = (label: string, value: string) => {
-    const filterKey = clickableDetailFilters[label];
+  const renderDetailValue = (label: string, value: string, propertyFilter?: string) => {
+    const filterKey = propertyFilter ?? clickableDetailFilters[label];
     if (!filterKey) return value;
     return (
       <Box
@@ -1146,7 +1154,7 @@ function App() {
                   <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
                     <Typography variant="body2" fontWeight={700}>Активные условия:</Typography>
                     {Object.entries(active).flatMap(([key, values]) => values.map((value) => (
-                      <Chip key={`${key}-${value}`} label={`${filterLabels[key]}: ${value}`} onDelete={() => removeFilter(key, value)} />
+                      <Chip key={`${key}-${value}`} label={`${filterLabel(key)}: ${value}`} onDelete={() => removeFilter(key, value)} />
                     )))}
                     {Object.entries(filterFields).filter(isActiveFilterField).map(([key, value]) => (
                       <Chip key={key} label={`${filterFieldLabels[key as keyof FilterFields]}: ${value === "in_stock" ? "В наличии" : value === "out_of_stock" ? "Нет в наличии" : value === "true" ? "Да" : value}`} onDelete={() => removeFilter(key)} />
@@ -2268,22 +2276,22 @@ function App() {
                     ["Производитель", detail.manufacturer],
                     ["Менеджер", detail.manager],
                     ["Бренд", detail.brand],
-                    ["Код маркировки", productPropertyValue(detail, ["Код маркировки"])],
-                    ["Коллекция", productPropertyValue(detail, ["Коллекция"])],
+                    ["Код маркировки", productPropertyValue(detail, ["Код маркировки"]), productPropertyFilter(detail, ["Код маркировки"])],
+                    ["Коллекция", productPropertyValue(detail, ["Коллекция"]), productPropertyFilter(detail, ["Коллекция"])],
                     ["Материал", detail.material],
                     ["Цвет", detail.color],
                     ["Сертификат", detail.certificate],
                     ["Штрихкоды", detail.barcodes.map((b) => b.value).join(", ")],
                   ]
                     .filter(([, value]) => value)
-                    .map(([label, value]) => {
+                    .map(([label, value, propertyFilter]) => {
                       const characteristicLabel = String(label);
                       return (
                         <Typography key={characteristicLabel}>
                           <Box component="span" fontWeight={800}>
                             {characteristicLabel}:
                           </Box>{" "}
-                          {renderDetailValue(characteristicLabel, String(value))}
+                          {renderDetailValue(characteristicLabel, String(value), propertyFilter)}
                         </Typography>
                       );
                     })}
