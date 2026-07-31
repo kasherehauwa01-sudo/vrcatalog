@@ -398,7 +398,7 @@ function App() {
   const isActiveFilterField = ([key, value]: [string, string | undefined]) =>
     Boolean(value && value !== "all" && !(["inStockOnly", "onlyNew"].includes(key) && value === "false"));
   const activeConditionCount = Object.values(active).reduce((sum, values) => sum + values.length, 0) + Object.entries(filterFields).filter(isActiveFilterField).length;
-  const searchableFilterLabels = new Set(["Раздел", "Производитель", "Бренд", "Материал", "Коллекция"]);
+  const searchableFilterLabels = new Set(["Раздел", "Производитель", "Бренд", "Материал", "Коллекция", "Штрихкод"]);
   const entriesForOrder = (options: Record<string, string[]>, order: string[]) => {
     const entries = Object.entries(options).map(([key, values]) => ({
       key,
@@ -447,25 +447,23 @@ function App() {
     const property = productProperty(product, names);
     return property ? `property:${property.name.trim()}` : undefined;
   };
-  const catalogFilterUrl = (key: string, value: string) => {
-    const next = new URLSearchParams(window.location.search);
-    next.delete("page");
+  const paramsForDetailFilter = (key: string, value: string) => {
+    const next = new URLSearchParams();
+    if (filterFields.inStockOnly === "true") next.set("inStockOnly", "true");
     if (key.startsWith("property:")) {
       next.append("property", `${key.slice("property:".length)}:${value}`);
     } else {
       next.set(key === "product_type" ? "productType" : key, serializeFilterValues([value]));
     }
+    return next;
+  };
+  const catalogFilterUrl = (key: string, value: string) => {
+    const next = paramsForDetailFilter(key, value);
     const query = next.toString();
     return `${window.location.pathname}${query ? `?${query}` : ""}`;
   };
   const openCatalogFilter = (key: string, value: string) => {
-    const next = new URLSearchParams(window.location.search);
-    next.delete("page");
-    if (key.startsWith("property:")) {
-      next.append("property", `${key.slice("property:".length)}:${value}`);
-    } else {
-      next.set(key === "product_type" ? "productType" : key, serializeFilterValues([value]));
-    }
+    const next = paramsForDetailFilter(key, value);
     const nextActive = multiFromUrl(next);
     const nextFields = fieldsFromUrl(next);
     setDetail(null);
