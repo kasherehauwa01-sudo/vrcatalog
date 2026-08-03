@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import settings
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.catalog import Product, ServiceLog
+from app.models.catalog import Product, ProductProperty, ServiceLog, Stock
 
 
 class InternalProductApiTests(unittest.TestCase):
@@ -66,6 +66,43 @@ class InternalProductApiTests(unittest.TestCase):
                         manager="Петров Пётр",
                         search_text="",
                     ),
+                    Product(
+                        code="ОКА-27134",
+                        article=None,
+                        name="Базовый товар",
+                        manager="  Базовый менеджер  ",
+                        quantity=0,
+                        search_text="",
+                        stocks=[Stock(warehouse="MAIN", quantity=0)],
+                    ),
+                    Product(
+                        code="P-POSITIVE",
+                        article="POSITIVE",
+                        name="Товар в наличии",
+                        manager="Менеджер наличия",
+                        quantity=5,
+                        search_text="",
+                        stocks=[Stock(warehouse="MAIN", quantity=5)],
+                    ),
+                    Product(
+                        code="P-EMPTY-MANAGER",
+                        article="EMPTY-MANAGER",
+                        name="Товар без менеджера",
+                        manager="   ",
+                        quantity=0,
+                        search_text="",
+                    ),
+                    Product(
+                        code="P-PROPERTY-MANAGER",
+                        article="PROPERTY-MANAGER",
+                        name="Товар с менеджером в характеристике",
+                        manager=None,
+                        quantity=0,
+                        search_text="",
+                        properties=[
+                            ProductProperty(name="  мЕнЕдЖеР ", value="  Менеджер свойства  ")
+                        ],
+                    ),
                 ]
             )
             db.commit()
@@ -104,7 +141,7 @@ class InternalProductApiTests(unittest.TestCase):
         items = response.json()["items"]
         self.assertEqual([item["article"] for item in items], ["10002", "missing", "00123", "10002"])
         self.assertEqual([item["found"] for item in items], [True, False, True, True])
-        self.assertIsNone(items[0]["manager_name"])
+        self.assertEqual(items[0]["manager_name"], "")
         self.assertEqual(items[2]["manager_name"], "Петров Пётр")
         self.assertEqual(items[0], items[3])
 
@@ -117,6 +154,90 @@ class InternalProductApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(all(not item["found"] for item in response.json()["items"]))
+        self.assertTrue(all(item["manager_name"] == "" for item in response.json()["items"]))
+
+    def test_include_zero_stock_returns_exact_article_and_trimmed_manager(self):
+        response = self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": ["ОКА-27134"], "include_zero_stock": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["items"][0],
+            {
+                "article": "ОКА-27134",
+                "found": True,
+                "product_id": response.json()["items"][0]["product_id"],
+                "name": "Базовый товар",
+                "manager_id": None,
+                "manager_name": "Базовый менеджер",
+            },
+        )
+
+    def test_zero_stock_keeps_previous_behavior_when_flag_is_false_or_missing(self):
+        for payload in (
+            {"articles": ["ОКА-27134"]},
+            {"articles": ["ОКА-27134"], "include_zero_stock": False},
+            {"articles": ["ОКА-27134"], "include_zero_stock": "false"},
+            {"articles": ["ОКА-27134"], "include_zero_stock": 0},
+        ):
+            with self.subTest(payload=payload):
+                response = self.client.post(
+                    "/api/internal/products/by-articles",
+                    headers=self.headers,
+                    json=payload,
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.json()["items"][0]["found"])
+
+    def test_positive_stock_and_empty_manager_contract(self):
+        response = self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": ["POSITIVE", "EMPTY-MANAGER"], "include_zero_stock": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        positive, empty_manager = response.json()["items"]
+        self.assertTrue(positive["found"])
+        self.assertEqual(positive["manager_name"], "Менеджер наличия")
+        self.assertTrue(empty_manager["found"])
+        self.assertEqual(empty_manager["manager_name"], "")
+
+    def test_manager_can_be_read_from_case_insensitive_property_name(self):
+        response = self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": ["PROPERTY-MANAGER"], "include_zero_stock": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"][0]["manager_name"], "Менеджер свойства")
+
+    def test_mixed_batch_preserves_input_articles_and_results(self):
+        articles = ["POSITIVE", "ОКА-27134", "MISSING", "ОКА-27134"]
+        response = self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": articles, "include_zero_stock": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        items = response.json()["items"]
+        self.assertEqual([item["article"] for item in items], articles)
+        self.assertEqual([item["found"] for item in items], [True, True, False, True])
+        self.assertEqual(items[1], items[3])
+
+    def test_include_zero_stock_rejects_non_boolean_value(self):
+        response = self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": ["ОКА-27134"], "include_zero_stock": "not-a-boolean"},
+        )
+
+        self.assertEqual(response.status_code, 422)
 
     def test_batch_accepts_empty_list(self):
         response = self.client.post(

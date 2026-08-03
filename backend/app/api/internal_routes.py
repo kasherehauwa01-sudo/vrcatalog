@@ -118,7 +118,11 @@ def internal_products_by_articles(
         article_count=article_count,
         started_at=started_at,
     )
-    items = products_by_articles(db, payload.articles)
+    items = products_by_articles(
+        db,
+        payload.articles,
+        include_zero_stock=payload.include_zero_stock,
+    )
     found_count = sum(item["found"] for item in items)
     write_request_log(
         db,
