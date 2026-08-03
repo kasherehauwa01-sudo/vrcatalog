@@ -161,6 +161,7 @@ class InternalProductResponse(InternalProductOut):
 
 class InternalProductsRequest(BaseModel):
     articles: list[str] = Field(max_length=1000)
+    include_zero_stock: bool = False
 
 
 class InternalProductsResponse(BaseModel):
