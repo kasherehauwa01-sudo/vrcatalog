@@ -146,6 +146,12 @@ class FtpConnectionTestOut(BaseModel):
     message: str
 
 
+class InternalStockOut(BaseModel):
+    warehouse: str
+    warehouse_name: str
+    quantity: float
+
+
 class InternalProductOut(BaseModel):
     article: str
     found: bool
@@ -153,6 +159,7 @@ class InternalProductOut(BaseModel):
     name: str | None = None
     manager_id: int | None = None
     manager_name: str | None = None
+    stocks: list[InternalStockOut] = Field(default_factory=list)
 
 
 class InternalProductResponse(InternalProductOut):
@@ -161,6 +168,7 @@ class InternalProductResponse(InternalProductOut):
 
 class InternalProductsRequest(BaseModel):
     articles: list[str] = Field(max_length=1000)
+    include_zero_stock: bool = False
 
 
 class InternalProductsResponse(BaseModel):
