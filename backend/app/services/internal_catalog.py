@@ -1,7 +1,7 @@
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.catalog import Product
+from app.models.catalog import Product, WarehouseSetting
 
 
 def products_by_articles(
@@ -24,7 +24,7 @@ def products_by_articles(
 
     products = (
         db.query(Product)
-        .options(selectinload(Product.properties))
+        .options(selectinload(Product.properties), selectinload(Product.stocks))
         .filter(
             or_(
                 Product.article.in_(unique_articles),
@@ -34,6 +34,9 @@ def products_by_articles(
         .order_by(Product.id)
         .all()
     )
+    warehouse_names = {
+        code: name for code, name in db.query(WarehouseSetting.code, WarehouseSetting.name).all()
+    }
     # Артикул пока не уникален на уровне БД; при дубле сохраняем товар с меньшим ID.
     products_by_article: dict[str, Product] = {}
     # Сначала сохраняем точное совпадение с артикулом, если оно есть.
@@ -45,10 +48,17 @@ def products_by_articles(
         if product.code in unique_articles:
             products_by_article.setdefault(product.code, product)
 
-    return [product_for_article(article, products_by_article.get(article)) for article in articles]
+    return [
+        product_for_article(article, products_by_article.get(article), warehouse_names)
+        for article in articles
+    ]
 
 
-def product_for_article(article: str, product) -> dict:
+def product_for_article(
+    article: str,
+    product,
+    warehouse_names: dict[str, str] | None = None,
+) -> dict:
     """Формирует строго ограниченный контракт внутреннего API."""
     if product is None:
         return {
@@ -58,6 +68,7 @@ def product_for_article(article: str, product) -> dict:
             "name": None,
             "manager_id": None,
             "manager_name": "",
+            "stocks": [],
         }
     manager_name = (product.manager or "").strip()
     if not manager_name:
@@ -70,6 +81,20 @@ def product_for_article(article: str, product) -> dict:
             ),
             "",
         )
+    quantities_by_warehouse: dict[str, float] = {}
+    for stock in product.stocks:
+        quantities_by_warehouse[stock.warehouse] = (
+            quantities_by_warehouse.get(stock.warehouse, 0.0) + stock.quantity
+        )
+    names = warehouse_names or {}
+    stocks = [
+        {
+            "warehouse": warehouse,
+            "warehouse_name": names.get(warehouse, warehouse),
+            "quantity": quantity,
+        }
+        for warehouse, quantity in sorted(quantities_by_warehouse.items())
+    ]
     return {
         "article": article,
         "found": True,
@@ -78,4 +103,5 @@ def product_for_article(article: str, product) -> dict:
         # В текущем каталоге менеджер хранится только текстом, таблицы сотрудников нет.
         "manager_id": None,
         "manager_name": manager_name,
+        "stocks": stocks,
     }
