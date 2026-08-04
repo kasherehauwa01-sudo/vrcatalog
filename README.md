@@ -76,9 +76,18 @@ VITE_BASE_PATH=/vr/catalog/
 
 `INTERNAL_API_TOKEN` используется только backend-to-backend запросами. Сгенерировать токен можно командой `openssl rand -hex 32`; его нельзя добавлять в frontend или передавать в URL.
 
-## Внутреннее API ответственных менеджеров
+## Внутреннее API товаров, менеджеров и складских остатков
 
-Каталог является источником названия товара и ответственного менеджера для других сервисов. Оба endpoint требуют заголовок `X-Internal-Token`, скрыты из OpenAPI/Swagger и возвращают HTTP 401 при отсутствующем или неверном токене.
+Каталог является источником названия товара, ответственного менеджера и актуальных остатков по складам для других сервисов. Оба endpoint требуют заголовок `X-Internal-Token`, скрыты из OpenAPI/Swagger и возвращают HTTP 401 при отсутствующем или неверном токене.
+
+Для сервиса «Сроки годности» задаются:
+
+```env
+VRCATALOG_INTERNAL_API_URL=https://kvasmix.ru/vr/catalog/api/internal/products/by-articles
+VRCATALOG_INTERNAL_API_TOKEN=<то же значение, что INTERNAL_API_TOKEN в catalogvr>
+```
+
+Токен передаётся только в заголовке `X-Internal-Token`. Его нельзя помещать в URL или frontend.
 
 Один товар (диагностика):
 
@@ -95,7 +104,10 @@ curl -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
   "product_id": 15,
   "name": "Товар А",
   "manager_id": null,
-  "manager_name": "Иванов Иван"
+  "manager_name": "Иванов Иван",
+  "stocks": [
+    {"warehouse":"MAIN","warehouse_name":"Основной склад","quantity":3.0}
+  ]
 }
 ```
 
@@ -105,7 +117,7 @@ curl -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
 curl -X POST \
   -H "Content-Type: application/json" \
   -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
-  -d '{"articles":["10001","10002","00123"]}' \
+  -d '{"articles":["10001","10002","00123"],"include_zero_stock":true}' \
   "https://kvasmix.ru/vr/catalog/api/internal/products/by-articles"
 ```
 
@@ -119,7 +131,11 @@ curl -X POST \
       "product_id": 15,
       "name": "Товар А",
       "manager_id": null,
-      "manager_name": "Иванов Иван"
+      "manager_name": "Иванов Иван",
+      "stocks": [
+        {"warehouse":"AVIATORS","warehouse_name":"Авиаторов","quantity":2.0},
+        {"warehouse":"MAIN","warehouse_name":"Основной склад","quantity":3.0}
+      ]
     },
     {
       "article": "10002",
@@ -127,7 +143,10 @@ curl -X POST \
       "product_id": 18,
       "name": "Товар Б",
       "manager_id": null,
-      "manager_name": null
+      "manager_name": "",
+      "stocks": [
+        {"warehouse":"MAIN","warehouse_name":"Основной склад","quantity":0.0}
+      ]
     },
     {
       "article": "00123",
@@ -135,13 +154,50 @@ curl -X POST \
       "product_id": null,
       "name": null,
       "manager_id": null,
-      "manager_name": null
+      "manager_name": "",
+      "stocks": []
     }
   ]
 }
 ```
 
-Порядок и повторы сохраняются. Уникальные артикулы ищутся одним SQL-запросом по индексу `ix_products_article`, поэтому повторный артикул не создаёт дополнительного обращения к БД.
+Порядок и повторы товаров сохраняются. Идентификатор сопоставляется точным значением с `products.article`; если артикул в импорте пуст, используется точное совпадение с `products.code`. Частичное и регистронезависимое сопоставление не выполняется.
+
+`stocks` содержит не более одной записи на сочетание товара и склада. `warehouse` — код из остатков, `warehouse_name` — каноническое название из `warehouse_settings` (либо код, если склад ещё не настроен), `quantity` — сумма актуальных строк остатка этого товара на складе. Нулевые значения возвращаются явно, если строка склада существует; отсутствие склада в массиве означает отсутствие складской строки и также трактуется как нулевой остаток. Закупочные цены и документы движения endpoint не раскрывает.
+
+Пакет ограничен 1000 идентификаторами. Некорректный JSON, неверный тип `articles`, превышение лимита и некорректный `include_zero_stock` возвращают HTTP 422. Неизвестный товар не прерывает пакет и возвращается с `found: false` и пустым `stocks`.
+
+Примеры ошибок:
+
+```json
+{"detail":"Неверный внутренний токен"}
+```
+
+```json
+{"detail":[{"type":"json_invalid","loc":["body",0],"msg":"JSON decode error"}]}
+```
+
+Локальная ручная проверка:
+
+```bash
+curl -sS -X POST \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
+  -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
+  --data '{"articles":["ОКА-27134","10001","НЕИЗВЕСТНЫЙ"],"include_zero_stock":true}' \
+  'http://127.0.0.1:8000/api/internal/products/by-articles'
+```
+
+Проверка отказа без токена:
+
+```bash
+curl -i -X POST \
+  -H 'Content-Type: application/json' \
+  --data '{"articles":["10001"]}' \
+  'http://127.0.0.1:8000/api/internal/products/by-articles'
+```
+
+Карточки, свойства, остатки и справочник складов загружаются фиксированным числом пакетных SQL-запросов; число запросов не растёт с количеством товаров.
 
 ### Текущее хранение менеджера и совместимое развитие
 
