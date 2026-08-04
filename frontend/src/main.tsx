@@ -152,7 +152,7 @@ const filterFieldLabels: Partial<Record<keyof FilterFields, string>> = {
   priceFrom: "Цена от",
   priceTo: "Цена до",
 };
-const updateScriptPath = "/var/www/html/vr/update_vrcatalog.sh";
+const updateScriptPath = "/var/www/html/vr/vrcatalog/deploy/timeweb/update_vrcatalog.sh";
 const clientsUrl = "https://kvasmix.ru/vr/clients/";
 const formatMoscowDate = (value: string) =>
   new Date(value).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });

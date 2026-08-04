@@ -7,12 +7,22 @@
 
 ## Скрипт безопасного обновления
 
-Установите отслеживаемый Git-ом скрипт вместо локальной версии:
+Запускайте непосредственно отслеживаемый Git-ом скрипт из репозитория:
 
 ```bash
-install -m 0755 \
-  /var/www/html/vr/vrcatalog/deploy/timeweb/update_vrcatalog.sh \
-  /var/www/html/vr/update_vrcatalog.sh
+/var/www/html/vr/vrcatalog/deploy/timeweb/update_vrcatalog.sh
+```
+
+Не используйте старую отдельную копию `/var/www/html/vr/update_vrcatalog.sh`:
+команда `git pull` обновляет файлы только внутри репозитория и не может заменить
+этот внешний файл. Если в выводе шаг 2 называется «Очистка build-кэша Docker»,
+запущена именно старая копия. У актуального скрипта шаг 2 называется «Проверка
+доступа к Docker Registry».
+
+Старый путь можно удалить после проверки нового скрипта:
+
+```bash
+rm -f /var/www/html/vr/update_vrcatalog.sh
 ```
 
 Скрипт не очищает Docker build-кэш до сборки и не заменяет работающие контейнеры,
@@ -22,14 +32,15 @@ install -m 0755 \
 ```bash
 VRCATALOG_BUILD_ATTEMPTS=5 \
 VRCATALOG_RETRY_DELAY=30 \
-/var/www/html/vr/update_vrcatalog.sh
+/var/www/html/vr/vrcatalog/deploy/timeweb/update_vrcatalog.sh
 ```
 
 Очистка неиспользуемого build-кэша после успешного запуска по умолчанию
 отключена. При необходимости включите её явно:
 
 ```bash
-VRCATALOG_PRUNE_AFTER_UPDATE=1 /var/www/html/vr/update_vrcatalog.sh
+VRCATALOG_PRUNE_AFTER_UPDATE=1 \
+  /var/www/html/vr/vrcatalog/deploy/timeweb/update_vrcatalog.sh
 ```
 
 ## Ошибка DNS Docker Hub
@@ -53,4 +64,8 @@ getent hosts registry-1.docker.io
 Если имя по-прежнему не разрешается, проверьте DNS-настройки VPS и `/etc/resolv.conf`.
 Не отключайте `systemd-resolved` и не перезаписывайте `/etc/resolv.conf`, не выяснив,
 как сеть настраивается у вашего хостинг-провайдера. После восстановления DNS
-повторно запустите `/var/www/html/vr/update_vrcatalog.sh`.
+повторно запустите отслеживаемый скрипт:
+
+```bash
+/var/www/html/vr/vrcatalog/deploy/timeweb/update_vrcatalog.sh
+```
