@@ -9,6 +9,7 @@ def products_by_articles(
     articles: list[str],
     *,
     include_zero_stock: bool = False,
+    include_warehouse_stocks: bool = False,
 ) -> list[dict]:
     """Находит точные артикулы во всех карточках и восстанавливает порядок входа.
 
@@ -49,7 +50,12 @@ def products_by_articles(
             products_by_article.setdefault(product.code, product)
 
     return [
-        product_for_article(article, products_by_article.get(article), warehouse_names)
+        product_for_article(
+            article,
+            products_by_article.get(article),
+            warehouse_names,
+            include_warehouse_stocks=include_warehouse_stocks,
+        )
         for article in articles
     ]
 
@@ -58,6 +64,8 @@ def product_for_article(
     article: str,
     product,
     warehouse_names: dict[str, str] | None = None,
+    *,
+    include_warehouse_stocks: bool = False,
 ) -> dict:
     """Формирует строго ограниченный контракт внутреннего API."""
     if product is None:
@@ -65,6 +73,7 @@ def product_for_article(
             "article": article,
             "found": False,
             "product_id": None,
+            "code": None,
             "name": None,
             "manager_id": None,
             "manager_name": "",
@@ -81,24 +90,31 @@ def product_for_article(
             ),
             "",
         )
-    quantities_by_warehouse: dict[str, float] = {}
-    for stock in product.stocks:
-        quantities_by_warehouse[stock.warehouse] = (
-            quantities_by_warehouse.get(stock.warehouse, 0.0) + stock.quantity
-        )
-    names = warehouse_names or {}
-    stocks = [
-        {
-            "warehouse": warehouse,
-            "warehouse_name": names.get(warehouse, warehouse),
-            "quantity": quantity,
-        }
-        for warehouse, quantity in sorted(quantities_by_warehouse.items())
-    ]
+    stocks: list[dict] = []
+    if include_warehouse_stocks:
+        quantities_by_warehouse: dict[str, float] = {}
+        for stock in product.stocks:
+            quantities_by_warehouse[stock.warehouse] = (
+                quantities_by_warehouse.get(stock.warehouse, 0.0) + float(stock.quantity or 0)
+            )
+
+        names = warehouse_names or {}
+        warehouses = set(names) | set(quantities_by_warehouse)
+        # Возвращаем канонические названия складов из настроек UI и не теряем склады,
+        # которые есть только в остатках импортированного товара.
+        stocks = [
+            {
+                "warehouse": warehouse,
+                "warehouse_name": names.get(warehouse, warehouse),
+                "quantity": float(quantities_by_warehouse.get(warehouse, 0.0)),
+            }
+            for warehouse in sorted(warehouses, key=lambda code: names.get(code, code))
+        ]
     return {
         "article": article,
         "found": True,
         "product_id": product.id,
+        "code": product.code,
         "name": product.name,
         # В текущем каталоге менеджер хранится только текстом, таблицы сотрудников нет.
         "manager_id": None,

@@ -102,12 +102,11 @@ curl -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
   "article": "10001",
   "found": true,
   "product_id": 15,
+  "code": "P-1",
   "name": "Товар А",
   "manager_id": null,
   "manager_name": "Иванов Иван",
-  "stocks": [
-    {"warehouse":"MAIN","warehouse_name":"Основной склад","quantity":3.0}
-  ]
+  "stocks": []
 }
 ```
 
@@ -117,7 +116,7 @@ curl -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
 curl -X POST \
   -H "Content-Type: application/json" \
   -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
-  -d '{"articles":["10001","10002","00123"],"include_zero_stock":true}' \
+  -d '{"articles":["10001","10002","00123"],"include_zero_stock":true,"include_warehouse_stocks":true}' \
   "https://kvasmix.ru/vr/catalog/api/internal/products/by-articles"
 ```
 
@@ -129,11 +128,13 @@ curl -X POST \
       "article": "10001",
       "found": true,
       "product_id": 15,
+      "code": "P-1",
       "name": "Товар А",
       "manager_id": null,
       "manager_name": "Иванов Иван",
       "stocks": [
-        {"warehouse":"AVIATORS","warehouse_name":"Авиаторов","quantity":2.0},
+        {"warehouse":"AVIATORS","warehouse_name":"Авиаторов Зал+Склад","quantity":13.0},
+        {"warehouse":"BAKHTUROVA","warehouse_name":"Бахтурова","quantity":2.0},
         {"warehouse":"MAIN","warehouse_name":"Основной склад","quantity":3.0}
       ]
     },
@@ -141,6 +142,7 @@ curl -X POST \
       "article": "10002",
       "found": true,
       "product_id": 18,
+      "code": "P-2",
       "name": "Товар Б",
       "manager_id": null,
       "manager_name": "",
@@ -152,6 +154,7 @@ curl -X POST \
       "article": "00123",
       "found": false,
       "product_id": null,
+      "code": null,
       "name": null,
       "manager_id": null,
       "manager_name": "",
@@ -163,9 +166,9 @@ curl -X POST \
 
 Порядок и повторы товаров сохраняются. Идентификатор сопоставляется точным значением с `products.article`; если артикул в импорте пуст, используется точное совпадение с `products.code`. Частичное и регистронезависимое сопоставление не выполняется.
 
-`stocks` содержит не более одной записи на сочетание товара и склада. `warehouse` — код из остатков, `warehouse_name` — каноническое название из `warehouse_settings` (либо код, если склад ещё не настроен), `quantity` — сумма актуальных строк остатка этого товара на складе. Нулевые значения возвращаются явно, если строка склада существует; отсутствие склада в массиве означает отсутствие складской строки и также трактуется как нулевой остаток. Закупочные цены и документы движения endpoint не раскрывает.
+Поле `include_warehouse_stocks` управляет складской детализацией: при `false` или отсутствии флага `stocks` остаётся пустым массивом для совместимости, а при `true` каждый найденный товар получает массив складских остатков. `stocks` содержит не более одной записи на сочетание товара и склада. `warehouse` — код из остатков, `warehouse_name` — каноническое название из `warehouse_settings` в том же виде, как в UI (например, `Авиаторов Зал+Склад`), `quantity` — числовая сумма актуальных строк остатка этого товара на складе. При включённой детализации API добавляет известные склады из `warehouse_settings` с нулевым количеством, если у товара нет строки остатка по такому складу; неизвестный товар возвращается с пустым `stocks`. Закупочные цены и документы движения endpoint не раскрывает.
 
-Пакет ограничен 1000 идентификаторами. Некорректный JSON, неверный тип `articles`, превышение лимита и некорректный `include_zero_stock` возвращают HTTP 422. Неизвестный товар не прерывает пакет и возвращается с `found: false` и пустым `stocks`.
+Пакет ограничен 1000 идентификаторами. Некорректный JSON, неверный тип `articles`, превышение лимита и некорректные `include_zero_stock` / `include_warehouse_stocks` возвращают HTTP 422. Неизвестный товар не прерывает пакет и возвращается с `found: false` и пустым `stocks`.
 
 Примеры ошибок:
 
@@ -184,7 +187,7 @@ curl -sS -X POST \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
-  --data '{"articles":["ОКА-27134","10001","НЕИЗВЕСТНЫЙ"],"include_zero_stock":true}' \
+  --data '{"articles":["ОКА-27134","10001","НЕИЗВЕСТНЫЙ"],"include_zero_stock":true,"include_warehouse_stocks":true}' \
   'http://127.0.0.1:8000/api/internal/products/by-articles'
 ```
 
@@ -205,7 +208,7 @@ curl -i -X POST \
 
 Если стабильный справочник сотрудников появится в источнике данных, безопасный переход состоит из следующих этапов: создать отдельный справочник с уникальным внешним ID; добавить nullable-связь товара с ним; продолжать заполнять и возвращать текстовое имя; сопоставить исторические записи; начать возвращать ID только для надёжно сопоставленных менеджеров. Это сохраняет совместимость потребителей, которые уже используют `manager_name`.
 
-Каждое успешное или отклонённое по токену обращение записывается в `service_logs` с событием `internal_api_request`: дата и время находятся в `created_at`, а JSON в `message` содержит endpoint, число артикулов, длительность, числа найденных/ненайденных товаров и HTTP-код. Токен, заголовки и сами артикулы не журналируются.
+Каждое успешное или отклонённое по токену обращение записывается в `service_logs` с событием `internal_api_request`: дата и время находятся в `created_at`, а JSON в `message` содержит endpoint, число артикулов, длительность, числа найденных/ненайденных товаров, HTTP-код, флаг `include_warehouse_stocks`, число складских строк в ответе, список названий складов и короткую диагностику по складским остаткам. Токен, заголовки и сами артикулы не журналируются.
 
 ## Быстрый деплой на VPS
 

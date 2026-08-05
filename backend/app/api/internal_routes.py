@@ -37,6 +37,9 @@ def write_request_log(
     started_at: float,
     found_count: int,
     status_code: int,
+    include_warehouse_stocks: bool = False,
+    stock_rows_count: int = 0,
+    warehouse_names: list[str] | None = None,
 ) -> None:
     """Записывает только метрики обращения, без токена, заголовков и артикулов."""
     message = json.dumps(
@@ -47,6 +50,18 @@ def write_request_log(
             "found_count": found_count,
             "not_found_count": article_count - found_count,
             "status_code": status_code,
+            "include_warehouse_stocks": include_warehouse_stocks,
+            "stock_rows_count": stock_rows_count,
+            "warehouses": warehouse_names or [],
+            "stock_diagnostics": (
+                "warehouse stocks were not requested"
+                if not include_warehouse_stocks
+                else (
+                    "warehouse stocks added to response"
+                    if stock_rows_count
+                    else "no warehouse stocks for found products"
+                )
+            ),
         },
         ensure_ascii=False,
     )
@@ -122,8 +137,11 @@ def internal_products_by_articles(
         db,
         payload.articles,
         include_zero_stock=payload.include_zero_stock,
+        include_warehouse_stocks=payload.include_warehouse_stocks,
     )
     found_count = sum(item["found"] for item in items)
+    stock_rows = [stock for item in items for stock in item.get("stocks", [])]
+    warehouses = sorted({stock["warehouse_name"] for stock in stock_rows})
     write_request_log(
         db,
         endpoint=endpoint,
@@ -131,5 +149,8 @@ def internal_products_by_articles(
         started_at=started_at,
         found_count=found_count,
         status_code=200,
+        include_warehouse_stocks=payload.include_warehouse_stocks,
+        stock_rows_count=len(stock_rows),
+        warehouse_names=warehouses,
     )
     return {"ok": True, "items": items}
