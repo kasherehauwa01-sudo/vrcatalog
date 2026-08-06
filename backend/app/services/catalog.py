@@ -1,5 +1,6 @@
 from math import ceil
 from datetime import datetime, timedelta
+import csv
 import re
 
 from sqlalchemy import String, and_, case, cast, func, or_, select
@@ -47,7 +48,9 @@ def new_product_cutoff() -> datetime:
 def _values(value):
     if not value:
         return []
-    return [item.strip() for item in str(value).split(",") if item.strip()]
+    # Значения фильтров передаются как CSV, чтобы запятые внутри одного значения
+    # (например «Скалки, ступки, мялки») не превращались в несколько условий.
+    return [item.strip() for item in next(csv.reader([str(value)]), []) if item.strip()]
 
 
 def _search_values(value) -> list[str]:
@@ -203,13 +206,13 @@ def product_query(db: Session, params):
         q = q.filter(func.lower(Product.search_text).like(term))
     for field in FILTER_FIELDS:
         if value := params.get(field):
-            values = [item.strip() for item in str(value).split(",") if item.strip()]
+            values = _values(value)
             if len(values) > 1:
                 q = q.filter(getattr(Product, field).in_(values))
             elif values:
                 q = q.filter(getattr(Product, field) == values[0])
     if product_type := params.get("product_type"):
-        type_values = [item.strip() for item in str(product_type).split(",") if item.strip()]
+        type_values = _values(product_type)
         if type_values:
             regular_type_values = [value for value in type_values if value != NEW_PRODUCT_TYPE_FILTER]
             configured_codes = [code for code, in db.query(ProductTypeSetting.code).filter(ProductTypeSetting.name.in_(regular_type_values)).all()]
@@ -220,7 +223,7 @@ def product_query(db: Session, params):
                 type_conditions.append(Product.created_at >= new_product_cutoff())
             q = q.filter(or_(*type_conditions))
     if warehouse := params.get("warehouse"):
-        warehouse_values = [item.strip() for item in str(warehouse).split(",") if item.strip()]
+        warehouse_values = _values(warehouse)
         if warehouse_values:
             configured_codes = [code for code, in db.query(WarehouseSetting.code).filter(WarehouseSetting.name.in_(warehouse_values)).all()]
             q = q.join(Stock).filter(
