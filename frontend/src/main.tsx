@@ -1178,9 +1178,14 @@ function App() {
                   <Button startIcon={<RefreshIcon />} onClick={reload}>Повторить</Button>
                 </Paper>
               )}
-              <Typography color="text.secondary" fontWeight={700}>
-                Найдено товаров: {pagination.totalItems}
-              </Typography>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={2}>
+                <Typography color="text.secondary" fontWeight={700}>
+                  Найдено товаров: {pagination.totalItems}
+                </Typography>
+                <Button href={api.exportUrl("xlsx", params)} sx={{ whiteSpace: "nowrap" }}>
+                  Скачать Excel
+                </Button>
+              </Stack>
               <TableContainer component={Card} sx={{ position: "relative" }}>
                 {loading && <LinearProgress />}
                 <Table aria-label="Список товаров">
