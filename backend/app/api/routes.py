@@ -370,11 +370,94 @@ def export_csv(db: Session = Depends(get_db), search: str | None = None):
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=products.csv"})
 
 @router.get("/export.xlsx")
-def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None):
-    params = locals(); params.pop("db")
+def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, column: Annotated[list[str] | None, Query()] = None):
+    params = locals(); params.pop("db"); columns = params.pop("column")
     add_log(db, "export_xlsx", f"Экспорт Excel; поиск: {search or ''}")
     db.commit()
-    wb = Workbook(); ws = wb.active; ws.append(["Код", "Артикул", "Название", "Раздел", "Остаток"])
-    for p in product_query(db, params).all(): ws.append([p.code, p.article, p.name, p.section, p.quantity])
+    wb = build_export_workbook(db, params, columns)
     stream = BytesIO(); wb.save(stream); stream.seek(0)
     return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=products.xlsx"})
+
+
+EXPORT_MAIN_COLUMNS = {
+    "code": "Код",
+    "article": "Артикул",
+    "photo": "Фото",
+    "name": "Наименование",
+    "section": "Раздел",
+    "product_type": "Вид товара",
+    "manufacturer": "Производитель",
+    "manager": "Менеджер",
+    "marking_code": "Код маркировки",
+    "material": "Материал",
+    "certificate": "Сертификат",
+    "barcodes": "Штрихкоды",
+}
+LEGACY_EXPORT_COLUMNS = ["code", "article", "name", "section", "quantity"]
+
+
+def build_export_workbook(db: Session, params: dict, columns: list[str] | None) -> Workbook:
+    selected_columns = columns or LEGACY_EXPORT_COLUMNS
+    warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
+    product_type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
+    allowed_columns = set(EXPORT_MAIN_COLUMNS) | {"quantity"}
+    allowed_columns.update(f"price:{name}" for name in ("ЦенаОптовая", "ЦенаКорпоративная", "ЦенаРозничная"))
+    allowed_columns.update(f"stock:{code}" for code in warehouse_names)
+    unknown_columns = set(selected_columns) - allowed_columns
+    if unknown_columns:
+        raise HTTPException(422, f"Неизвестные колонки экспорта: {', '.join(sorted(unknown_columns))}")
+
+    headers = []
+    for column in selected_columns:
+        if column in EXPORT_MAIN_COLUMNS:
+            headers.append(EXPORT_MAIN_COLUMNS[column])
+        elif column == "quantity":
+            headers.append("Остаток")
+        elif column.startswith("price:"):
+            headers.append(column.removeprefix("price:"))
+        else:
+            headers.append(warehouse_names[column.removeprefix("stock:")])
+
+    products = (
+        product_query(db, params)
+        .options(
+            selectinload(Product.images),
+            selectinload(Product.prices),
+            selectinload(Product.stocks),
+            selectinload(Product.properties),
+            selectinload(Product.barcodes),
+        )
+        .all()
+    )
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append(headers)
+    for product in products:
+        properties = {item.name.strip().casefold(): (item.value or "").strip() for item in product.properties}
+        prices = {item.price_type: item.price_value for item in product.prices}
+        stocks = {item.warehouse: item.quantity for item in product.stocks}
+        main_values = {
+            "code": product.code,
+            "article": product.article or "",
+            "photo": product.images[0].image_url if product.images else "",
+            "name": product.name,
+            "section": product.section or "",
+            "product_type": product_type_names.get(product.product_type, product.product_type or ""),
+            "manufacturer": product.manufacturer or "",
+            "manager": product.manager or properties.get("менеджер", ""),
+            "marking_code": properties.get("код маркировки", ""),
+            "material": product.material or "",
+            "certificate": product.certificate or "",
+            "barcodes": ", ".join(item.value for item in product.barcodes),
+            "quantity": product.quantity,
+        }
+        row = []
+        for column in selected_columns:
+            if column in main_values:
+                row.append(main_values[column])
+            elif column.startswith("price:"):
+                row.append(prices.get(column.removeprefix("price:"), 0))
+            else:
+                row.append(stocks.get(column.removeprefix("stock:"), 0))
+        worksheet.append(row)
+    return workbook

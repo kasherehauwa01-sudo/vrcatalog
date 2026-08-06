@@ -98,6 +98,24 @@ const theme = createTheme({
 });
 
 const SETTINGS_PASSWORD = "8852285";
+const DELETE_PASSWORD = "8852285";
+
+const exportMainColumns = [
+  ["code", "Код"],
+  ["article", "Артикул"],
+  ["photo", "Фото"],
+  ["name", "Наименование"],
+  ["section", "Раздел"],
+  ["product_type", "Вид товара"],
+  ["manufacturer", "Производитель"],
+  ["manager", "Менеджер"],
+  ["marking_code", "Код маркировки"],
+  ["material", "Материал"],
+  ["certificate", "Сертификат"],
+  ["barcodes", "Штрихкоды"],
+] as const;
+const exportPriceColumns = ["ЦенаОптовая", "ЦенаКорпоративная", "ЦенаРозничная"] as const;
+const defaultExportColumns = ["code", "name", "section"];
 
 const labels: Record<string, string> = {
   section: "Раздел",
@@ -233,6 +251,12 @@ function App() {
   const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "logs">("settings");
   const [openSettingsGroups, setOpenSettingsGroups] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deletePasswordError, setDeletePasswordError] = useState(false);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportColumns, setExportColumns] = useState<string[]>(defaultExportColumns);
+  const [exportWarehouses, setExportWarehouses] = useState<Warehouse[]>([]);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 100, totalItems: 0, totalPages: 0 });
@@ -521,10 +545,37 @@ function App() {
     }));
   const toggleAll = () =>
     setSelectedIds(allSelected ? [] : products.map((product) => product.id));
+  const closeDeleteDialog = () => {
+    setDeleteDialogOpen(false);
+    setDeletePassword("");
+    setDeletePasswordError(false);
+  };
   const deleteSelected = async () => {
     if (!selectedIds.length) return;
+    if (deletePassword !== DELETE_PASSWORD) {
+      setDeletePasswordError(true);
+      return;
+    }
     await api.deleteProducts(selectedIds);
+    closeDeleteDialog();
     reload();
+  };
+  const openExportDialog = async () => {
+    setExportColumns(defaultExportColumns);
+    setExportWarehouses(await api.warehouses());
+    setExportDialogOpen(true);
+  };
+  const toggleExportColumn = (column: string) => {
+    setExportColumns((current) =>
+      current.includes(column) ? current.filter((item) => item !== column) : [...current, column],
+    );
+  };
+  const downloadExcel = () => {
+    const exportParams = new URLSearchParams(params);
+    exportParams.delete("column");
+    exportColumns.forEach((column) => exportParams.append("column", column));
+    window.location.href = api.exportUrl("xlsx", exportParams);
+    setExportDialogOpen(false);
   };
   const openLogs = async () => {
     setSettingsTab("logs");
@@ -625,6 +676,18 @@ function App() {
           {loading && <LinearProgress />}
         </AppBar>
 
+        {tab === "catalog" && selectedIds.length > 0 && (
+          <Button
+            color="error"
+            variant="contained"
+            startIcon={<DeleteIcon />}
+            onClick={() => setDeleteDialogOpen(true)}
+            sx={{ position: "fixed", top: 16, right: 24, zIndex: (muiTheme) => muiTheme.zIndex.modal - 1 }}
+          >
+            Удалить выбранные ({selectedIds.length})
+          </Button>
+        )}
+
         <Container maxWidth="xl" sx={{ py: { xs: 2, md: 4 } }}>
           {uploadError && (
             <Card sx={{ mb: 3 }}>
@@ -690,6 +753,73 @@ function App() {
             <DialogActions>
               <Button onClick={closeSettingsPassword}>Отмена</Button>
               <Button variant="contained" onClick={unlockSettings}>Войти</Button>
+            </DialogActions>
+          </Dialog>
+
+          <Dialog open={deleteDialogOpen} onClose={closeDeleteDialog} maxWidth="xs" fullWidth>
+            <DialogTitle>Подтверждение удаления</DialogTitle>
+            <DialogContent>
+              <Typography sx={{ mb: 2 }}>
+                Вы действительно хотите удалить выбранные товары ({selectedIds.length})? Это действие нельзя отменить.
+              </Typography>
+              <TextField
+                autoFocus
+                fullWidth
+                type="password"
+                label="Пароль"
+                value={deletePassword}
+                error={deletePasswordError}
+                helperText={deletePasswordError ? "Неверный пароль" : "Введите пароль для подтверждения удаления"}
+                onChange={(event) => {
+                  setDeletePassword(event.target.value);
+                  setDeletePasswordError(false);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") deleteSelected();
+                }}
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={closeDeleteDialog}>Отмена</Button>
+              <Button color="error" variant="contained" onClick={deleteSelected}>
+                Подтвердить удаление
+              </Button>
+            </DialogActions>
+          </Dialog>
+
+          <Dialog open={exportDialogOpen} onClose={() => setExportDialogOpen(false)} maxWidth="sm" fullWidth>
+            <DialogTitle>Выберите колонки для Excel</DialogTitle>
+            <DialogContent>
+              <Typography variant="h6" sx={{ mt: 1 }}>Основные</Typography>
+              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" } }}>
+                {exportMainColumns.map(([key, label]) => (
+                  <FormControlLabel
+                    key={key}
+                    control={<Checkbox checked={exportColumns.includes(key)} onChange={() => toggleExportColumn(key)} />}
+                    label={label}
+                  />
+                ))}
+              </Box>
+              <Divider sx={{ my: 2 }} />
+              <Typography variant="h6">Цены</Typography>
+              <Stack>
+                {exportPriceColumns.map((price) => {
+                  const key = `price:${price}`;
+                  return <FormControlLabel key={key} control={<Checkbox checked={exportColumns.includes(key)} onChange={() => toggleExportColumn(key)} />} label={price} />;
+                })}
+              </Stack>
+              <Divider sx={{ my: 2 }} />
+              <Typography variant="h6">Остатки на складах</Typography>
+              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" } }}>
+                {exportWarehouses.map((warehouse) => {
+                  const key = `stock:${warehouse.code}`;
+                  return <FormControlLabel key={key} control={<Checkbox checked={exportColumns.includes(key)} onChange={() => toggleExportColumn(key)} />} label={warehouse.name} />;
+                })}
+              </Box>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setExportDialogOpen(false)}>Отмена</Button>
+              <Button variant="contained" disabled={!exportColumns.length} onClick={downloadExcel}>Скачать Excel</Button>
             </DialogActions>
           </Dialog>
 
@@ -1182,9 +1312,7 @@ function App() {
                 <Typography color="text.secondary" fontWeight={700}>
                   Найдено товаров: {pagination.totalItems}
                 </Typography>
-                <Button href={api.exportUrl("xlsx", params)} sx={{ whiteSpace: "nowrap" }}>
-                  Скачать Excel
-                </Button>
+                <Button onClick={openExportDialog} sx={{ whiteSpace: "nowrap" }}>Скачать Excel</Button>
               </Stack>
               <TableContainer component={Card} sx={{ position: "relative" }}>
                 {loading && <LinearProgress />}
@@ -1228,9 +1356,6 @@ function App() {
                 </Table>
                 <TablePagination component="div" count={pagination.totalItems} page={Math.max(0, pagination.page - 1)} onPageChange={(_, page) => updateParams({ page: page + 1 }, false)} rowsPerPage={pagination.pageSize} onRowsPerPageChange={(event) => updateParams({ pageSize: event.target.value })} rowsPerPageOptions={[20, 50, 100]} labelRowsPerPage="Строк на странице" labelDisplayedRows={({ from, to, count }) => `${from}–${to} из ${count}`} />
               </TableContainer>
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                <Button color="error" variant="outlined" disabled={!selectedIds.length} onClick={deleteSelected}>Удалить выбранные</Button>
-              </Stack>
             </Stack>
           )}
         </Container>
