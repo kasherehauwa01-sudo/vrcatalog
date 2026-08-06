@@ -741,6 +741,12 @@ function App() {
                     },
                   }}
                 />
+                <Button
+                  href={api.exportUrl("xlsx", params)}
+                  sx={{ alignSelf: { xs: "stretch", md: "center" }, whiteSpace: "nowrap" }}
+                >
+                  Скачать Excel
+                </Button>
               </Stack>
             </Paper>
           )}
@@ -1218,7 +1224,6 @@ function App() {
                 <TablePagination component="div" count={pagination.totalItems} page={Math.max(0, pagination.page - 1)} onPageChange={(_, page) => updateParams({ page: page + 1 }, false)} rowsPerPage={pagination.pageSize} onRowsPerPageChange={(event) => updateParams({ pageSize: event.target.value })} rowsPerPageOptions={[20, 50, 100]} labelRowsPerPage="Строк на странице" labelDisplayedRows={({ from, to, count }) => `${from}–${to} из ${count}`} />
               </TableContainer>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                <Button href={api.exportUrl("xlsx", params)}>Экспорт Excel</Button>
                 <Button color="error" variant="outlined" disabled={!selectedIds.length} onClick={deleteSelected}>Удалить выбранные</Button>
               </Stack>
             </Stack>
