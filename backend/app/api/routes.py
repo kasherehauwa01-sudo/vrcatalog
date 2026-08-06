@@ -416,6 +416,11 @@ EXPORT_FIXED_WIDTHS = {
 EXPORT_VALUE_WIDTH_COLUMNS = {"code", "certificate", "product_type"}
 
 
+def normalize_export_property_key(value: str | None) -> str:
+    """Нормализует название свойства для устойчивого поиска значений при экспорте."""
+    return "".join(character for character in (value or "").casefold() if character.isalnum())
+
+
 def normalize_image_url(url: str) -> str:
     """Кодирует пробелы и кириллицу в путях изображений из XML."""
     parts = urlsplit(url.strip())
@@ -534,7 +539,13 @@ def build_export_workbook(
     if photo_column:
         worksheet.column_dimensions[get_column_letter(photo_column)].width = 16
     for product in products:
-        properties = {item.name.strip().casefold(): (item.value or "").strip() for item in product.properties}
+        properties: dict[str, str] = {}
+        for item in product.properties:
+            value = (item.value or "").strip()
+            for key in (item.name, item.property_code):
+                normalized_key = normalize_export_property_key(key)
+                if normalized_key and value:
+                    properties.setdefault(normalized_key, value)
         prices = {item.price_type: item.price_value for item in product.prices}
         stocks = {item.warehouse: item.quantity for item in product.stocks}
         main_values = {
@@ -546,7 +557,7 @@ def build_export_workbook(
             "product_type": product_type_names.get(product.product_type, product.product_type or ""),
             "manufacturer": product.manufacturer or "",
             "manager": product.manager or properties.get("менеджер", ""),
-            "marking_code": properties.get("код маркировки", ""),
+            "marking_code": properties.get("кодмаркировки", "") or properties.get("markingcode", ""),
             "material": product.material or "",
             "certificate": product.certificate or "",
             "barcodes": ", ".join(item.value for item in product.barcodes),
