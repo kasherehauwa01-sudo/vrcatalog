@@ -149,6 +149,7 @@ type FilterFields = {
   article: string;
   name: string;
   inStockOnly: string;
+  excludeYyy: string;
   onlyNew: string;
   availability: string;
   quantityFrom: string;
@@ -163,6 +164,7 @@ const filterFieldLabels: Partial<Record<keyof FilterFields, string>> = {
   article: "Артикул",
   name: "Название",
   inStockOnly: "Только в наличии",
+  excludeYyy: "Исключить категорию ЯЯЯ",
   onlyNew: "Только новинки",
   availability: "Наличие",
   quantityFrom: "Количество от",
@@ -223,7 +225,7 @@ function App() {
     });
     return result;
   };
-  const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ code: p.get("code") ?? "", article: p.get("article") ?? "", name: p.get("name") ?? "", inStockOnly: p.get("inStockOnly") ?? "true", onlyNew: p.get("onlyNew") ?? "false", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
+  const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ code: p.get("code") ?? "", article: p.get("article") ?? "", name: p.get("name") ?? "", inStockOnly: p.get("inStockOnly") ?? "true", excludeYyy: p.get("excludeYyy") ?? "true", onlyNew: p.get("onlyNew") ?? "false", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
   const [search, setSearch] = useState(initialParams.get("search") ?? "");
   const [filters, setFilters] = useState<Record<string, string[]>>({});
   const [propertyOptions, setPropertyOptions] = useState<Record<string, string[]>>({});
@@ -419,13 +421,13 @@ function App() {
         next.delete("page"); replaceCatalogParams(next);
       } else updateParams({ [key === "product_type" ? "productType" : key]: serializeFilterValues(values) });
     } else {
-      const resetValue = key === "availability" ? "all" : key === "inStockOnly" || key === "onlyNew" ? "false" : "";
+      const resetValue = key === "availability" ? "all" : ["inStockOnly", "excludeYyy", "onlyNew"].includes(key) ? "false" : "";
       const updated = { ...filterFields, [key]: resetValue };
       setFilterFields(updated); setDraftFields(updated); updateParams({ [key]: resetValue || null });
     }
   };
   const isActiveFilterField = ([key, value]: [string, string | undefined]) =>
-    Boolean(value && value !== "all" && !(["inStockOnly", "onlyNew"].includes(key) && value === "false"));
+    Boolean(value && value !== "all" && !(["inStockOnly", "excludeYyy", "onlyNew"].includes(key) && value === "false"));
   const activeConditionCount = Object.values(active).reduce((sum, values) => sum + values.length, 0) + Object.entries(filterFields).filter(isActiveFilterField).length;
   const searchableFilterLabels = new Set(["Раздел", "Производитель", "Бренд", "Материал", "Коллекция", "Штрихкод"]);
   const entriesForOrder = (options: Record<string, string[]>, order: string[]) => {
@@ -2073,6 +2075,18 @@ function App() {
               )}
               label="Показывать только в наличии"
             />
+            <FormControlLabel
+              control={(
+                <Switch
+                  checked={draftFields.excludeYyy !== "false"}
+                  onChange={(event) => setDraftFields({
+                    ...draftFields,
+                    excludeYyy: event.target.checked ? "true" : "false",
+                  })}
+                />
+              )}
+              label="Исключить категорию ЯЯЯ"
+            />
             {mainFilterEntries.map(({ key, label }) => (
               <Box key={key}>
                 <Button
@@ -2220,6 +2234,18 @@ function App() {
                 />
               )}
               label="Показывать только в наличии"
+            />
+            <FormControlLabel
+              control={(
+                <Switch
+                  checked={draftFields.excludeYyy !== "false"}
+                  onChange={(event) => setDraftFields({
+                    ...draftFields,
+                    excludeYyy: event.target.checked ? "true" : "false",
+                  })}
+                />
+              )}
+              label="Исключить категорию ЯЯЯ"
             />
             {mainFilterEntries.map(({ key, label }) => (
               <Box key={key}>

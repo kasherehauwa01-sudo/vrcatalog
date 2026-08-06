@@ -124,6 +124,20 @@ class CatalogProductQueryTests(unittest.TestCase):
             ["CHAIR-1", "PAN-2", "TABLE-3"],
         )
 
+    def test_yyy_category_can_be_excluded_from_catalog(self):
+        excluded = Product(
+            code="YYY-1",
+            name="Товар для разукомплектации",
+            section="яяявывод/разукомплектация НЕ ВЫГРУЖАТЬ НА САЙТ",
+            quantity=1,
+            search_text="товар для разукомплектации yyy-1",
+        )
+        self.db.add(excluded)
+        self.db.commit()
+
+        self.assertNotIn("YYY-1", [product.code for product in self.query(exclude_yyy=True)])
+        self.assertIn("YYY-1", [product.code for product in self.query(exclude_yyy=False)])
+
     def test_filter_metadata_hides_excluded_properties_and_uses_mapping_names(self):
         filters = list_filters(self.db)
         self.assertNotIn("property:Артикул", filters)

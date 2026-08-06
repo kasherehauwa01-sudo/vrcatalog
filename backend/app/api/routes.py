@@ -82,6 +82,7 @@ def search_products(
     warehouse: Annotated[str | None, Query(max_length=2000)] = None,
     availability: Literal["all", "in_stock", "out_of_stock"] = "all",
     in_stock_only: Annotated[bool, Query(alias="inStockOnly")] = True,
+    exclude_yyy: Annotated[bool, Query(alias="excludeYyy")] = True,
     only_new: Annotated[bool, Query(alias="onlyNew")] = False,
     quantity_from: Annotated[float | None, Query(alias="quantityFrom")] = None,
     quantity_to: Annotated[float | None, Query(alias="quantityTo")] = None,
@@ -123,6 +124,7 @@ def search_products(
         "warehouse": warehouse,
         "availability": availability,
         "in_stock_only": in_stock_only,
+        "exclude_yyy": exclude_yyy,
         "only_new": only_new,
         "quantity_from": quantity_from,
         "quantity_to": quantity_to,
@@ -202,6 +204,7 @@ def filters(
     warehouse: str | None = None,
     barcode: str | None = None,
     in_stock_only: bool = Query(True, alias="inStockOnly"),
+    exclude_yyy: bool = Query(True, alias="excludeYyy"),
     property: list[str] | None = Query(None),
 ):
     properties: dict[str, list[str]] = {}
@@ -218,6 +221,7 @@ def filters(
         "warehouse": warehouse,
         "barcode": barcode,
         "in_stock_only": in_stock_only,
+        "exclude_yyy": exclude_yyy,
         "properties": properties,
     })
 
@@ -380,7 +384,7 @@ def export_csv(db: Session = Depends(get_db), search: str | None = None):
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=products.csv"})
 
 @router.get("/export.xlsx")
-def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, column: Annotated[list[str] | None, Query()] = None):
+def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):
     params = locals(); params.pop("db"); columns = params.pop("column")
     add_log(db, "export_xlsx", f"Экспорт Excel; поиск: {search or ''}")
     db.commit()
