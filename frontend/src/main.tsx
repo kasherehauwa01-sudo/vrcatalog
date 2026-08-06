@@ -101,11 +101,11 @@ const SETTINGS_PASSWORD = "8852285";
 const DELETE_PASSWORD = "8852285";
 
 const exportMainColumns = [
-  ["code", "Код"],
+  ["photo", "Фото"],
   ["article", "Артикул"],
   ["name", "Наименование"],
   ["section", "Раздел"],
-  ["photo", "Фото"],
+  ["code", "Код"],
   ["product_type", "Вид товара"],
   ["manufacturer", "Производитель"],
   ["manager", "Менеджер"],

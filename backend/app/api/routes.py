@@ -404,14 +404,14 @@ EXPORT_MAIN_COLUMNS = {
     "barcodes": "Штрихкоды",
 }
 LEGACY_EXPORT_COLUMNS = ["code", "article", "name", "section", "quantity"]
-EXPORT_LEADING_COLUMNS = ("code", "article", "name", "section")
+EXPORT_LEADING_COLUMNS = ("photo", "article", "name", "section", "code")
 EXPORT_FIXED_WIDTHS = {
     "name": 50,
     "section": 12,
     "manufacturer": 20,
     "manager": 12,
     "material": 12,
-    "barcodes": 13,
+    "barcodes": 17,
 }
 EXPORT_VALUE_WIDTH_COLUMNS = {"code", "certificate", "product_type"}
 
@@ -495,7 +495,7 @@ def build_export_workbook(
     if unknown_columns:
         raise HTTPException(422, f"Неизвестные колонки экспорта: {', '.join(sorted(unknown_columns))}")
 
-    # Основные идентифицирующие поля сохраняют одинаковый порядок независимо от выбора пользователя.
+    # Основные поля сохраняют одинаковый порядок независимо от порядка выбора пользователя.
     selected_columns = [
         *(column for column in EXPORT_LEADING_COLUMNS if column in selected_columns),
         *(column for column in selected_columns if column not in EXPORT_LEADING_COLUMNS),
