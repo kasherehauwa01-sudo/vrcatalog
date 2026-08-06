@@ -18,7 +18,7 @@ from app.models.catalog import (
     Stock,
     WarehouseSetting,
 )
-from app.api.routes import build_export_workbook
+from app.api.routes import build_export_workbook, normalize_image_url
 from app.services.catalog import catalog_product_query, list_filters, paginated_products
 from app.services.logging import add_log
 from app.schemas.catalog import ProductDetailOut
@@ -260,6 +260,12 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual(worksheet.column_dimensions["B"].width, 16)
         self.assertEqual(worksheet["B2"].value, None)
         workbook.save(BytesIO())
+
+    def test_excel_export_encodes_cyrillic_image_path(self):
+        self.assertEqual(
+            normalize_image_url("https://volgorost.ru/images/Новая папка/Фото 1.jpg"),
+            "https://volgorost.ru/images/%D0%9D%D0%BE%D0%B2%D0%B0%D1%8F%20%D0%BF%D0%B0%D0%BF%D0%BA%D0%B0/%D0%A4%D0%BE%D1%82%D0%BE%201.jpg",
+        )
 
 
 class ServiceLoggingTests(unittest.TestCase):

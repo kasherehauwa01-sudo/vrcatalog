@@ -2,6 +2,7 @@ import csv
 import tempfile
 from io import StringIO, BytesIO
 from pathlib import Path
+from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from typing import Annotated, Callable, Literal
@@ -11,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.utils import get_column_letter
+from PIL import Image as PillowImage, UnidentifiedImageError
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
@@ -399,16 +401,40 @@ EXPORT_MAIN_COLUMNS = {
 LEGACY_EXPORT_COLUMNS = ["code", "article", "name", "section", "quantity"]
 
 
+def normalize_image_url(url: str) -> str:
+    """Кодирует пробелы и кириллицу в путях изображений из XML."""
+    parts = urlsplit(url.strip())
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        raise ValueError("Некорректный URL изображения")
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc.encode("idna").decode("ascii"),
+        quote(parts.path, safe="/%:@"),
+        quote(parts.query, safe="=&%:@/?"),
+        "",
+    ))
+
+
 def download_export_image(url: str) -> BytesIO | None:
     """Загружает изображение для Excel с ограничением времени и объёма ответа."""
     try:
-        request = Request(url, headers={"User-Agent": "VRCatalog Excel Export"})
-        with urlopen(request, timeout=5) as response:
+        normalized_url = normalize_image_url(url)
+        request = Request(normalized_url, headers={
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            "Referer": "https://volgorost.ru/",
+            "User-Agent": "Mozilla/5.0 (compatible; VRCatalog Excel Export)",
+        })
+        with urlopen(request, timeout=10) as response:
             content = response.read(10 * 1024 * 1024 + 1)
         if len(content) > 10 * 1024 * 1024:
             return None
-        return BytesIO(content)
-    except (OSError, ValueError):
+        source = BytesIO(content)
+        with PillowImage.open(source) as image:
+            prepared = BytesIO()
+            image.convert("RGBA" if image.mode == "RGBA" else "RGB").save(prepared, format="PNG")
+            prepared.seek(0)
+            return prepared
+    except (OSError, ValueError, UnidentifiedImageError):
         return None
 
 
