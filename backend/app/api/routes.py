@@ -2,12 +2,15 @@ import csv
 import tempfile
 from io import StringIO, BytesIO
 from pathlib import Path
+from urllib.request import Request, urlopen
 
-from typing import Annotated, Literal
+from typing import Annotated, Callable, Literal
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
+from openpyxl.drawing.image import Image as ExcelImage
+from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
@@ -396,7 +399,25 @@ EXPORT_MAIN_COLUMNS = {
 LEGACY_EXPORT_COLUMNS = ["code", "article", "name", "section", "quantity"]
 
 
-def build_export_workbook(db: Session, params: dict, columns: list[str] | None) -> Workbook:
+def download_export_image(url: str) -> BytesIO | None:
+    """Загружает изображение для Excel с ограничением времени и объёма ответа."""
+    try:
+        request = Request(url, headers={"User-Agent": "VRCatalog Excel Export"})
+        with urlopen(request, timeout=5) as response:
+            content = response.read(10 * 1024 * 1024 + 1)
+        if len(content) > 10 * 1024 * 1024:
+            return None
+        return BytesIO(content)
+    except (OSError, ValueError):
+        return None
+
+
+def build_export_workbook(
+    db: Session,
+    params: dict,
+    columns: list[str] | None,
+    image_loader: Callable[[str], BytesIO | None] = download_export_image,
+) -> Workbook:
     selected_columns = columns or LEGACY_EXPORT_COLUMNS
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
     product_type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
@@ -432,6 +453,9 @@ def build_export_workbook(db: Session, params: dict, columns: list[str] | None) 
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.append(headers)
+    photo_column = selected_columns.index("photo") + 1 if "photo" in selected_columns else None
+    if photo_column:
+        worksheet.column_dimensions[get_column_letter(photo_column)].width = 16
     for product in products:
         properties = {item.name.strip().casefold(): (item.value or "").strip() for item in product.properties}
         prices = {item.price_type: item.price_value for item in product.prices}
@@ -439,7 +463,7 @@ def build_export_workbook(db: Session, params: dict, columns: list[str] | None) 
         main_values = {
             "code": product.code,
             "article": product.article or "",
-            "photo": product.images[0].image_url if product.images else "",
+            "photo": "",
             "name": product.name,
             "section": product.section or "",
             "product_type": product_type_names.get(product.product_type, product.product_type or ""),
@@ -460,4 +484,17 @@ def build_export_workbook(db: Session, params: dict, columns: list[str] | None) 
             else:
                 row.append(stocks.get(column.removeprefix("stock:"), 0))
         worksheet.append(row)
+        if photo_column and product.images:
+            image_stream = image_loader(product.images[0].image_url)
+            if image_stream:
+                try:
+                    image = ExcelImage(image_stream)
+                    image.width = 100
+                    image.height = 100
+                    image.anchor = f"{get_column_letter(photo_column)}{worksheet.max_row}"
+                    worksheet.add_image(image)
+                    worksheet.row_dimensions[worksheet.max_row].height = 82.5
+                except (OSError, ValueError):
+                    # Повреждённое или неподдерживаемое изображение не должно прерывать весь экспорт.
+                    pass
     return workbook

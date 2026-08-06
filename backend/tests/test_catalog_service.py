@@ -1,5 +1,7 @@
 import unittest
+from base64 import b64decode
 from datetime import datetime, timedelta
+from io import BytesIO
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -230,6 +232,34 @@ class CatalogProductQueryTests(unittest.TestCase):
     def test_excel_export_rejects_unknown_columns(self):
         with self.assertRaisesRegex(Exception, "Неизвестные колонки экспорта"):
             build_export_workbook(self.db, {}, ["unknown"])
+
+    def test_excel_export_embeds_first_photo_at_one_hundred_pixels(self):
+        self.products[0].images = [
+            ProductImage(image_order=1, image_url="https://example.test/first.png"),
+            ProductImage(image_order=2, image_url="https://example.test/second.png"),
+        ]
+        requested_urls = []
+        png = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+
+        def image_loader(url):
+            requested_urls.append(url)
+            return BytesIO(png)
+
+        workbook = build_export_workbook(
+            self.db,
+            {"code": "CHAIR-1", "in_stock_only": False},
+            ["code", "photo", "name"],
+            image_loader=image_loader,
+        )
+        worksheet = workbook.active
+
+        self.assertEqual(requested_urls, ["https://example.test/first.png"])
+        self.assertEqual(len(worksheet._images), 1)
+        self.assertEqual((worksheet._images[0].width, worksheet._images[0].height), (100, 100))
+        self.assertEqual(worksheet.row_dimensions[2].height, 82.5)
+        self.assertEqual(worksheet.column_dimensions["B"].width, 16)
+        self.assertEqual(worksheet["B2"].value, None)
+        workbook.save(BytesIO())
 
 
 class ServiceLoggingTests(unittest.TestCase):
