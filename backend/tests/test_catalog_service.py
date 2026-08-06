@@ -254,11 +254,12 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual(worksheet.column_dimensions["G"].width, 13)
         self.assertEqual(worksheet.column_dimensions["H"].width, 12)
         self.assertEqual(worksheet.column_dimensions["I"].width, 12)
-        self.assertEqual(worksheet.column_dimensions["J"].width, 12)
+        self.assertEqual(worksheet.column_dimensions["J"].width, 20)
         self.assertEqual(worksheet.column_dimensions["K"].width, len("Код маркировки") + 2)
         self.assertEqual(worksheet.column_dimensions["L"].width, len("Остаток") + 2)
         self.assertTrue(worksheet["C2"].alignment.wrap_text)
         self.assertTrue(worksheet["G2"].alignment.wrap_text)
+        self.assertTrue(worksheet["J2"].alignment.wrap_text)
         self.assertTrue(all(
             cell.alignment.vertical == "center"
             for row in worksheet.iter_rows()

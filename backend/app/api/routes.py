@@ -408,7 +408,7 @@ EXPORT_LEADING_COLUMNS = ("code", "article", "name", "section")
 EXPORT_FIXED_WIDTHS = {
     "name": 50,
     "section": 12,
-    "manufacturer": 12,
+    "manufacturer": 20,
     "manager": 12,
     "material": 12,
     "barcodes": 13,
