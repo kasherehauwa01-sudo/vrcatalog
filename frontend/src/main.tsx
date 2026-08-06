@@ -103,9 +103,9 @@ const DELETE_PASSWORD = "8852285";
 const exportMainColumns = [
   ["code", "Код"],
   ["article", "Артикул"],
-  ["photo", "Фото"],
   ["name", "Наименование"],
   ["section", "Раздел"],
+  ["photo", "Фото"],
   ["product_type", "Вид товара"],
   ["manufacturer", "Производитель"],
   ["manager", "Менеджер"],
