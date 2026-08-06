@@ -97,6 +97,26 @@ const theme = createTheme({
   },
 });
 
+const SETTINGS_PASSWORD = "8852285";
+const DELETE_PASSWORD = "8852285";
+
+const exportMainColumns = [
+  ["code", "Код"],
+  ["article", "Артикул"],
+  ["photo", "Фото"],
+  ["name", "Наименование"],
+  ["section", "Раздел"],
+  ["product_type", "Вид товара"],
+  ["manufacturer", "Производитель"],
+  ["manager", "Менеджер"],
+  ["marking_code", "Код маркировки"],
+  ["material", "Материал"],
+  ["certificate", "Сертификат"],
+  ["barcodes", "Штрихкоды"],
+] as const;
+const exportPriceColumns = ["ЦенаОптовая", "ЦенаКорпоративная", "ЦенаРозничная"] as const;
+const defaultExportColumns = ["code", "name", "section"];
+
 const labels: Record<string, string> = {
   section: "Раздел",
   manufacturer: "Производитель",
@@ -150,19 +170,51 @@ const filterFieldLabels: Partial<Record<keyof FilterFields, string>> = {
   priceFrom: "Цена от",
   priceTo: "Цена до",
 };
-const updateScriptPath = "/var/www/html/vr/update_vrcatalog.sh";
+const updateScriptPath = "/var/www/html/vr/vrcatalog/deploy/timeweb/update_vrcatalog.sh";
 const clientsUrl = "https://kvasmix.ru/vr/clients/";
 const formatMoscowDate = (value: string) =>
   new Date(value).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
 const getLogStage = (log: ServiceLog) =>
   log.message.match(/Этап:\n([^\n]+)/)?.[1] ?? log.event;
 
+const parseFilterValues = (value: string) => {
+  const result: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    const nextChar = value[index + 1];
+    if (char === '"') {
+      if (quoted && nextChar === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === "," && !quoted) {
+      if (current.trim()) result.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) result.push(current.trim());
+  return result;
+};
+
+const serializeFilterValues = (values: string[]) =>
+  values
+    .map((value) =>
+      /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value,
+    )
+    .join(",");
+
 function App() {
   const initialParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const multiFromUrl = (p: URLSearchParams) => {
     const result = Object.keys(labels).reduce<Record<string, string[]>>((values, key) => {
       const value = p.get(key === "product_type" ? "productType" : key);
-      if (value) values[key] = value.split(",").filter(Boolean);
+      if (value) values[key] = parseFilterValues(value);
       return values;
     }, {});
     p.getAll("property").forEach((item) => {
@@ -180,6 +232,8 @@ function App() {
     else if (key.startsWith("property:")) result[key] = key.slice("property:".length);
     return result;
   }, { ...labels }), [filters]);
+  const filterLabel = (key: string) =>
+    filterLabels[key] ?? (key.startsWith("property:") ? key.slice("property:".length) : key);
   const [active, setActive] = useState<Record<string, string[]>>(() => multiFromUrl(initialParams));
   const [draftActive, setDraftActive] = useState<Record<string, string[]>>(() => multiFromUrl(initialParams));
   const [filterFields, setFilterFields] = useState(() => fieldsFromUrl(initialParams));
@@ -190,9 +244,19 @@ function App() {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [detail, setDetail] = useState<ProductDetail | null>(null);
   const [tab, setTab] = useState<"catalog" | "settings">("catalog");
+  const [settingsPasswordOpen, setSettingsPasswordOpen] = useState(false);
+  const [settingsPassword, setSettingsPassword] = useState("");
+  const [settingsPasswordError, setSettingsPasswordError] = useState(false);
+  const [settingsUnlocked, setSettingsUnlocked] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "logs">("settings");
   const [openSettingsGroups, setOpenSettingsGroups] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deletePasswordError, setDeletePasswordError] = useState(false);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportColumns, setExportColumns] = useState<string[]>(defaultExportColumns);
+  const [exportWarehouses, setExportWarehouses] = useState<Warehouse[]>([]);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 100, totalItems: 0, totalPages: 0 });
@@ -278,6 +342,27 @@ function App() {
   };
   const copy = (value?: string) =>
     value && navigator.clipboard.writeText(value);
+  const closeSettingsPassword = () => {
+    setSettingsPasswordOpen(false);
+    setSettingsPassword("");
+    setSettingsPasswordError(false);
+  };
+  const openSettings = () => {
+    if (settingsUnlocked) {
+      setTab("settings");
+      return;
+    }
+    setSettingsPasswordOpen(true);
+  };
+  const unlockSettings = () => {
+    if (settingsPassword !== SETTINGS_PASSWORD) {
+      setSettingsPasswordError(true);
+      return;
+    }
+    setSettingsUnlocked(true);
+    closeSettingsPassword();
+    setTab("settings");
+  };
   const allSelected =
     products.length > 0 && selectedIds.length === products.length;
   const toggleSelected = (id: number) =>
@@ -304,13 +389,18 @@ function App() {
       }
       const parameter = key === "product_type" ? "productType" : key;
       const values = draftActive[key] ?? [];
-      if (values.length) next.set(parameter, values.join(",")); else next.delete(parameter);
+      if (values.length) next.set(parameter, serializeFilterValues(values)); else next.delete(parameter);
     });
     Object.entries(draftFields).forEach(([key, value]) => {
       if (value && value !== "all") next.set(key, value.trim()); else next.delete(key);
     });
     next.delete("page");
     setActive(draftActive); setFilterFields(draftFields); replaceCatalogParams(next); setFiltersOpen(false);
+  };
+  const applyFiltersOnEnter = (event: React.KeyboardEvent) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    applyFilters();
   };
   const resetFilters = () => {
     const emptyFields = fieldsFromUrl(new URLSearchParams());
@@ -327,7 +417,7 @@ function App() {
         const next = new URLSearchParams(window.location.search); next.delete("property");
         Object.entries(updated).filter(([activeKey]) => activeKey.startsWith("property:")).forEach(([activeKey, activeValues]) => activeValues.forEach((item) => next.append("property", `${activeKey.slice(9)}:${item}`)));
         next.delete("page"); replaceCatalogParams(next);
-      } else updateParams({ [key === "product_type" ? "productType" : key]: values.join(",") });
+      } else updateParams({ [key === "product_type" ? "productType" : key]: serializeFilterValues(values) });
     } else {
       const resetValue = key === "availability" ? "all" : key === "inStockOnly" || key === "onlyNew" ? "false" : "";
       const updated = { ...filterFields, [key]: resetValue };
@@ -337,7 +427,7 @@ function App() {
   const isActiveFilterField = ([key, value]: [string, string | undefined]) =>
     Boolean(value && value !== "all" && !(["inStockOnly", "onlyNew"].includes(key) && value === "false"));
   const activeConditionCount = Object.values(active).reduce((sum, values) => sum + values.length, 0) + Object.entries(filterFields).filter(isActiveFilterField).length;
-  const searchableFilterLabels = new Set(["Раздел", "Производитель", "Бренд", "Материал", "Коллекция"]);
+  const searchableFilterLabels = new Set(["Раздел", "Производитель", "Бренд", "Материал", "Коллекция", "Штрихкод"]);
   const entriesForOrder = (options: Record<string, string[]>, order: string[]) => {
     const entries = Object.entries(options).map(([key, values]) => ({
       key,
@@ -360,7 +450,7 @@ function App() {
       if (key.startsWith("property:")) {
         values.forEach((value) => dependentParams.append("property", `${key.slice("property:".length)}:${value}`));
       } else {
-        dependentParams.set(key === "product_type" ? "productType" : key, values.join(","));
+        dependentParams.set(key === "product_type" ? "productType" : key, serializeFilterValues(values));
       }
     });
     setPropertyOptions(await api.filters(dependentParams));
@@ -371,6 +461,78 @@ function App() {
     return (options[key] ?? [])
       .filter((value) => !searchValue || value.toLocaleLowerCase("ru-RU").includes(searchValue))
       .slice(0, 100);
+  };
+  const productProperty = (product: ProductDetail, names: string[]) => {
+    const normalizeName = (name: string) =>
+      name.toLocaleLowerCase("ru-RU").replace(/[\s_-]+/g, "");
+    const wanted = new Set(names.map(normalizeName));
+    return product.properties.find(
+      (property) => wanted.has(normalizeName(property.name)) && property.value?.trim(),
+    );
+  };
+  const productPropertyValue = (product: ProductDetail, names: string[]) =>
+    productProperty(product, names)?.value?.trim();
+  const productPropertyFilter = (product: ProductDetail, names: string[]) => {
+    const property = productProperty(product, names);
+    return property ? `property:${property.name.trim()}` : undefined;
+  };
+  const paramsForDetailFilter = (key: string, value: string) => {
+    const next = new URLSearchParams();
+    if (filterFields.inStockOnly === "true") next.set("inStockOnly", "true");
+    if (key.startsWith("property:")) {
+      next.append("property", `${key.slice("property:".length)}:${value}`);
+    } else {
+      next.set(key === "product_type" ? "productType" : key, serializeFilterValues([value]));
+    }
+    return next;
+  };
+  const catalogFilterUrl = (key: string, value: string) => {
+    const next = paramsForDetailFilter(key, value);
+    const query = next.toString();
+    return `${window.location.pathname}${query ? `?${query}` : ""}`;
+  };
+  const openCatalogFilter = (key: string, value: string) => {
+    const next = paramsForDetailFilter(key, value);
+    const nextActive = multiFromUrl(next);
+    const nextFields = fieldsFromUrl(next);
+    setDetail(null);
+    setTab("catalog");
+    setActive(nextActive);
+    setDraftActive(nextActive);
+    setFilterFields(nextFields);
+    setDraftFields(nextFields);
+    replaceCatalogParams(next);
+  };
+  const clickableDetailFilters: Record<string, string> = {
+    Раздел: "section",
+    "Вид товара": "product_type",
+    Производитель: "manufacturer",
+    Менеджер: "manager",
+    Бренд: "brand",
+    "Код маркировки": "property:Код маркировки",
+    Коллекция: "property:Коллекция",
+  };
+  const renderDetailValue = (label: string, value: string, propertyFilter?: string) => {
+    const filterKey = propertyFilter ?? clickableDetailFilters[label];
+    if (!filterKey) return value;
+    return (
+      <Box
+        component="a"
+        href={catalogFilterUrl(filterKey, value)}
+        onClick={(event) => {
+          event.preventDefault();
+          openCatalogFilter(filterKey, value);
+        }}
+        sx={{
+          color: "primary.main",
+          fontWeight: 700,
+          textDecoration: "none",
+          "&:hover": { textDecoration: "underline" },
+        }}
+      >
+        {value}
+      </Box>
+    );
   };
   const changeSort = (field: string) => {
     const currentSort = params.get("sort");
@@ -383,10 +545,37 @@ function App() {
     }));
   const toggleAll = () =>
     setSelectedIds(allSelected ? [] : products.map((product) => product.id));
+  const closeDeleteDialog = () => {
+    setDeleteDialogOpen(false);
+    setDeletePassword("");
+    setDeletePasswordError(false);
+  };
   const deleteSelected = async () => {
     if (!selectedIds.length) return;
+    if (deletePassword !== DELETE_PASSWORD) {
+      setDeletePasswordError(true);
+      return;
+    }
     await api.deleteProducts(selectedIds);
+    closeDeleteDialog();
     reload();
+  };
+  const openExportDialog = async () => {
+    setExportColumns(defaultExportColumns);
+    setExportWarehouses(await api.warehouses());
+    setExportDialogOpen(true);
+  };
+  const toggleExportColumn = (column: string) => {
+    setExportColumns((current) =>
+      current.includes(column) ? current.filter((item) => item !== column) : [...current, column],
+    );
+  };
+  const downloadExcel = () => {
+    const exportParams = new URLSearchParams(params);
+    exportParams.delete("column");
+    exportColumns.forEach((column) => exportParams.append("column", column));
+    window.location.href = api.exportUrl("xlsx", exportParams);
+    setExportDialogOpen(false);
   };
   const openLogs = async () => {
     setSettingsTab("logs");
@@ -487,6 +676,18 @@ function App() {
           {loading && <LinearProgress />}
         </AppBar>
 
+        {tab === "catalog" && selectedIds.length > 0 && (
+          <Button
+            color="error"
+            variant="contained"
+            startIcon={<DeleteIcon />}
+            onClick={() => setDeleteDialogOpen(true)}
+            sx={{ position: "fixed", top: 16, right: 24, zIndex: (muiTheme) => muiTheme.zIndex.modal - 1 }}
+          >
+            Удалить выбранные ({selectedIds.length})
+          </Button>
+        )}
+
         <Container maxWidth="xl" sx={{ py: { xs: 2, md: 4 } }}>
           {uploadError && (
             <Card sx={{ mb: 3 }}>
@@ -512,6 +713,10 @@ function App() {
                   window.location.href = clientsUrl;
                   return;
                 }
+                if (value === "settings") {
+                  openSettings();
+                  return;
+                }
                 setTab(value);
               }}
               textColor="primary"
@@ -523,6 +728,100 @@ function App() {
               <Tab value="settings" label="Настройки" />
             </Tabs>
           </Paper>
+
+          <Dialog open={settingsPasswordOpen} onClose={closeSettingsPassword} maxWidth="xs" fullWidth>
+            <DialogTitle>Доступ к настройкам</DialogTitle>
+            <DialogContent>
+              <TextField
+                autoFocus
+                fullWidth
+                type="password"
+                label="Пароль"
+                value={settingsPassword}
+                error={settingsPasswordError}
+                helperText={settingsPasswordError ? "Неверный пароль" : "Введите пароль для доступа к вкладке"}
+                onChange={(event) => {
+                  setSettingsPassword(event.target.value);
+                  setSettingsPasswordError(false);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") unlockSettings();
+                }}
+                sx={{ mt: 1 }}
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={closeSettingsPassword}>Отмена</Button>
+              <Button variant="contained" onClick={unlockSettings}>Войти</Button>
+            </DialogActions>
+          </Dialog>
+
+          <Dialog open={deleteDialogOpen} onClose={closeDeleteDialog} maxWidth="xs" fullWidth>
+            <DialogTitle>Подтверждение удаления</DialogTitle>
+            <DialogContent>
+              <Typography sx={{ mb: 2 }}>
+                Вы действительно хотите удалить выбранные товары ({selectedIds.length})? Это действие нельзя отменить.
+              </Typography>
+              <TextField
+                autoFocus
+                fullWidth
+                type="password"
+                label="Пароль"
+                value={deletePassword}
+                error={deletePasswordError}
+                helperText={deletePasswordError ? "Неверный пароль" : "Введите пароль для подтверждения удаления"}
+                onChange={(event) => {
+                  setDeletePassword(event.target.value);
+                  setDeletePasswordError(false);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") deleteSelected();
+                }}
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={closeDeleteDialog}>Отмена</Button>
+              <Button color="error" variant="contained" onClick={deleteSelected}>
+                Подтвердить удаление
+              </Button>
+            </DialogActions>
+          </Dialog>
+
+          <Dialog open={exportDialogOpen} onClose={() => setExportDialogOpen(false)} maxWidth="sm" fullWidth>
+            <DialogTitle>Выберите колонки для Excel</DialogTitle>
+            <DialogContent>
+              <Typography variant="h6" sx={{ mt: 1 }}>Основные</Typography>
+              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" } }}>
+                {exportMainColumns.map(([key, label]) => (
+                  <FormControlLabel
+                    key={key}
+                    control={<Checkbox checked={exportColumns.includes(key)} onChange={() => toggleExportColumn(key)} />}
+                    label={label}
+                  />
+                ))}
+              </Box>
+              <Divider sx={{ my: 2 }} />
+              <Typography variant="h6">Цены</Typography>
+              <Stack>
+                {exportPriceColumns.map((price) => {
+                  const key = `price:${price}`;
+                  return <FormControlLabel key={key} control={<Checkbox checked={exportColumns.includes(key)} onChange={() => toggleExportColumn(key)} />} label={price} />;
+                })}
+              </Stack>
+              <Divider sx={{ my: 2 }} />
+              <Typography variant="h6">Остатки на складах</Typography>
+              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" } }}>
+                {exportWarehouses.map((warehouse) => {
+                  const key = `stock:${warehouse.code}`;
+                  return <FormControlLabel key={key} control={<Checkbox checked={exportColumns.includes(key)} onChange={() => toggleExportColumn(key)} />} label={warehouse.name} />;
+                })}
+              </Box>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setExportDialogOpen(false)}>Отмена</Button>
+              <Button variant="contained" disabled={!exportColumns.length} onClick={downloadExcel}>Скачать Excel</Button>
+            </DialogActions>
+          </Dialog>
 
           {tab === "catalog" && (
             <Paper
@@ -988,7 +1287,7 @@ function App() {
                   <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
                     <Typography variant="body2" fontWeight={700}>Активные условия:</Typography>
                     {Object.entries(active).flatMap(([key, values]) => values.map((value) => (
-                      <Chip key={`${key}-${value}`} label={`${filterLabels[key]}: ${value}`} onDelete={() => removeFilter(key, value)} />
+                      <Chip key={`${key}-${value}`} label={`${filterLabel(key)}: ${value}`} onDelete={() => removeFilter(key, value)} />
                     )))}
                     {Object.entries(filterFields).filter(isActiveFilterField).map(([key, value]) => (
                       <Chip key={key} label={`${filterFieldLabels[key as keyof FilterFields]}: ${value === "in_stock" ? "В наличии" : value === "out_of_stock" ? "Нет в наличии" : value === "true" ? "Да" : value}`} onDelete={() => removeFilter(key)} />
@@ -1003,9 +1302,12 @@ function App() {
                   <Button startIcon={<RefreshIcon />} onClick={reload}>Повторить</Button>
                 </Paper>
               )}
-              <Typography color="text.secondary" fontWeight={700}>
-                Найдено товаров: {pagination.totalItems}
-              </Typography>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={2}>
+                <Typography color="text.secondary" fontWeight={700}>
+                  Найдено товаров: {pagination.totalItems}
+                </Typography>
+                <Button onClick={openExportDialog} sx={{ whiteSpace: "nowrap" }}>Скачать Excel</Button>
+              </Stack>
               <TableContainer component={Card} sx={{ position: "relative" }}>
                 {loading && <LinearProgress />}
                 <Table aria-label="Список товаров">
@@ -1048,10 +1350,6 @@ function App() {
                 </Table>
                 <TablePagination component="div" count={pagination.totalItems} page={Math.max(0, pagination.page - 1)} onPageChange={(_, page) => updateParams({ page: page + 1 }, false)} rowsPerPage={pagination.pageSize} onRowsPerPageChange={(event) => updateParams({ pageSize: event.target.value })} rowsPerPageOptions={[20, 50, 100]} labelRowsPerPage="Строк на странице" labelDisplayedRows={({ from, to, count }) => `${from}–${to} из ${count}`} />
               </TableContainer>
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                <Button href={api.exportUrl("xlsx", params)}>Экспорт Excel</Button>
-                <Button color="error" variant="outlined" disabled={!selectedIds.length} onClick={deleteSelected}>Удалить выбранные</Button>
-              </Stack>
             </Stack>
           )}
         </Container>
@@ -1060,8 +1358,8 @@ function App() {
           <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
             <Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h6">Фильтр товаров</Typography><IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}><CloseIcon /></IconButton></Stack>
             <TextField label="ID" type="number" value={draftFields.id} onChange={(e) => setDraftFields({ ...draftFields, id: e.target.value })} inputProps={{ min: 1 }} />
-            <TextField label="Название" value={draftFields.name} onChange={(e) => setDraftFields({ ...draftFields, name: e.target.value })} />
-            <TextField label="Артикул" value={draftFields.article} onChange={(e) => setDraftFields({ ...draftFields, article: e.target.value })} />
+            <TextField label="Название" value={draftFields.name} onChange={(e) => setDraftFields({ ...draftFields, name: e.target.value })} onKeyDown={applyFiltersOnEnter} />
+            <TextField label="Артикул" value={draftFields.article} onChange={(e) => setDraftFields({ ...draftFields, article: e.target.value })} onKeyDown={applyFiltersOnEnter} />
             <TextField select label="Наличие" value={draftFields.availability} onChange={(e) => setDraftFields({ ...draftFields, availability: e.target.value })}><MenuItem value="all">Все</MenuItem><MenuItem value="in_stock">В наличии</MenuItem><MenuItem value="out_of_stock">Нет в наличии</MenuItem></TextField>
             <Stack direction="row" spacing={1}><TextField fullWidth label="Количество от" type="number" value={draftFields.quantityFrom} onChange={(e) => setDraftFields({ ...draftFields, quantityFrom: e.target.value })} /><TextField fullWidth label="Количество до" type="number" value={draftFields.quantityTo} onChange={(e) => setDraftFields({ ...draftFields, quantityTo: e.target.value })} /></Stack>
             <Stack direction="row" spacing={1}><TextField fullWidth label="Цена от" type="number" value={draftFields.priceFrom} onChange={(e) => setDraftFields({ ...draftFields, priceFrom: e.target.value })} inputProps={{ min: 0 }} /><TextField fullWidth label="Цена до" type="number" value={draftFields.priceTo} onChange={(e) => setDraftFields({ ...draftFields, priceTo: e.target.value })} inputProps={{ min: 0 }} /></Stack>
@@ -1087,6 +1385,7 @@ function App() {
             <TextField
               label="Название"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <TextField
@@ -1173,6 +1472,7 @@ function App() {
             <TextField
               label="Название"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <TextField
@@ -1259,6 +1559,7 @@ function App() {
             <TextField
               label="Название"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <TextField
@@ -1345,6 +1646,7 @@ function App() {
             <TextField
               label="Название"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <TextField
@@ -1431,6 +1733,7 @@ function App() {
             <TextField
               label="Название"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <TextField
@@ -1620,17 +1923,20 @@ function App() {
               label="Поиск по коду"
               helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
               helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
             <TextField
               label="Поиск по наименованию"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             {mainFilterEntries.map(({ key, label }) => (
@@ -1739,17 +2045,20 @@ function App() {
               label="Поиск по коду"
               helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
               helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
             <TextField
               label="Поиск по наименованию"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <FormControlLabel
@@ -1884,17 +2193,20 @@ function App() {
               label="Поиск по коду"
               helperText="Можно указать несколько кодов через пробел или запятую"
               value={draftFields.code}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
             />
             <TextField
               label="Поиск по артикулу"
               helperText="Можно указать несколько артикулов через пробел или запятую"
               value={draftFields.article}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
             />
             <TextField
               label="Поиск по наименованию"
               value={draftFields.name}
+              onKeyDown={applyFiltersOnEnter}
               onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
             />
             <FormControlLabel
@@ -2110,21 +2422,25 @@ function App() {
                     ["Производитель", detail.manufacturer],
                     ["Менеджер", detail.manager],
                     ["Бренд", detail.brand],
+                    ["Код маркировки", productPropertyValue(detail, ["Код маркировки"]), productPropertyFilter(detail, ["Код маркировки"])],
+                    ["Коллекция", productPropertyValue(detail, ["Коллекция"]), productPropertyFilter(detail, ["Коллекция"])],
                     ["Материал", detail.material],
                     ["Цвет", detail.color],
                     ["Сертификат", detail.certificate],
                     ["Штрихкоды", detail.barcodes.map((b) => b.value).join(", ")],
-                    ["Описание", detail.description],
                   ]
                     .filter(([, value]) => value)
-                    .map(([label, value]) => (
-                      <Typography key={label} sx={{ mt: label === "Описание" ? 1 : 0 }}>
-                        <Box component="span" fontWeight={800}>
-                          {label}:
-                        </Box>{" "}
-                        {value}
-                      </Typography>
-                    ))}
+                    .map(([label, value, propertyFilter]) => {
+                      const characteristicLabel = String(label);
+                      return (
+                        <Typography key={characteristicLabel}>
+                          <Box component="span" fontWeight={800}>
+                            {characteristicLabel}:
+                          </Box>{" "}
+                          {renderDetailValue(characteristicLabel, String(value), propertyFilter)}
+                        </Typography>
+                      );
+                    })}
                 </Paper>
                 <Paper
                   variant="outlined"

@@ -1,5 +1,7 @@
 import unittest
+from base64 import b64decode
 from datetime import datetime, timedelta
+from io import BytesIO
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -10,11 +12,13 @@ from app.models.catalog import (
     Price,
     Product,
     ProductProperty,
+    ProductImage,
     ProductTypeSetting,
     ServiceLog,
     Stock,
     WarehouseSetting,
 )
+from app.api.routes import build_export_workbook, normalize_image_url
 from app.services.catalog import catalog_product_query, list_filters, paginated_products
 from app.services.logging import add_log
 from app.schemas.catalog import ProductDetailOut
@@ -28,7 +32,7 @@ class CatalogProductQueryTests(unittest.TestCase):
 
     def setUp(self):
         self.db = Session(self.engine)
-        for model in (Barcode, Price, Stock, ProductProperty, Product, ProductTypeSetting, WarehouseSetting):
+        for model in (Barcode, Price, Stock, ProductProperty, ProductImage, Product, ProductTypeSetting, WarehouseSetting):
             self.db.query(model).delete()
         self.products = [
             Product(code="CHAIR-1", name="Стул Альфа", article="SKU-001", section="Мебель", brand="Alpha", product_type="TYPE-1", quantity=5, search_text="стул альфа chair-1 sku-001 alpha"),
@@ -206,6 +210,62 @@ class CatalogProductQueryTests(unittest.TestCase):
 
     def test_empty_result(self):
         self.assertEqual(self.query(search="несуществующий товар"), [])
+
+    def test_excel_export_uses_selected_main_price_and_warehouse_columns(self):
+        self.products[0].manager = "Иванова"
+        self.products[0].barcodes = [Barcode(value="460000000001")]
+        workbook = build_export_workbook(
+            self.db,
+            {"in_stock_only": False},
+            ["code", "name", "section", "manager", "barcodes", "price:ЦенаРозничная", "stock:WH1"],
+        )
+
+        rows = list(workbook.active.values)
+
+        self.assertEqual(
+            rows[0],
+            ("Код", "Наименование", "Раздел", "Менеджер", "Штрихкоды", "ЦенаРозничная", "Основной"),
+        )
+        chair_row = next(row for row in rows[1:] if row[0] == "CHAIR-1")
+        self.assertEqual(chair_row, ("CHAIR-1", "Стул Альфа", "Мебель", "Иванова", "460000000001", 1500, 0))
+
+    def test_excel_export_rejects_unknown_columns(self):
+        with self.assertRaisesRegex(Exception, "Неизвестные колонки экспорта"):
+            build_export_workbook(self.db, {}, ["unknown"])
+
+    def test_excel_export_embeds_first_photo_at_one_hundred_pixels(self):
+        self.products[0].images = [
+            ProductImage(image_order=1, image_url="https://example.test/first.png"),
+            ProductImage(image_order=2, image_url="https://example.test/second.png"),
+        ]
+        requested_urls = []
+        png = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+
+        def image_loader(url):
+            requested_urls.append(url)
+            return BytesIO(png)
+
+        workbook = build_export_workbook(
+            self.db,
+            {"code": "CHAIR-1", "in_stock_only": False},
+            ["code", "photo", "name"],
+            image_loader=image_loader,
+        )
+        worksheet = workbook.active
+
+        self.assertEqual(requested_urls, ["https://example.test/first.png"])
+        self.assertEqual(len(worksheet._images), 1)
+        self.assertEqual((worksheet._images[0].width, worksheet._images[0].height), (100, 100))
+        self.assertEqual(worksheet.row_dimensions[2].height, 82.5)
+        self.assertEqual(worksheet.column_dimensions["B"].width, 16)
+        self.assertEqual(worksheet["B2"].value, None)
+        workbook.save(BytesIO())
+
+    def test_excel_export_encodes_cyrillic_image_path(self):
+        self.assertEqual(
+            normalize_image_url("https://volgorost.ru/images/Новая папка/Фото 1.jpg"),
+            "https://volgorost.ru/images/%D0%9D%D0%BE%D0%B2%D0%B0%D1%8F%20%D0%BF%D0%B0%D0%BF%D0%BA%D0%B0/%D0%A4%D0%BE%D1%82%D0%BE%201.jpg",
+        )
 
 
 class ServiceLoggingTests(unittest.TestCase):
