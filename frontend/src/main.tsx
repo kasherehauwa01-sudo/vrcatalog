@@ -871,6 +871,12 @@ function App() {
                     },
                   }}
                 />
+                <Button
+                  href={api.exportUrl("xlsx", params)}
+                  sx={{ alignSelf: { xs: "stretch", md: "center" }, whiteSpace: "nowrap" }}
+                >
+                  Скачать Excel
+                </Button>
               </Stack>
             </Paper>
           )}
