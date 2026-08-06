@@ -267,6 +267,43 @@ class CatalogProductQueryTests(unittest.TestCase):
             for cell in row
         ))
 
+    def test_excel_export_orders_main_columns_and_formats_their_widths(self):
+        self.products[0].certificate = "CERTIFICATE-12345"
+        self.products[0].manufacturer = "Очень длинное название производителя"
+        self.products[0].manager = "Очень длинное имя менеджера"
+        self.products[0].material = "Очень длинное название материала"
+        self.products[0].barcodes = [Barcode(value="46000000000123456789")]
+        workbook = build_export_workbook(
+            self.db,
+            {"in_stock_only": False},
+            ["photo", "section", "certificate", "name", "barcodes", "code", "material", "article", "manager", "manufacturer", "marking_code", "quantity"],
+        )
+        worksheet = workbook.active
+
+        self.assertEqual(
+            tuple(cell.value for cell in worksheet[1]),
+            ("Код", "Артикул", "Наименование", "Раздел", "Фото", "Сертификат", "Штрихкоды", "Материал", "Менеджер", "Производитель", "Код маркировки", "Остаток"),
+        )
+        self.assertEqual(worksheet.column_dimensions["A"].width, len("CHAIR-1") + 2)
+        self.assertEqual(worksheet.column_dimensions["B"].width, len("Артикул") + 2)
+        self.assertEqual(worksheet.column_dimensions["C"].width, 50)
+        self.assertEqual(worksheet.column_dimensions["D"].width, 12)
+        self.assertEqual(worksheet.column_dimensions["F"].width, len("CERTIFICATE-12345") + 2)
+        self.assertEqual(worksheet.column_dimensions["G"].width, 13)
+        self.assertEqual(worksheet.column_dimensions["H"].width, 12)
+        self.assertEqual(worksheet.column_dimensions["I"].width, 12)
+        self.assertEqual(worksheet.column_dimensions["J"].width, 20)
+        self.assertEqual(worksheet.column_dimensions["K"].width, len("Код маркировки") + 2)
+        self.assertEqual(worksheet.column_dimensions["L"].width, len("Остаток") + 2)
+        self.assertTrue(worksheet["C2"].alignment.wrap_text)
+        self.assertTrue(worksheet["G2"].alignment.wrap_text)
+        self.assertTrue(worksheet["J2"].alignment.wrap_text)
+        self.assertTrue(all(
+            cell.alignment.vertical == "center"
+            for row in worksheet.iter_rows()
+            for cell in row
+        ))
+
     def test_excel_export_rejects_unknown_columns(self):
         with self.assertRaisesRegex(Exception, "Неизвестные колонки экспорта"):
             build_export_workbook(self.db, {}, ["unknown"])
