@@ -259,6 +259,11 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual(worksheet.column_dimensions["L"].width, len("Остаток") + 2)
         self.assertTrue(worksheet["C2"].alignment.wrap_text)
         self.assertTrue(worksheet["G2"].alignment.wrap_text)
+        self.assertTrue(all(
+            cell.alignment.vertical == "center"
+            for row in worksheet.iter_rows()
+            for cell in row
+        ))
 
     def test_excel_export_rejects_unknown_columns(self):
         with self.assertRaisesRegex(Exception, "Неизвестные колонки экспорта"):

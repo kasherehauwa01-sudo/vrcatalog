@@ -1,5 +1,6 @@
 import csv
 import tempfile
+from copy import copy
 from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO, BytesIO
 from pathlib import Path
@@ -14,7 +15,6 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
 from openpyxl.drawing.xdr import XDRPositiveSize2D
-from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter, pixels_to_EMU
 from PIL import Image as PillowImage, UnidentifiedImageError
 from sqlalchemy.orm import Session, selectinload
@@ -602,5 +602,15 @@ def build_export_workbook(
 
         if column in EXPORT_FIXED_WIDTHS:
             for cell in worksheet[column_letter]:
-                cell.alignment = Alignment(wrap_text=True, vertical="center")
+                alignment = copy(cell.alignment)
+                alignment.wrap_text = True
+                cell.alignment = alignment
+
+    # Вертикальное выравнивание применяется ко всей таблице, включая заголовки,
+    # обычные значения и ячейки с переносом строк.
+    for row in worksheet.iter_rows():
+        for cell in row:
+            alignment = copy(cell.alignment)
+            alignment.vertical = "center"
+            cell.alignment = alignment
     return workbook
