@@ -18,7 +18,7 @@ from app.models.catalog import (
     Stock,
     WarehouseSetting,
 )
-from app.api.routes import build_export_workbook, normalize_image_url
+from app.api.routes import build_export_workbook, download_export_images, normalize_image_url
 from app.services.catalog import catalog_product_query, list_filters, paginated_products
 from app.services.logging import add_log
 from app.schemas.catalog import ProductDetailOut
@@ -266,6 +266,18 @@ class CatalogProductQueryTests(unittest.TestCase):
             normalize_image_url("https://volgorost.ru/images/Новая папка/Фото 1.jpg"),
             "https://volgorost.ru/images/%D0%9D%D0%BE%D0%B2%D0%B0%D1%8F%20%D0%BF%D0%B0%D0%BF%D0%BA%D0%B0/%D0%A4%D0%BE%D1%82%D0%BE%201.jpg",
         )
+
+    def test_excel_export_downloads_duplicate_photos_only_once(self):
+        requested_urls = []
+
+        def image_loader(url):
+            requested_urls.append(url)
+            return BytesIO(url.encode())
+
+        images = download_export_images(["first", "first", "second"], image_loader)
+
+        self.assertCountEqual(requested_urls, ["first", "second"])
+        self.assertEqual(images, {"first": b"first", "second": b"second"})
 
 
 class ServiceLoggingTests(unittest.TestCase):

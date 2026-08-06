@@ -1,5 +1,6 @@
 import csv
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO, BytesIO
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -424,18 +425,44 @@ def download_export_image(url: str) -> BytesIO | None:
             "Referer": "https://volgorost.ru/",
             "User-Agent": "Mozilla/5.0 (compatible; VRCatalog Excel Export)",
         })
-        with urlopen(request, timeout=10) as response:
+        with urlopen(request, timeout=3) as response:
             content = response.read(10 * 1024 * 1024 + 1)
         if len(content) > 10 * 1024 * 1024:
             return None
         source = BytesIO(content)
         with PillowImage.open(source) as image:
+            image.thumbnail((100, 100))
             prepared = BytesIO()
             image.convert("RGBA" if image.mode == "RGBA" else "RGB").save(prepared, format="PNG")
             prepared.seek(0)
             return prepared
     except (OSError, ValueError, UnidentifiedImageError):
         return None
+
+
+def download_export_images(
+    urls: list[str],
+    image_loader: Callable[[str], BytesIO | None],
+) -> dict[str, bytes]:
+    """Параллельно загружает уникальные фото, не задерживая экспорт дольше 15 секунд."""
+    unique_urls = list(dict.fromkeys(urls))
+    if not unique_urls:
+        return {}
+    executor = ThreadPoolExecutor(max_workers=min(24, len(unique_urls)))
+    futures = {executor.submit(image_loader, url): url for url in unique_urls}
+    completed, pending = wait(futures, timeout=15)
+    images: dict[str, bytes] = {}
+    for future in completed:
+        try:
+            stream = future.result()
+        except Exception:
+            stream = None
+        if stream:
+            images[futures[future]] = stream.getvalue()
+    for future in pending:
+        future.cancel()
+    executor.shutdown(wait=False, cancel_futures=True)
+    return images
 
 
 def build_export_workbook(
@@ -480,6 +507,10 @@ def build_export_workbook(
     worksheet = workbook.active
     worksheet.append(headers)
     photo_column = selected_columns.index("photo") + 1 if "photo" in selected_columns else None
+    downloaded_images = download_export_images(
+        [product.images[0].image_url for product in products if product.images],
+        image_loader,
+    ) if photo_column else {}
     if photo_column:
         worksheet.column_dimensions[get_column_letter(photo_column)].width = 16
     for product in products:
@@ -511,10 +542,10 @@ def build_export_workbook(
                 row.append(stocks.get(column.removeprefix("stock:"), 0))
         worksheet.append(row)
         if photo_column and product.images:
-            image_stream = image_loader(product.images[0].image_url)
-            if image_stream:
+            image_content = downloaded_images.get(product.images[0].image_url)
+            if image_content:
                 try:
-                    image = ExcelImage(image_stream)
+                    image = ExcelImage(BytesIO(image_content))
                     image.width = 100
                     image.height = 100
                     image.anchor = f"{get_column_letter(photo_column)}{worksheet.max_row}"
