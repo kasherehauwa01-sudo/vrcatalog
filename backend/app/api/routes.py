@@ -1,13 +1,19 @@
 import csv
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO, BytesIO
 from pathlib import Path
+from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
-from typing import Annotated, Literal
+from typing import Annotated, Callable, Literal
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
+from openpyxl.drawing.image import Image as ExcelImage
+from openpyxl.utils import get_column_letter
+from PIL import Image as PillowImage, UnidentifiedImageError
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
@@ -370,11 +376,182 @@ def export_csv(db: Session = Depends(get_db), search: str | None = None):
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=products.csv"})
 
 @router.get("/export.xlsx")
-def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None):
-    params = locals(); params.pop("db")
+def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, column: Annotated[list[str] | None, Query()] = None):
+    params = locals(); params.pop("db"); columns = params.pop("column")
     add_log(db, "export_xlsx", f"Экспорт Excel; поиск: {search or ''}")
     db.commit()
-    wb = Workbook(); ws = wb.active; ws.append(["Код", "Артикул", "Название", "Раздел", "Остаток"])
-    for p in product_query(db, params).all(): ws.append([p.code, p.article, p.name, p.section, p.quantity])
+    wb = build_export_workbook(db, params, columns)
     stream = BytesIO(); wb.save(stream); stream.seek(0)
     return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=products.xlsx"})
+
+
+EXPORT_MAIN_COLUMNS = {
+    "code": "Код",
+    "article": "Артикул",
+    "photo": "Фото",
+    "name": "Наименование",
+    "section": "Раздел",
+    "product_type": "Вид товара",
+    "manufacturer": "Производитель",
+    "manager": "Менеджер",
+    "marking_code": "Код маркировки",
+    "material": "Материал",
+    "certificate": "Сертификат",
+    "barcodes": "Штрихкоды",
+}
+LEGACY_EXPORT_COLUMNS = ["code", "article", "name", "section", "quantity"]
+
+
+def normalize_image_url(url: str) -> str:
+    """Кодирует пробелы и кириллицу в путях изображений из XML."""
+    parts = urlsplit(url.strip())
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        raise ValueError("Некорректный URL изображения")
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc.encode("idna").decode("ascii"),
+        quote(parts.path, safe="/%:@"),
+        quote(parts.query, safe="=&%:@/?"),
+        "",
+    ))
+
+
+def download_export_image(url: str) -> BytesIO | None:
+    """Загружает изображение для Excel с ограничением времени и объёма ответа."""
+    try:
+        normalized_url = normalize_image_url(url)
+        request = Request(normalized_url, headers={
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            "Referer": "https://volgorost.ru/",
+            "User-Agent": "Mozilla/5.0 (compatible; VRCatalog Excel Export)",
+        })
+        with urlopen(request, timeout=3) as response:
+            content = response.read(10 * 1024 * 1024 + 1)
+        if len(content) > 10 * 1024 * 1024:
+            return None
+        source = BytesIO(content)
+        with PillowImage.open(source) as image:
+            image.thumbnail((100, 100))
+            prepared = BytesIO()
+            image.convert("RGBA" if image.mode == "RGBA" else "RGB").save(prepared, format="PNG")
+            prepared.seek(0)
+            return prepared
+    except (OSError, ValueError, UnidentifiedImageError):
+        return None
+
+
+def download_export_images(
+    urls: list[str],
+    image_loader: Callable[[str], BytesIO | None],
+) -> dict[str, bytes]:
+    """Параллельно загружает уникальные фото, не задерживая экспорт дольше 15 секунд."""
+    unique_urls = list(dict.fromkeys(urls))
+    if not unique_urls:
+        return {}
+    executor = ThreadPoolExecutor(max_workers=min(24, len(unique_urls)))
+    futures = {executor.submit(image_loader, url): url for url in unique_urls}
+    completed, pending = wait(futures, timeout=15)
+    images: dict[str, bytes] = {}
+    for future in completed:
+        try:
+            stream = future.result()
+        except Exception:
+            stream = None
+        if stream:
+            images[futures[future]] = stream.getvalue()
+    for future in pending:
+        future.cancel()
+    executor.shutdown(wait=False, cancel_futures=True)
+    return images
+
+
+def build_export_workbook(
+    db: Session,
+    params: dict,
+    columns: list[str] | None,
+    image_loader: Callable[[str], BytesIO | None] = download_export_image,
+) -> Workbook:
+    selected_columns = columns or LEGACY_EXPORT_COLUMNS
+    warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
+    product_type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
+    allowed_columns = set(EXPORT_MAIN_COLUMNS) | {"quantity"}
+    allowed_columns.update(f"price:{name}" for name in ("ЦенаОптовая", "ЦенаКорпоративная", "ЦенаРозничная"))
+    allowed_columns.update(f"stock:{code}" for code in warehouse_names)
+    unknown_columns = set(selected_columns) - allowed_columns
+    if unknown_columns:
+        raise HTTPException(422, f"Неизвестные колонки экспорта: {', '.join(sorted(unknown_columns))}")
+
+    headers = []
+    for column in selected_columns:
+        if column in EXPORT_MAIN_COLUMNS:
+            headers.append(EXPORT_MAIN_COLUMNS[column])
+        elif column == "quantity":
+            headers.append("Остаток")
+        elif column.startswith("price:"):
+            headers.append(column.removeprefix("price:"))
+        else:
+            headers.append(warehouse_names[column.removeprefix("stock:")])
+
+    products = (
+        product_query(db, params)
+        .options(
+            selectinload(Product.images),
+            selectinload(Product.prices),
+            selectinload(Product.stocks),
+            selectinload(Product.properties),
+            selectinload(Product.barcodes),
+        )
+        .all()
+    )
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append(headers)
+    photo_column = selected_columns.index("photo") + 1 if "photo" in selected_columns else None
+    downloaded_images = download_export_images(
+        [product.images[0].image_url for product in products if product.images],
+        image_loader,
+    ) if photo_column else {}
+    if photo_column:
+        worksheet.column_dimensions[get_column_letter(photo_column)].width = 16
+    for product in products:
+        properties = {item.name.strip().casefold(): (item.value or "").strip() for item in product.properties}
+        prices = {item.price_type: item.price_value for item in product.prices}
+        stocks = {item.warehouse: item.quantity for item in product.stocks}
+        main_values = {
+            "code": product.code,
+            "article": product.article or "",
+            "photo": "",
+            "name": product.name,
+            "section": product.section or "",
+            "product_type": product_type_names.get(product.product_type, product.product_type or ""),
+            "manufacturer": product.manufacturer or "",
+            "manager": product.manager or properties.get("менеджер", ""),
+            "marking_code": properties.get("код маркировки", ""),
+            "material": product.material or "",
+            "certificate": product.certificate or "",
+            "barcodes": ", ".join(item.value for item in product.barcodes),
+            "quantity": product.quantity,
+        }
+        row = []
+        for column in selected_columns:
+            if column in main_values:
+                row.append(main_values[column])
+            elif column.startswith("price:"):
+                row.append(prices.get(column.removeprefix("price:"), 0))
+            else:
+                row.append(stocks.get(column.removeprefix("stock:"), 0))
+        worksheet.append(row)
+        if photo_column and product.images:
+            image_content = downloaded_images.get(product.images[0].image_url)
+            if image_content:
+                try:
+                    image = ExcelImage(BytesIO(image_content))
+                    image.width = 100
+                    image.height = 100
+                    image.anchor = f"{get_column_letter(photo_column)}{worksheet.max_row}"
+                    worksheet.add_image(image)
+                    worksheet.row_dimensions[worksheet.max_row].height = 82.5
+                except (OSError, ValueError):
+                    # Повреждённое или неподдерживаемое изображение не должно прерывать весь экспорт.
+                    pass
+    return workbook
