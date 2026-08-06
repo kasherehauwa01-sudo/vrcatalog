@@ -101,11 +101,11 @@ const SETTINGS_PASSWORD = "8852285";
 const DELETE_PASSWORD = "8852285";
 
 const exportMainColumns = [
-  ["code", "Код"],
-  ["article", "Артикул"],
   ["photo", "Фото"],
+  ["article", "Артикул"],
   ["name", "Наименование"],
   ["section", "Раздел"],
+  ["code", "Код"],
   ["product_type", "Вид товара"],
   ["manufacturer", "Производитель"],
   ["manager", "Менеджер"],
@@ -871,12 +871,6 @@ function App() {
                     },
                   }}
                 />
-                <Button
-                  href={api.exportUrl("xlsx", params)}
-                  sx={{ alignSelf: { xs: "stretch", md: "center" }, whiteSpace: "nowrap" }}
-                >
-                  Скачать Excel
-                </Button>
               </Stack>
             </Paper>
           )}

@@ -224,10 +224,50 @@ class CatalogProductQueryTests(unittest.TestCase):
 
         self.assertEqual(
             rows[0],
-            ("Код", "Наименование", "Раздел", "Менеджер", "Штрихкоды", "ЦенаРозничная", "Основной"),
+            ("Наименование", "Раздел", "Код", "Менеджер", "Штрихкоды", "ЦенаРозничная", "Основной"),
         )
-        chair_row = next(row for row in rows[1:] if row[0] == "CHAIR-1")
-        self.assertEqual(chair_row, ("CHAIR-1", "Стул Альфа", "Мебель", "Иванова", "460000000001", 1500, 0))
+        chair_row = next(row for row in rows[1:] if row[2] == "CHAIR-1")
+        self.assertEqual(chair_row, ("Стул Альфа", "Мебель", "CHAIR-1", "Иванова", "460000000001", 1500, 0))
+
+    def test_excel_export_orders_main_columns_and_formats_their_widths(self):
+        self.products[0].certificate = "CERTIFICATE-12345"
+        self.products[0].manufacturer = "Очень длинное название производителя"
+        self.products[0].manager = "Очень длинное имя менеджера"
+        self.products[0].material = "Очень длинное название материала"
+        self.products[0].barcodes = [Barcode(value="46000000000123456789")]
+        self.products[0].properties.append(ProductProperty(name="КодМаркировки", value="MARK-001"))
+        workbook = build_export_workbook(
+            self.db,
+            {"in_stock_only": False},
+            ["photo", "section", "certificate", "name", "barcodes", "code", "material", "article", "manager", "manufacturer", "marking_code", "quantity"],
+        )
+        worksheet = workbook.active
+
+        self.assertEqual(
+            tuple(cell.value for cell in worksheet[1]),
+            ("Фото", "Артикул", "Наименование", "Раздел", "Код", "Сертификат", "Штрихкоды", "Материал", "Менеджер", "Производитель", "Код маркировки", "Остаток"),
+        )
+        self.assertEqual(worksheet.column_dimensions["A"].width, 16)
+        self.assertEqual(worksheet.column_dimensions["B"].width, len("Артикул") + 2)
+        self.assertEqual(worksheet.column_dimensions["C"].width, 50)
+        self.assertEqual(worksheet.column_dimensions["D"].width, 12)
+        self.assertEqual(worksheet.column_dimensions["E"].width, len("CHAIR-1") + 2)
+        self.assertEqual(worksheet.column_dimensions["F"].width, len("CERTIFICATE-12345") + 2)
+        self.assertEqual(worksheet.column_dimensions["G"].width, 17)
+        self.assertEqual(worksheet.column_dimensions["H"].width, 12)
+        self.assertEqual(worksheet.column_dimensions["I"].width, 12)
+        self.assertEqual(worksheet.column_dimensions["J"].width, 20)
+        self.assertEqual(worksheet.column_dimensions["K"].width, len("Код маркировки") + 2)
+        self.assertEqual(worksheet.column_dimensions["L"].width, len("Остаток") + 2)
+        self.assertTrue(worksheet["C2"].alignment.wrap_text)
+        self.assertTrue(worksheet["G2"].alignment.wrap_text)
+        self.assertTrue(worksheet["J2"].alignment.wrap_text)
+        self.assertEqual(worksheet["K2"].value, "MARK-001")
+        self.assertTrue(all(
+            cell.alignment.vertical == "center"
+            for row in worksheet.iter_rows()
+            for cell in row
+        ))
 
     def test_excel_export_rejects_unknown_columns(self):
         with self.assertRaisesRegex(Exception, "Неизвестные колонки экспорта"):
@@ -257,8 +297,11 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual(len(worksheet._images), 1)
         self.assertEqual((worksheet._images[0].width, worksheet._images[0].height), (100, 100))
         self.assertEqual(worksheet.row_dimensions[2].height, 82.5)
-        self.assertEqual(worksheet.column_dimensions["B"].width, 16)
-        self.assertEqual(worksheet["B2"].value, None)
+        self.assertEqual(worksheet.column_dimensions["A"].width, 16)
+        self.assertEqual(worksheet._images[0].anchor._from.col, 0)
+        self.assertGreater(worksheet._images[0].anchor._from.colOff, 0)
+        self.assertGreater(worksheet._images[0].anchor._from.rowOff, 0)
+        self.assertEqual(worksheet["A2"].value, None)
         workbook.save(BytesIO())
 
     def test_excel_export_encodes_cyrillic_image_path(self):

@@ -1,5 +1,6 @@
 import csv
 import tempfile
+from copy import copy
 from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO, BytesIO
 from pathlib import Path
@@ -12,7 +13,10 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Upload
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.units import pixels_to_EMU
 from PIL import Image as PillowImage, UnidentifiedImageError
 from sqlalchemy.orm import Session, selectinload
 
@@ -400,6 +404,21 @@ EXPORT_MAIN_COLUMNS = {
     "barcodes": "Штрихкоды",
 }
 LEGACY_EXPORT_COLUMNS = ["code", "article", "name", "section", "quantity"]
+EXPORT_LEADING_COLUMNS = ("photo", "article", "name", "section", "code")
+EXPORT_FIXED_WIDTHS = {
+    "name": 50,
+    "section": 12,
+    "manufacturer": 20,
+    "manager": 12,
+    "material": 12,
+    "barcodes": 17,
+}
+EXPORT_VALUE_WIDTH_COLUMNS = {"code", "certificate", "product_type"}
+
+
+def normalize_export_property_key(value: str | None) -> str:
+    """Нормализует название свойства для устойчивого поиска значений при экспорте."""
+    return "".join(character for character in (value or "").casefold() if character.isalnum())
 
 
 def normalize_image_url(url: str) -> str:
@@ -481,6 +500,12 @@ def build_export_workbook(
     if unknown_columns:
         raise HTTPException(422, f"Неизвестные колонки экспорта: {', '.join(sorted(unknown_columns))}")
 
+    # Основные поля сохраняют одинаковый порядок независимо от порядка выбора пользователя.
+    selected_columns = [
+        *(column for column in EXPORT_LEADING_COLUMNS if column in selected_columns),
+        *(column for column in selected_columns if column not in EXPORT_LEADING_COLUMNS),
+    ]
+
     headers = []
     for column in selected_columns:
         if column in EXPORT_MAIN_COLUMNS:
@@ -514,7 +539,13 @@ def build_export_workbook(
     if photo_column:
         worksheet.column_dimensions[get_column_letter(photo_column)].width = 16
     for product in products:
-        properties = {item.name.strip().casefold(): (item.value or "").strip() for item in product.properties}
+        properties: dict[str, str] = {}
+        for item in product.properties:
+            value = (item.value or "").strip()
+            for key in (item.name, item.property_code):
+                normalized_key = normalize_export_property_key(key)
+                if normalized_key and value:
+                    properties.setdefault(normalized_key, value)
         prices = {item.price_type: item.price_value for item in product.prices}
         stocks = {item.warehouse: item.quantity for item in product.stocks}
         main_values = {
@@ -526,7 +557,7 @@ def build_export_workbook(
             "product_type": product_type_names.get(product.product_type, product.product_type or ""),
             "manufacturer": product.manufacturer or "",
             "manager": product.manager or properties.get("менеджер", ""),
-            "marking_code": properties.get("код маркировки", ""),
+            "marking_code": properties.get("кодмаркировки", "") or properties.get("markingcode", ""),
             "material": product.material or "",
             "certificate": product.certificate or "",
             "barcodes": ", ".join(item.value for item in product.barcodes),
@@ -548,10 +579,50 @@ def build_export_workbook(
                     image = ExcelImage(BytesIO(image_content))
                     image.width = 100
                     image.height = 100
-                    image.anchor = f"{get_column_letter(photo_column)}{worksheet.max_row}"
+                    # Ячейка шириной 16 символов занимает около 117 px, а высотой 82,5 pt — 110 px.
+                    # Небольшие смещения помещают фотографию по центру, а не у верхней левой границы.
+                    image.anchor = OneCellAnchor(
+                        _from=AnchorMarker(
+                            col=photo_column - 1,
+                            row=worksheet.max_row - 1,
+                            colOff=pixels_to_EMU(8),
+                            rowOff=pixels_to_EMU(5),
+                        ),
+                        ext=XDRPositiveSize2D(
+                            cx=pixels_to_EMU(image.width),
+                            cy=pixels_to_EMU(image.height),
+                        ),
+                    )
                     worksheet.add_image(image)
                     worksheet.row_dimensions[worksheet.max_row].height = 82.5
                 except (OSError, ValueError):
                     # Повреждённое или неподдерживаемое изображение не должно прерывать весь экспорт.
                     pass
+
+    for column_index, column in enumerate(selected_columns, start=1):
+        column_letter = get_column_letter(column_index)
+        if column == "photo":
+            continue
+        if column in EXPORT_FIXED_WIDTHS:
+            width = EXPORT_FIXED_WIDTHS[column]
+        elif column in EXPORT_VALUE_WIDTH_COLUMNS:
+            value_lengths = (len(str(cell.value or "")) for cell in worksheet[column_letter][1:])
+            width = max(len(headers[column_index - 1]), *value_lengths) + 2
+        else:
+            width = len(headers[column_index - 1]) + 2
+        worksheet.column_dimensions[column_letter].width = width
+
+        if column in EXPORT_FIXED_WIDTHS:
+            for cell in worksheet[column_letter]:
+                alignment = copy(cell.alignment)
+                alignment.wrap_text = True
+                cell.alignment = alignment
+
+    # Вертикальное выравнивание применяется ко всей таблице, включая заголовки,
+    # обычные значения и ячейки с переносом строк.
+    for row in worksheet.iter_rows():
+        for cell in row:
+            alignment = copy(cell.alignment)
+            alignment.vertical = "center"
+            cell.alignment = alignment
     return workbook
