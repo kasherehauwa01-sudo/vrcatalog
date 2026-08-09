@@ -116,7 +116,7 @@ curl -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
 curl -X POST \
   -H "Content-Type: application/json" \
   -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
-  -d '{"articles":["10001","10002","00123"],"include_zero_stock":true,"include_warehouse_stocks":true}' \
+  -d '{"articles":["346051"],"include_zero_stock":true,"include_warehouse_stocks":true,"include_section":true}' \
   "https://kvasmix.ru/vr/catalog/api/internal/products/by-articles"
 ```
 
@@ -125,40 +125,17 @@ curl -X POST \
   "ok": true,
   "items": [
     {
-      "article": "10001",
+      "article": "346051",
       "found": true,
       "product_id": 15,
       "code": "P-1",
-      "name": "Товар А",
+      "name": "Тестовый товар",
       "manager_id": null,
-      "manager_name": "Иванов Иван",
+      "manager_name": "Иванова Ирина",
+      "section": "Средства для бассейнов",
       "stocks": [
-        {"warehouse":"AVIATORS","warehouse_name":"Авиаторов Зал+Склад","quantity":13.0},
-        {"warehouse":"BAKHTUROVA","warehouse_name":"Бахтурова","quantity":2.0},
-        {"warehouse":"MAIN","warehouse_name":"Основной склад","quantity":3.0}
+        {"warehouse":"AVIATORS","warehouse_name":"Авиаторов Зал+Склад","quantity":13.0}
       ]
-    },
-    {
-      "article": "10002",
-      "found": true,
-      "product_id": 18,
-      "code": "P-2",
-      "name": "Товар Б",
-      "manager_id": null,
-      "manager_name": "",
-      "stocks": [
-        {"warehouse":"MAIN","warehouse_name":"Основной склад","quantity":0.0}
-      ]
-    },
-    {
-      "article": "00123",
-      "found": false,
-      "product_id": null,
-      "code": null,
-      "name": null,
-      "manager_id": null,
-      "manager_name": "",
-      "stocks": []
     }
   ]
 }
@@ -168,7 +145,9 @@ curl -X POST \
 
 Поле `include_warehouse_stocks` управляет складской детализацией: при `false` или отсутствии флага `stocks` остаётся пустым массивом для совместимости, а при `true` каждый найденный товар получает массив складских остатков. `stocks` содержит не более одной записи на сочетание товара и склада. `warehouse` — код из остатков, `warehouse_name` — каноническое название из `warehouse_settings` в том же виде, как в UI (например, `Авиаторов Зал+Склад`), `quantity` — числовая сумма актуальных строк остатка этого товара на складе. При включённой детализации API добавляет известные склады из `warehouse_settings` с нулевым количеством, если у товара нет строки остатка по такому складу; неизвестный товар возвращается с пустым `stocks`. Закупочные цены и документы движения endpoint не раскрывает.
 
-Пакет ограничен 1000 идентификаторами. Некорректный JSON, неверный тип `articles`, превышение лимита и некорректные `include_zero_stock` / `include_warehouse_stocks` возвращают HTTP 422. Неизвестный товар не прерывает пакет и возвращается с `found: false` и пустым `stocks`.
+Поле `include_section` имеет тип `boolean`, по умолчанию равно `false` и означает «Возвращать значение параметра товара „Раздел“». При `true` найденный товар получает nullable-поле `section` — фактическое значение столбца `products.section`, которое отображается в карточке каталога как «Раздел». Значение очищается от HTML, неразрывных и лишних пробелов, но сохраняет исходный регистр и буквы. Если раздел не заполнен или товар не найден, возвращается `section: null`. При `false` поле отсутствует, поэтому прежний контракт клиентов не меняется. Раздел хранится непосредственно в строке товара и читается тем же пакетным SELECT, без дополнительного запроса на товар и без N+1.
+
+Пакет ограничен 1000 идентификаторами. Некорректный JSON, неверный тип `articles`, превышение лимита и некорректные `include_zero_stock` / `include_warehouse_stocks` / `include_section` возвращают HTTP 422. Неизвестный товар не прерывает пакет и возвращается с `found: false`, пустым `stocks` и, если раздел был запрошен, `section: null`.
 
 Примеры ошибок:
 
@@ -187,7 +166,7 @@ curl -sS -X POST \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
-  --data '{"articles":["ОКА-27134","10001","НЕИЗВЕСТНЫЙ"],"include_zero_stock":true,"include_warehouse_stocks":true}' \
+  --data '{"articles":["ОКА-27134","10001","НЕИЗВЕСТНЫЙ"],"include_zero_stock":true,"include_warehouse_stocks":true,"include_section":true}' \
   'http://127.0.0.1:8000/api/internal/products/by-articles'
 ```
 
@@ -200,7 +179,7 @@ curl -i -X POST \
   'http://127.0.0.1:8000/api/internal/products/by-articles'
 ```
 
-Карточки, свойства, остатки и справочник складов загружаются фиксированным числом пакетных SQL-запросов; число запросов не растёт с количеством товаров.
+Карточки вместе со столбцом `products.section`, свойства, остатки и справочник складов загружаются фиксированным числом пакетных SQL-запросов; число запросов не растёт с количеством товаров. Столбец `products.section` индексирован в модели БД.
 
 ### Текущее хранение менеджера и совместимое развитие
 
@@ -208,7 +187,7 @@ curl -i -X POST \
 
 Если стабильный справочник сотрудников появится в источнике данных, безопасный переход состоит из следующих этапов: создать отдельный справочник с уникальным внешним ID; добавить nullable-связь товара с ним; продолжать заполнять и возвращать текстовое имя; сопоставить исторические записи; начать возвращать ID только для надёжно сопоставленных менеджеров. Это сохраняет совместимость потребителей, которые уже используют `manager_name`.
 
-Каждое успешное или отклонённое по токену обращение записывается в `service_logs` с событием `internal_api_request`: дата и время находятся в `created_at`, а JSON в `message` содержит endpoint, число артикулов, длительность, числа найденных/ненайденных товаров, HTTP-код, флаг `include_warehouse_stocks`, число складских строк в ответе, список названий складов и короткую диагностику по складским остаткам. Токен, заголовки и сами артикулы не журналируются.
+Каждое успешное или отклонённое по токену обращение записывается в `service_logs` с событием `internal_api_request`: дата и время находятся в `created_at`, а JSON в `message` содержит endpoint, число артикулов, длительность, числа найденных/ненайденных товаров, HTTP-код, флаги `include_zero_stock`, `include_warehouse_stocks`, `include_section`, числа товаров с разделом и без него, число складских строк в ответе, список названий складов и короткую диагностику по складским остаткам. Токен, заголовки и сами артикулы не журналируются.
 
 ## Быстрый деплой на VPS
 
