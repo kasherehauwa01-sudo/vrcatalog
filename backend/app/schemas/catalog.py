@@ -160,6 +160,10 @@ class InternalProductOut(BaseModel):
     name: str | None = None
     manager_id: int | None = None
     manager_name: str | None = None
+    section: str | None = Field(
+        default=None,
+        description="Значение параметра товара «Раздел».",
+    )
     stocks: list[InternalStockOut] = Field(default_factory=list)
 
 
@@ -171,8 +175,39 @@ class InternalProductsRequest(BaseModel):
     articles: list[str] = Field(max_length=1000)
     include_zero_stock: bool = False
     include_warehouse_stocks: bool = False
+    include_section: bool = Field(
+        default=False,
+        description="Возвращать значение параметра товара «Раздел».",
+    )
+
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "articles": ["346051"],
+            "include_zero_stock": True,
+            "include_warehouse_stocks": True,
+            "include_section": True,
+        }
+    })
 
 
 class InternalProductsResponse(BaseModel):
     ok: bool = True
     items: list[InternalProductOut]
+
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "ok": True,
+            "items": [{
+                "article": "346051",
+                "found": True,
+                "name": "Тестовый товар",
+                "manager_name": "Иванова Ирина",
+                "section": "Средства для бассейнов",
+                "stocks": [{
+                    "warehouse": "AVIATORS",
+                    "warehouse_name": "Авиаторов Зал+Склад",
+                    "quantity": 13,
+                }],
+            }],
+        }
+    })
