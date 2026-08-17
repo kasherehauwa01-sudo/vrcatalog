@@ -9,6 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+RUN python -c "from app.api.routes import router"
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
 

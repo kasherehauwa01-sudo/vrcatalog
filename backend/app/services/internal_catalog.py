@@ -1,7 +1,31 @@
+from html import unescape
+from html.parser import HTMLParser
+
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.catalog import Product, WarehouseSetting
+
+
+class _SectionTextExtractor(HTMLParser):
+    """Извлекает отображаемый текст раздела, не пропуская HTML в контракт API."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+def normalize_section(value: str | None) -> str | None:
+    """Нормализует пробелы раздела, сохраняя регистр и исходные буквы."""
+    if not value:
+        return None
+    parser = _SectionTextExtractor()
+    parser.feed(unescape(value))
+    normalized = " ".join("".join(parser.parts).replace("\xa0", " ").split())
+    return normalized or None
 
 
 def products_by_articles(
@@ -10,6 +34,7 @@ def products_by_articles(
     *,
     include_zero_stock: bool = False,
     include_warehouse_stocks: bool = False,
+    include_section: bool = False,
 ) -> list[dict]:
     """Находит точные артикулы во всех карточках и восстанавливает порядок входа.
 
@@ -55,6 +80,7 @@ def products_by_articles(
             products_by_article.get(article),
             warehouse_names,
             include_warehouse_stocks=include_warehouse_stocks,
+            include_section=include_section,
         )
         for article in articles
     ]
@@ -66,10 +92,11 @@ def product_for_article(
     warehouse_names: dict[str, str] | None = None,
     *,
     include_warehouse_stocks: bool = False,
+    include_section: bool = False,
 ) -> dict:
     """Формирует строго ограниченный контракт внутреннего API."""
     if product is None:
-        return {
+        item = {
             "article": article,
             "found": False,
             "product_id": None,
@@ -79,6 +106,9 @@ def product_for_article(
             "manager_name": "",
             "stocks": [],
         }
+        if include_section:
+            item["section"] = None
+        return item
     manager_name = (product.manager or "").strip()
     if not manager_name:
         manager_name = next(
@@ -110,7 +140,7 @@ def product_for_article(
             }
             for warehouse in sorted(warehouses, key=lambda code: names.get(code, code))
         ]
-    return {
+    item = {
         "article": article,
         "found": True,
         "product_id": product.id,
@@ -121,3 +151,6 @@ def product_for_article(
         "manager_name": manager_name,
         "stocks": stocks,
     }
+    if include_section:
+        item["section"] = normalize_section(product.section)
+    return item
