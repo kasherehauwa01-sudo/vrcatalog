@@ -55,6 +55,10 @@ class PaginationOut(BaseModel):
 class ProductPageOut(BaseModel):
     items: list[ProductListOut]
     pagination: PaginationOut
+
+
+class ProductTypeUpdateIn(BaseModel):
+    product_type: str | None = None
 class ProductDetailOut(ProductListOut):
     description: str | None; manufacturer: str | None; brand: str | None; manager: str | None; country: str | None; material: str | None; color: str | None; certificate: str | None; tags: str | None
     created_at: datetime
@@ -144,6 +148,52 @@ class AutoImportStateOut(BaseModel):
 class FtpConnectionTestOut(BaseModel):
     success: bool
     message: str
+
+
+class MailSettingIn(BaseModel):
+    smtp_host: str
+    smtp_port: int = Field(ge=1, le=65535)
+    encryption: str = Field(pattern="^(none|starttls|ssl)$")
+    username: str = ""
+    password: str = ""
+    sender_name: str = "VR Catalog"
+    sender_email: str
+
+
+class MailSettingOut(BaseModel):
+    smtp_host: str
+    smtp_port: int
+    encryption: str
+    username: str
+    password_configured: bool
+    sender_name: str
+    sender_email: str
+    connection_status: str
+    last_success_at: datetime | None
+    last_sent_at: datetime | None
+    last_error: str | None
+
+
+class TestMailIn(BaseModel):
+    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class ScenarioSettingIn(BaseModel):
+    enabled: bool
+    send_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    recipients: list[str]
+
+
+class ScenarioSettingOut(ScenarioSettingIn):
+    code: str = "monthly_promotion"
+
+
+class ScenarioRunOut(BaseModel):
+    status: str
+    changes: int
+    sent: int
+    recipients: list[str]
+    html: str = ""
 
 
 class InternalStockOut(BaseModel):

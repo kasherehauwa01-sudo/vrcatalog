@@ -60,6 +60,9 @@ import type {
   AutoImportState,
   ServiceLog,
   Warehouse,
+  MailSetting,
+  NotificationScenario,
+  ScenarioRun,
 } from "./types/catalog";
 
 const theme = createTheme({
@@ -250,7 +253,7 @@ function App() {
   const [settingsPassword, setSettingsPassword] = useState("");
   const [settingsPasswordError, setSettingsPasswordError] = useState(false);
   const [settingsUnlocked, setSettingsUnlocked] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "logs">("settings");
+  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "mail" | "scenarios" | "logs">("settings");
   const [openSettingsGroups, setOpenSettingsGroups] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -280,6 +283,12 @@ function App() {
   const [autoImportState, setAutoImportState] = useState<AutoImportState | null>(null);
   const [ftpTestMessage, setFtpTestMessage] = useState<string | null>(null);
   const [manualImportMessage, setManualImportMessage] = useState<string | null>(null);
+  const [mailForm, setMailForm] = useState<MailSetting | null>(null);
+  const [scenarioForm, setScenarioForm] = useState<NotificationScenario | null>(null);
+  const [testMailOpen, setTestMailOpen] = useState(false);
+  const [testEmail, setTestEmail] = useState("");
+  const [mailMessage, setMailMessage] = useState<string | null>(null);
+  const [scenarioResult, setScenarioResult] = useState<ScenarioRun | null>(null);
   const [queryVersion, setQueryVersion] = useState(0);
   const params = useMemo(() => new URLSearchParams(window.location.search), [queryVersion]);
   const replaceCatalogParams = (next: URLSearchParams) => {
@@ -594,6 +603,14 @@ function App() {
     setWarehouseCodes((await api.warehouseCodes()).codes);
     setProductTypes(await api.productTypes());
   };
+  const openMailSettings = async () => {
+    setSettingsTab("mail");
+    setMailForm(await api.mailSettings());
+  };
+  const openScenarios = async () => {
+    setSettingsTab("scenarios");
+    setScenarioForm(await api.monthlyPromotionScenario());
+  };
   const openWarehouseDialog = (warehouse?: Warehouse) => {
     setWarehouseForm(
       warehouse
@@ -755,6 +772,15 @@ function App() {
             <DialogActions>
               <Button onClick={closeSettingsPassword}>Отмена</Button>
               <Button variant="contained" onClick={unlockSettings}>Войти</Button>
+            </DialogActions>
+          </Dialog>
+
+          <Dialog open={testMailOpen} onClose={() => setTestMailOpen(false)} maxWidth="xs" fullWidth>
+            <DialogTitle>Тест уведомлений</DialogTitle>
+            <DialogContent><TextField autoFocus fullWidth label="Email получателя" value={testEmail} onChange={(event) => setTestEmail(event.target.value)} sx={{ mt: 1 }} /></DialogContent>
+            <DialogActions>
+              <Button onClick={() => setTestMailOpen(false)}>Отмена</Button>
+              <Button variant="contained" onClick={async () => { try { const result = await api.sendTestMail(testEmail); setMailMessage(result.message); setMailForm(await api.mailSettings()); } catch (error) { setMailMessage(error instanceof Error ? error.message : "Ошибка отправки"); } finally { setTestMailOpen(false); } }}>Отправить</Button>
             </DialogActions>
           </Dialog>
 
@@ -943,12 +969,18 @@ function App() {
                       ? openLogs()
                       : value === "mappings"
                         ? openMappings()
-                        : openGeneralSettings()
+                        : value === "mail"
+                          ? openMailSettings()
+                          : value === "scenarios"
+                            ? openScenarios()
+                            : openGeneralSettings()
                   }
                   sx={{ mb: 2 }}
                 >
                   <Tab value="settings" label="Общие" />
                   <Tab value="mappings" label="Сопоставления" />
+                  <Tab value="mail" label="Почта" />
+                  <Tab value="scenarios" label="Сценарии" />
                   <Tab value="logs" label="Логи" />
                 </Tabs>
                 {settingsTab === "settings" && (
@@ -1127,6 +1159,44 @@ function App() {
                       <Typography sx={{ mt: 1 }}>Автозагрузка еще не выполнялась.</Typography>
                     )}
                   </Box>
+                )}
+                {settingsTab === "mail" && mailForm && (
+                  <Stack spacing={2}>
+                    <Typography variant="h6">Почта</Typography>
+                    <Typography>Статус подключения: {mailForm.connection_status === "connected" ? "Подключено" : mailForm.connection_status === "error" ? "Ошибка" : "Нет соединения"}</Typography>
+                    <Typography>Последнее успешное соединение: {mailForm.last_success_at ?? "—"}</Typography>
+                    <Typography>Последнее отправленное письмо: {mailForm.last_sent_at ?? "—"}</Typography>
+                    {mailForm.last_error && <Typography color="error">{mailForm.last_error}</Typography>}
+                    <TextField label="SMTP сервер" value={mailForm.smtp_host} onChange={(event) => setMailForm({ ...mailForm, smtp_host: event.target.value })} />
+                    <TextField label="SMTP порт" type="number" value={mailForm.smtp_port} onChange={(event) => setMailForm({ ...mailForm, smtp_port: Number(event.target.value) })} />
+                    <TextField select label="Шифрование" value={mailForm.encryption} onChange={(event) => setMailForm({ ...mailForm, encryption: event.target.value as MailSetting["encryption"] })}>
+                      <MenuItem value="none">Без шифрования</MenuItem><MenuItem value="starttls">STARTTLS</MenuItem><MenuItem value="ssl">SSL/TLS</MenuItem>
+                    </TextField>
+                    <TextField label="Логин" value={mailForm.username} onChange={(event) => setMailForm({ ...mailForm, username: event.target.value })} />
+                    <TextField label={mailForm.password_configured ? "Пароль (оставьте пустым, чтобы не менять)" : "Пароль"} type="password" value={mailForm.password ?? ""} onChange={(event) => setMailForm({ ...mailForm, password: event.target.value })} />
+                    <TextField label="Имя отправителя" value={mailForm.sender_name} onChange={(event) => setMailForm({ ...mailForm, sender_name: event.target.value })} />
+                    <TextField label="Email отправителя" value={mailForm.sender_email} onChange={(event) => setMailForm({ ...mailForm, sender_email: event.target.value })} />
+                    <Stack direction="row" gap={1} flexWrap="wrap">
+                      <Button variant="contained" onClick={async () => { const saved = await api.updateMailSettings(mailForm); setMailForm(saved); setMailMessage(saved.connection_status === "connected" ? "Настройки сохранены, подключение проверено." : saved.last_error ?? "Не удалось подключиться."); }}>Проверять соединение и сохранить</Button>
+                      <Button variant="outlined" onClick={() => setTestMailOpen(true)}>Тест уведомлений</Button>
+                    </Stack>
+                    {mailMessage && <Typography>{mailMessage}</Typography>}
+                  </Stack>
+                )}
+                {settingsTab === "scenarios" && scenarioForm && (
+                  <Stack spacing={2}>
+                    <Typography variant="h6">Акция месяца</Typography>
+                    <FormControlLabel control={<Switch checked={scenarioForm.enabled} onChange={(event) => setScenarioForm({ ...scenarioForm, enabled: event.target.checked })} />} label={scenarioForm.enabled ? "Сценарий включён" : "Сценарий выключен"} />
+                    <TextField label="Время отправки" type="time" value={scenarioForm.send_time} onChange={(event) => setScenarioForm({ ...scenarioForm, send_time: event.target.value })} InputLabelProps={{ shrink: true }} />
+                    <TextField label="Получатели (по одному email в строке)" multiline minRows={4} value={scenarioForm.recipients.join("\n")} onChange={(event) => setScenarioForm({ ...scenarioForm, recipients: event.target.value.split(/\n|,/).map((item) => item.trim()).filter(Boolean) })} />
+                    <Stack direction="row" gap={1} flexWrap="wrap">
+                      <Button variant="contained" onClick={async () => setScenarioForm(await api.updateMonthlyPromotionScenario(scenarioForm))}>Сохранить</Button>
+                      <Button variant="outlined" onClick={async () => setScenarioResult(await api.runMonthlyPromotion())}>Отправить сейчас</Button>
+                      <Button onClick={async () => setScenarioResult(await api.previewMonthlyPromotion())}>Предпросмотр</Button>
+                    </Stack>
+                    {scenarioResult && <Typography>Статус: {scenarioResult.status}; изменений: {scenarioResult.changes}; писем: {scenarioResult.sent}</Typography>}
+                    {scenarioResult?.html && <Paper variant="outlined" sx={{ p: 2 }} dangerouslySetInnerHTML={{ __html: scenarioResult.html }} />}
+                  </Stack>
                 )}
                 {settingsTab === "mappings" && (
                   <Box>

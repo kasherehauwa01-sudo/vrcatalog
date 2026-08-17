@@ -1,4 +1,5 @@
 import csv
+import json
 import tempfile
 from copy import copy
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -23,10 +24,11 @@ from sqlalchemy.orm import Session, selectinload
 from app.db.session import get_db
 from app.importer.xml_importer import XMLCatalogImporter
 from app.models.catalog import Favorite, Notification, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ServiceLogOut, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MailSettingIn, MailSettingOut, MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.catalog import decorate, list_filters, meta, product_query, paginated_products
 from app.services.logging import add_log
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
+from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
 
 router = APIRouter()
 
@@ -160,6 +162,17 @@ def product_detail(product_id: int, db: Session = Depends(get_db)):
     return decorate(product, type_names)
 
 
+@router.patch("/products/{product_id}/product-type")
+def update_product_product_type(product_id: int, payload: ProductTypeUpdateIn, db: Session = Depends(get_db)):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(404, "Товар не найден")
+    db.info["change_source"] = "manual"
+    product.product_type = payload.product_type.strip() if payload.product_type else None
+    db.commit()
+    return {"ok": True, "product_type": product.product_type}
+
+
 @router.get("/xml-server-settings", response_model=XmlServerSettingOut)
 def xml_server_settings(db: Session = Depends(get_db)):
     return get_xml_server_setting(db)
@@ -183,6 +196,83 @@ def update_xml_server_settings(payload: XmlServerSettingIn, db: Session = Depend
 def test_xml_server_settings(db: Session = Depends(get_db)):
     success, message = test_connection(db)
     return {"success": success, "message": message}
+
+
+def mail_setting_response(item) -> dict:
+    return {
+        "smtp_host": item.smtp_host,
+        "smtp_port": item.smtp_port,
+        "encryption": item.encryption,
+        "username": item.username,
+        "password_configured": bool(item.encrypted_password),
+        "sender_name": item.sender_name,
+        "sender_email": item.sender_email,
+        "connection_status": item.connection_status,
+        "last_success_at": item.last_success_at,
+        "last_sent_at": item.last_sent_at,
+        "last_error": item.last_error,
+    }
+
+
+@router.get("/mail-settings", response_model=MailSettingOut)
+def mail_settings(db: Session = Depends(get_db)):
+    return mail_setting_response(get_mail_setting(db))
+
+
+@router.put("/mail-settings", response_model=MailSettingOut)
+def update_mail_settings(payload: MailSettingIn, db: Session = Depends(get_db)):
+    item = get_mail_setting(db)
+    for field in ("smtp_host", "smtp_port", "encryption", "username", "sender_name", "sender_email"):
+        setattr(item, field, getattr(payload, field))
+    if payload.password:
+        item.encrypted_password = encrypt_password(payload.password)
+    db.commit()
+    check_mail_connection(db, item)
+    return mail_setting_response(item)
+
+
+@router.post("/mail-settings/test")
+def send_test_mail(payload: TestMailIn, db: Session = Depends(get_db)):
+    try:
+        send_email(db, [payload.email], "Тест уведомлений VR Catalog", "<h2>Тестовое письмо отправлено успешно</h2>")
+        db.commit()
+        return {"success": True, "message": "Тестовое письмо отправлено успешно."}
+    except Exception as exc:
+        db.rollback()
+        item = get_mail_setting(db)
+        item.connection_status = "error"
+        item.last_error = str(exc)
+        db.commit()
+        return {"success": False, "message": f"Ошибка отправки: {exc}"}
+
+
+@router.get("/notification-scenarios/monthly-promotion", response_model=ScenarioSettingOut)
+def monthly_promotion_settings(db: Session = Depends(get_db)):
+    item = get_scenario_setting(db)
+    return {"code": item.code, "enabled": item.enabled, "send_time": item.send_time, "recipients": scenario_recipients(item)}
+
+
+@router.put("/notification-scenarios/monthly-promotion", response_model=ScenarioSettingOut)
+def update_monthly_promotion_settings(payload: ScenarioSettingIn, db: Session = Depends(get_db)):
+    item = get_scenario_setting(db)
+    item.enabled = payload.enabled
+    item.send_time = payload.send_time
+    item.recipients_json = json.dumps(list(dict.fromkeys(payload.recipients)), ensure_ascii=False)
+    db.commit()
+    return {"code": item.code, "enabled": item.enabled, "send_time": item.send_time, "recipients": scenario_recipients(item)}
+
+
+@router.post("/notification-scenarios/monthly-promotion/run", response_model=ScenarioRunOut)
+def run_monthly_promotion(db: Session = Depends(get_db)):
+    return run_scenario(db)
+
+
+@router.get("/notification-scenarios/monthly-promotion/preview", response_model=ScenarioRunOut)
+def preview_monthly_promotion(db: Session = Depends(get_db)):
+    from app.models.catalog import ProductTypeChange
+    from app.services.monthly_promotion import build_preview
+    changes = db.query(ProductTypeChange).filter(ProductTypeChange.processed.is_(False)).order_by(ProductTypeChange.changed_at).all()
+    return {"status": "preview", "changes": len(changes), "sent": 0, "recipients": scenario_recipients(get_scenario_setting(db)), "html": build_preview(changes)}
 
 @router.get("/auto-import-state", response_model=AutoImportStateOut)
 def auto_import_state(db: Session = Depends(get_db)):
