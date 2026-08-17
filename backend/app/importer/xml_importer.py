@@ -114,6 +114,8 @@ class XMLCatalogImporter:
     """Независимый сервис импорта: XML читается только здесь, API работает уже с БД."""
 
     def import_file(self, db: Session, path: Path, filename: str) -> ImportRun:
+        previous_source = db.info.get("change_source")
+        db.info["change_source"] = "xml"
         run = ImportRun(filename=filename, status="running")
         db.add(run)
         db.flush()
@@ -168,6 +170,10 @@ class XMLCatalogImporter:
             add_notification(db, "import_error", "Ошибка загрузки XML", f"Файл:\n{filename}\n\nПричина:\n{exc}")
             db.commit()
             raise
+        if previous_source is None:
+            db.info.pop("change_source", None)
+        else:
+            db.info["change_source"] = previous_source
         return run
 
 

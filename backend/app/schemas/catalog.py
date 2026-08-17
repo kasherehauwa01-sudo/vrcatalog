@@ -55,6 +55,10 @@ class PaginationOut(BaseModel):
 class ProductPageOut(BaseModel):
     items: list[ProductListOut]
     pagination: PaginationOut
+
+
+class ProductTypeUpdateIn(BaseModel):
+    product_type: str | None = None
 class ProductDetailOut(ProductListOut):
     description: str | None; manufacturer: str | None; brand: str | None; manager: str | None; country: str | None; material: str | None; color: str | None; certificate: str | None; tags: str | None
     created_at: datetime
@@ -118,6 +122,8 @@ class XmlServerSettingIn(BaseModel):
     username: str
     password: str
     xml_dir: str
+    connection_attempts: int = Field(default=5, ge=1, le=10)
+    retry_delay_seconds: int = Field(default=3, ge=0, le=60)
 
 class XmlServerSettingOut(XmlServerSettingIn):
     id: int
@@ -146,6 +152,70 @@ class FtpConnectionTestOut(BaseModel):
     message: str
 
 
+class MailSettingIn(BaseModel):
+    smtp_host: str
+    smtp_port: int = Field(ge=1, le=65535)
+    encryption: str = Field(pattern="^(none|starttls|ssl)$")
+    username: str = ""
+    password: str = ""
+    sender_name: str = "VR Catalog"
+    sender_email: str
+
+
+class MailSettingOut(BaseModel):
+    smtp_host: str
+    smtp_port: int
+    encryption: str
+    username: str
+    password_configured: bool
+    sender_name: str
+    sender_email: str
+    connection_status: str
+    last_success_at: datetime | None
+    last_sent_at: datetime | None
+    last_error: str | None
+
+
+class TestMailIn(BaseModel):
+    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class ScenarioSettingIn(BaseModel):
+    enabled: bool
+    send_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    recipients: list[str]
+
+
+class ScenarioSettingOut(ScenarioSettingIn):
+    code: str = "monthly_promotion"
+
+
+class ScenarioRunOut(BaseModel):
+    status: str
+    changes: int
+    sent: int
+    recipients: list[str]
+    html: str = ""
+
+
+class ScenarioSummaryOut(BaseModel):
+    code: str
+    name: str
+    enabled: bool
+
+
+class NotificationHistoryOut(BaseModel):
+    id: int
+    scenario_code: str
+    sent_at: datetime
+    recipients: list[str]
+    subject: str
+    body_html: str
+    status: str
+    error_message: str | None
+    duration_ms: float
+
+
 class InternalStockOut(BaseModel):
     warehouse: str
     warehouse_name: str
@@ -160,6 +230,10 @@ class InternalProductOut(BaseModel):
     name: str | None = None
     manager_id: int | None = None
     manager_name: str | None = None
+    section: str | None = Field(
+        default=None,
+        description="Значение параметра товара «Раздел».",
+    )
     stocks: list[InternalStockOut] = Field(default_factory=list)
 
 
@@ -171,8 +245,39 @@ class InternalProductsRequest(BaseModel):
     articles: list[str] = Field(max_length=1000)
     include_zero_stock: bool = False
     include_warehouse_stocks: bool = False
+    include_section: bool = Field(
+        default=False,
+        description="Возвращать значение параметра товара «Раздел».",
+    )
+
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "articles": ["346051"],
+            "include_zero_stock": True,
+            "include_warehouse_stocks": True,
+            "include_section": True,
+        }
+    })
 
 
 class InternalProductsResponse(BaseModel):
     ok: bool = True
     items: list[InternalProductOut]
+
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "ok": True,
+            "items": [{
+                "article": "346051",
+                "found": True,
+                "name": "Тестовый товар",
+                "manager_name": "Иванова Ирина",
+                "section": "Средства для бассейнов",
+                "stocks": [{
+                    "warehouse": "AVIATORS",
+                    "warehouse_name": "Авиаторов Зал+Склад",
+                    "quantity": 13,
+                }],
+            }],
+        }
+    })

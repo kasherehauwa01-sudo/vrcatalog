@@ -1,5 +1,7 @@
 import csv
+import json
 import tempfile
+from copy import copy
 from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO, BytesIO
 from pathlib import Path
@@ -12,17 +14,21 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Upload
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.units import pixels_to_EMU
 from PIL import Image as PillowImage, UnidentifiedImageError
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.importer.xml_importer import XMLCatalogImporter
-from app.models.catalog import Favorite, Notification, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ServiceLogOut, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
+from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.catalog import decorate, list_filters, meta, product_query, paginated_products
 from app.services.logging import add_log
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
+from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
 
 router = APIRouter()
 
@@ -78,6 +84,7 @@ def search_products(
     warehouse: Annotated[str | None, Query(max_length=2000)] = None,
     availability: Literal["all", "in_stock", "out_of_stock"] = "all",
     in_stock_only: Annotated[bool, Query(alias="inStockOnly")] = True,
+    exclude_yyy: Annotated[bool, Query(alias="excludeYyy")] = True,
     only_new: Annotated[bool, Query(alias="onlyNew")] = False,
     quantity_from: Annotated[float | None, Query(alias="quantityFrom")] = None,
     quantity_to: Annotated[float | None, Query(alias="quantityTo")] = None,
@@ -119,6 +126,7 @@ def search_products(
         "warehouse": warehouse,
         "availability": availability,
         "in_stock_only": in_stock_only,
+        "exclude_yyy": exclude_yyy,
         "only_new": only_new,
         "quantity_from": quantity_from,
         "quantity_to": quantity_to,
@@ -154,6 +162,17 @@ def product_detail(product_id: int, db: Session = Depends(get_db)):
     return decorate(product, type_names)
 
 
+@router.patch("/products/{product_id}/product-type")
+def update_product_product_type(product_id: int, payload: ProductTypeUpdateIn, db: Session = Depends(get_db)):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(404, "Товар не найден")
+    db.info["change_source"] = "manual"
+    product.product_type = payload.product_type.strip() if payload.product_type else None
+    db.commit()
+    return {"ok": True, "product_type": product.product_type}
+
+
 @router.get("/xml-server-settings", response_model=XmlServerSettingOut)
 def xml_server_settings(db: Session = Depends(get_db)):
     return get_xml_server_setting(db)
@@ -169,6 +188,8 @@ def update_xml_server_settings(payload: XmlServerSettingIn, db: Session = Depend
     setting.username = payload.username.strip()
     setting.password = payload.password
     setting.xml_dir = payload.xml_dir.strip() or "/"
+    setting.connection_attempts = payload.connection_attempts
+    setting.retry_delay_seconds = payload.retry_delay_seconds
     db.commit()
     db.refresh(setting)
     return setting
@@ -177,6 +198,128 @@ def update_xml_server_settings(payload: XmlServerSettingIn, db: Session = Depend
 def test_xml_server_settings(db: Session = Depends(get_db)):
     success, message = test_connection(db)
     return {"success": success, "message": message}
+
+
+def mail_setting_response(item) -> dict:
+    return {
+        "smtp_host": item.smtp_host,
+        "smtp_port": item.smtp_port,
+        "encryption": item.encryption,
+        "username": item.username,
+        "password_configured": bool(item.encrypted_password),
+        "sender_name": item.sender_name,
+        "sender_email": item.sender_email,
+        "connection_status": item.connection_status,
+        "last_success_at": item.last_success_at,
+        "last_sent_at": item.last_sent_at,
+        "last_error": item.last_error,
+    }
+
+
+@router.get("/mail-settings", response_model=MailSettingOut)
+def mail_settings(db: Session = Depends(get_db)):
+    return mail_setting_response(get_mail_setting(db))
+
+
+@router.put("/mail-settings", response_model=MailSettingOut)
+def update_mail_settings(payload: MailSettingIn, db: Session = Depends(get_db)):
+    item = get_mail_setting(db)
+    for field in ("smtp_host", "smtp_port", "encryption", "username", "sender_name", "sender_email"):
+        setattr(item, field, getattr(payload, field))
+    if payload.password:
+        item.encrypted_password = encrypt_password(payload.password)
+    db.commit()
+    check_mail_connection(db, item)
+    return mail_setting_response(item)
+
+
+@router.post("/mail-settings/test")
+def send_test_mail(payload: TestMailIn, db: Session = Depends(get_db)):
+    try:
+        send_email(db, [payload.email], "Тест уведомлений VR Catalog", "<h2>Тестовое письмо отправлено успешно</h2>")
+        db.commit()
+        return {"success": True, "message": "Тестовое письмо отправлено успешно."}
+    except Exception as exc:
+        db.rollback()
+        item = get_mail_setting(db)
+        item.connection_status = "error"
+        item.last_error = str(exc)
+        db.commit()
+        return {"success": False, "message": f"Ошибка отправки: {exc}"}
+
+
+@router.get("/notification-scenarios/monthly-promotion", response_model=ScenarioSettingOut)
+def monthly_promotion_settings(db: Session = Depends(get_db)):
+    item = get_scenario_setting(db)
+    return {"code": item.code, "enabled": item.enabled, "send_time": item.send_time, "recipients": scenario_recipients(item)}
+
+
+@router.get("/notification-scenarios", response_model=list[ScenarioSummaryOut])
+def notification_scenarios(db: Session = Depends(get_db)):
+    item = get_scenario_setting(db)
+    return [{"code": item.code, "name": "Акция месяца", "enabled": item.enabled}]
+
+
+@router.patch("/notification-scenarios/{code}/enabled", response_model=ScenarioSummaryOut)
+def toggle_notification_scenario(code: str, enabled: bool = Body(embed=True), db: Session = Depends(get_db)):
+    if code != "monthly_promotion":
+        raise HTTPException(404, "Сценарий не найден")
+    item = get_scenario_setting(db)
+    item.enabled = enabled
+    add_log(db, "notification_scenario_toggled", json.dumps({"scenario": code, "enabled": enabled}, ensure_ascii=False))
+    db.commit()
+    return {"code": item.code, "name": "Акция месяца", "enabled": item.enabled}
+
+
+@router.put("/notification-scenarios/monthly-promotion", response_model=ScenarioSettingOut)
+def update_monthly_promotion_settings(payload: ScenarioSettingIn, db: Session = Depends(get_db)):
+    item = get_scenario_setting(db)
+    item.enabled = payload.enabled
+    item.send_time = payload.send_time
+    item.recipients_json = json.dumps(list(dict.fromkeys(payload.recipients)), ensure_ascii=False)
+    add_log(db, "notification_scenario_updated", json.dumps({"scenario": item.code, "send_time": item.send_time, "recipients": len(payload.recipients)}, ensure_ascii=False))
+    db.commit()
+    return {"code": item.code, "enabled": item.enabled, "send_time": item.send_time, "recipients": scenario_recipients(item)}
+
+
+@router.post("/notification-scenarios/monthly-promotion/run", response_model=ScenarioRunOut)
+def run_monthly_promotion(db: Session = Depends(get_db)):
+    return run_scenario(db)
+
+
+@router.get("/notification-scenarios/monthly-promotion/preview", response_model=ScenarioRunOut)
+def preview_monthly_promotion(db: Session = Depends(get_db)):
+    from app.models.catalog import ProductTypeChange
+    from app.services.monthly_promotion import build_preview
+    changes = db.query(ProductTypeChange).filter(ProductTypeChange.processed.is_(False)).order_by(ProductTypeChange.changed_at).all()
+    html = build_preview(changes)
+    add_log(db, "notification_scenario_preview", json.dumps({"scenario": "monthly_promotion", "changes": len(changes)}, ensure_ascii=False))
+    db.commit()
+    return {"status": "preview", "changes": len(changes), "sent": 0, "recipients": scenario_recipients(get_scenario_setting(db)), "html": html}
+
+
+@router.get("/notification-scenarios/{code}/history", response_model=list[NotificationHistoryOut])
+def notification_scenario_history(
+    code: str,
+    search: str = "",
+    status: Literal["all", "sent", "error"] = "all",
+    db: Session = Depends(get_db),
+):
+    query = db.query(NotificationEmailHistory).filter(NotificationEmailHistory.scenario_code == code)
+    if search.strip():
+        query = query.filter(NotificationEmailHistory.recipients_json.ilike(f"%{search.strip()}%"))
+    if status != "all":
+        query = query.filter(NotificationEmailHistory.status == status)
+    rows = query.order_by(NotificationEmailHistory.sent_at.desc(), NotificationEmailHistory.id.desc()).limit(500).all()
+    result = []
+    for item in rows:
+        result.append({
+            "id": item.id, "scenario_code": item.scenario_code, "sent_at": item.sent_at,
+            "recipients": json.loads(item.recipients_json), "subject": item.subject,
+            "body_html": item.body_html, "status": item.status, "error_message": item.error_message,
+            "duration_ms": item.duration_ms,
+        })
+    return result
 
 @router.get("/auto-import-state", response_model=AutoImportStateOut)
 def auto_import_state(db: Session = Depends(get_db)):
@@ -198,6 +341,7 @@ def filters(
     warehouse: str | None = None,
     barcode: str | None = None,
     in_stock_only: bool = Query(True, alias="inStockOnly"),
+    exclude_yyy: bool = Query(True, alias="excludeYyy"),
     property: list[str] | None = Query(None),
 ):
     properties: dict[str, list[str]] = {}
@@ -214,6 +358,7 @@ def filters(
         "warehouse": warehouse,
         "barcode": barcode,
         "in_stock_only": in_stock_only,
+        "exclude_yyy": exclude_yyy,
         "properties": properties,
     })
 
@@ -376,7 +521,7 @@ def export_csv(db: Session = Depends(get_db), search: str | None = None):
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=products.csv"})
 
 @router.get("/export.xlsx")
-def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, column: Annotated[list[str] | None, Query()] = None):
+def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):
     params = locals(); params.pop("db"); columns = params.pop("column")
     add_log(db, "export_xlsx", f"Экспорт Excel; поиск: {search or ''}")
     db.commit()
@@ -400,6 +545,21 @@ EXPORT_MAIN_COLUMNS = {
     "barcodes": "Штрихкоды",
 }
 LEGACY_EXPORT_COLUMNS = ["code", "article", "name", "section", "quantity"]
+EXPORT_LEADING_COLUMNS = ("photo", "article", "name", "section", "code")
+EXPORT_FIXED_WIDTHS = {
+    "name": 50,
+    "section": 12,
+    "manufacturer": 20,
+    "manager": 12,
+    "material": 12,
+    "barcodes": 17,
+}
+EXPORT_VALUE_WIDTH_COLUMNS = {"code", "certificate", "product_type"}
+
+
+def normalize_export_property_key(value: str | None) -> str:
+    """Нормализует название свойства для устойчивого поиска значений при экспорте."""
+    return "".join(character for character in (value or "").casefold() if character.isalnum())
 
 
 def normalize_image_url(url: str) -> str:
@@ -481,6 +641,12 @@ def build_export_workbook(
     if unknown_columns:
         raise HTTPException(422, f"Неизвестные колонки экспорта: {', '.join(sorted(unknown_columns))}")
 
+    # Основные поля сохраняют одинаковый порядок независимо от порядка выбора пользователя.
+    selected_columns = [
+        *(column for column in EXPORT_LEADING_COLUMNS if column in selected_columns),
+        *(column for column in selected_columns if column not in EXPORT_LEADING_COLUMNS),
+    ]
+
     headers = []
     for column in selected_columns:
         if column in EXPORT_MAIN_COLUMNS:
@@ -514,7 +680,13 @@ def build_export_workbook(
     if photo_column:
         worksheet.column_dimensions[get_column_letter(photo_column)].width = 16
     for product in products:
-        properties = {item.name.strip().casefold(): (item.value or "").strip() for item in product.properties}
+        properties: dict[str, str] = {}
+        for item in product.properties:
+            value = (item.value or "").strip()
+            for key in (item.name, item.property_code):
+                normalized_key = normalize_export_property_key(key)
+                if normalized_key and value:
+                    properties.setdefault(normalized_key, value)
         prices = {item.price_type: item.price_value for item in product.prices}
         stocks = {item.warehouse: item.quantity for item in product.stocks}
         main_values = {
@@ -526,7 +698,7 @@ def build_export_workbook(
             "product_type": product_type_names.get(product.product_type, product.product_type or ""),
             "manufacturer": product.manufacturer or "",
             "manager": product.manager or properties.get("менеджер", ""),
-            "marking_code": properties.get("код маркировки", ""),
+            "marking_code": properties.get("кодмаркировки", "") or properties.get("markingcode", ""),
             "material": product.material or "",
             "certificate": product.certificate or "",
             "barcodes": ", ".join(item.value for item in product.barcodes),
@@ -548,10 +720,50 @@ def build_export_workbook(
                     image = ExcelImage(BytesIO(image_content))
                     image.width = 100
                     image.height = 100
-                    image.anchor = f"{get_column_letter(photo_column)}{worksheet.max_row}"
+                    # Ячейка шириной 16 символов занимает около 117 px, а высотой 82,5 pt — 110 px.
+                    # Небольшие смещения помещают фотографию по центру, а не у верхней левой границы.
+                    image.anchor = OneCellAnchor(
+                        _from=AnchorMarker(
+                            col=photo_column - 1,
+                            row=worksheet.max_row - 1,
+                            colOff=pixels_to_EMU(8),
+                            rowOff=pixels_to_EMU(5),
+                        ),
+                        ext=XDRPositiveSize2D(
+                            cx=pixels_to_EMU(image.width),
+                            cy=pixels_to_EMU(image.height),
+                        ),
+                    )
                     worksheet.add_image(image)
                     worksheet.row_dimensions[worksheet.max_row].height = 82.5
                 except (OSError, ValueError):
                     # Повреждённое или неподдерживаемое изображение не должно прерывать весь экспорт.
                     pass
+
+    for column_index, column in enumerate(selected_columns, start=1):
+        column_letter = get_column_letter(column_index)
+        if column == "photo":
+            continue
+        if column in EXPORT_FIXED_WIDTHS:
+            width = EXPORT_FIXED_WIDTHS[column]
+        elif column in EXPORT_VALUE_WIDTH_COLUMNS:
+            value_lengths = (len(str(cell.value or "")) for cell in worksheet[column_letter][1:])
+            width = max(len(headers[column_index - 1]), *value_lengths) + 2
+        else:
+            width = len(headers[column_index - 1]) + 2
+        worksheet.column_dimensions[column_letter].width = width
+
+        if column in EXPORT_FIXED_WIDTHS:
+            for cell in worksheet[column_letter]:
+                alignment = copy(cell.alignment)
+                alignment.wrap_text = True
+                cell.alignment = alignment
+
+    # Вертикальное выравнивание применяется ко всей таблице, включая заголовки,
+    # обычные значения и ячейки с переносом строк.
+    for row in worksheet.iter_rows():
+        for cell in row:
+            alignment = copy(cell.alignment)
+            alignment.vertical = "center"
+            cell.alignment = alignment
     return workbook

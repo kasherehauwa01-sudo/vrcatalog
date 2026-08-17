@@ -38,6 +38,10 @@ def write_request_log(
     found_count: int,
     status_code: int,
     include_warehouse_stocks: bool = False,
+    include_zero_stock: bool = False,
+    include_section: bool = False,
+    section_count: int = 0,
+    section_missing_count: int = 0,
     stock_rows_count: int = 0,
     warehouse_names: list[str] | None = None,
 ) -> None:
@@ -51,6 +55,10 @@ def write_request_log(
             "not_found_count": article_count - found_count,
             "status_code": status_code,
             "include_warehouse_stocks": include_warehouse_stocks,
+            "include_zero_stock": include_zero_stock,
+            "include_section": include_section,
+            "section_count": section_count,
+            "section_missing_count": section_missing_count,
             "stock_rows_count": stock_rows_count,
             "warehouses": warehouse_names or [],
             "stock_diagnostics": (
@@ -90,7 +98,7 @@ def require_token(
     raise HTTPException(status_code=401, detail="Неверный внутренний токен")
 
 
-@router.get("/by-article/{article}", response_model=InternalProductResponse)
+@router.get("/by-article/{article}", response_model=InternalProductResponse, response_model_exclude_unset=True)
 def internal_product_by_article(
     article: str,
     x_internal_token: Annotated[str | None, Header()] = None,
@@ -117,7 +125,7 @@ def internal_product_by_article(
     return {"ok": True, **item}
 
 
-@router.post("/by-articles", response_model=InternalProductsResponse)
+@router.post("/by-articles", response_model=InternalProductsResponse, response_model_exclude_unset=True)
 def internal_products_by_articles(
     payload: InternalProductsRequest,
     x_internal_token: Annotated[str | None, Header()] = None,
@@ -138,8 +146,11 @@ def internal_products_by_articles(
         payload.articles,
         include_zero_stock=payload.include_zero_stock,
         include_warehouse_stocks=payload.include_warehouse_stocks,
+        include_section=payload.include_section,
     )
     found_count = sum(item["found"] for item in items)
+    section_count = sum(bool(item.get("section")) for item in items if item["found"])
+    section_missing_count = found_count - section_count if payload.include_section else 0
     stock_rows = [stock for item in items for stock in item.get("stocks", [])]
     warehouses = sorted({stock["warehouse_name"] for stock in stock_rows})
     write_request_log(
@@ -150,6 +161,10 @@ def internal_products_by_articles(
         found_count=found_count,
         status_code=200,
         include_warehouse_stocks=payload.include_warehouse_stocks,
+        include_zero_stock=payload.include_zero_stock,
+        include_section=payload.include_section,
+        section_count=section_count,
+        section_missing_count=section_missing_count,
         stock_rows_count=len(stock_rows),
         warehouse_names=warehouses,
     )
