@@ -9,6 +9,11 @@ import type {
   ProductType,
   XmlServerSetting,
   AutoImportState,
+  MailSetting,
+  NotificationScenario,
+  ScenarioRun,
+  ScenarioSummary,
+  NotificationHistory,
 } from "../types/catalog";
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -160,6 +165,37 @@ export const api = {
     return request<{ started: boolean }>(`${API}/auto-import/run`, {
       method: "POST",
     });
+  },
+  async mailSettings(): Promise<MailSetting> {
+    return request<MailSetting>(`${API}/mail-settings`);
+  },
+  async updateMailSettings(payload: MailSetting): Promise<MailSetting> {
+    return request<MailSetting>(`${API}/mail-settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  },
+  async sendTestMail(email: string): Promise<{ success: boolean; message: string }> {
+    return request<{ success: boolean; message: string }>(`${API}/mail-settings/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+  },
+  async monthlyPromotionScenario(): Promise<NotificationScenario> {
+    return request<NotificationScenario>(`${API}/notification-scenarios/monthly-promotion`);
+  },
+  async notificationScenarios(): Promise<ScenarioSummary[]> {
+    return request<ScenarioSummary[]>(`${API}/notification-scenarios`);
+  },
+  async toggleNotificationScenario(code: string, enabled: boolean): Promise<ScenarioSummary> {
+    return request<ScenarioSummary>(`${API}/notification-scenarios/${code}/enabled`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) });
+  },
+  async notificationHistory(code: string, search = "", status = "all"): Promise<NotificationHistory[]> {
+    const params = new URLSearchParams({ search, status });
+    return request<NotificationHistory[]>(`${API}/notification-scenarios/${code}/history?${params}`);
+  },
+  async updateMonthlyPromotionScenario(payload: NotificationScenario): Promise<NotificationScenario> {
+    return request<NotificationScenario>(`${API}/notification-scenarios/monthly-promotion`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  },
+  async runMonthlyPromotion(): Promise<ScenarioRun> {
+    return request<ScenarioRun>(`${API}/notification-scenarios/monthly-promotion/run`, { method: "POST" });
+  },
+  async previewMonthlyPromotion(): Promise<ScenarioRun> {
+    return request<ScenarioRun>(`${API}/notification-scenarios/monthly-promotion/preview`);
   },
   async upload(file: File): Promise<Meta> {
     const form = new FormData();

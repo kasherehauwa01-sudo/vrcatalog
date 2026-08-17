@@ -11,6 +11,7 @@ from app.db.schema_migrations import ensure_price_columns, ensure_product_column
 from app.db.session import Base, engine
 from app.models import catalog  # noqa: F401
 from app.services.xml_auto_import import start_worker
+from app.services import monthly_promotion  # noqa: F401 — регистрирует журнал изменений
 
 logging.basicConfig(level=logging.INFO)
 Base.metadata.create_all(bind=engine)
