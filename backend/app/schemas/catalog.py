@@ -122,6 +122,8 @@ class XmlServerSettingIn(BaseModel):
     username: str
     password: str
     xml_dir: str
+    connection_attempts: int = Field(default=5, ge=1, le=10)
+    retry_delay_seconds: int = Field(default=3, ge=0, le=60)
 
 class XmlServerSettingOut(XmlServerSettingIn):
     id: int

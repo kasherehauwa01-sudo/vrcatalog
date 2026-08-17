@@ -188,6 +188,8 @@ def update_xml_server_settings(payload: XmlServerSettingIn, db: Session = Depend
     setting.username = payload.username.strip()
     setting.password = payload.password
     setting.xml_dir = payload.xml_dir.strip() or "/"
+    setting.connection_attempts = payload.connection_attempts
+    setting.retry_delay_seconds = payload.retry_delay_seconds
     db.commit()
     db.refresh(setting)
     return setting

@@ -88,6 +88,8 @@ export type XmlServerSetting = {
   username: string;
   password: string;
   xml_dir: string;
+  connection_attempts: number;
+  retry_delay_seconds: number;
   created_at: string;
   updated_at: string;
 };

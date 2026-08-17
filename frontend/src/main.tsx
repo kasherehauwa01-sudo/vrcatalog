@@ -1122,6 +1122,20 @@ function App() {
                             setXmlServerForm({ ...xmlServerForm, xml_dir: e.target.value })
                           }
                         />
+                        <TextField
+                          label="Количество попыток подключения"
+                          type="number"
+                          value={xmlServerForm.connection_attempts}
+                          inputProps={{ min: 1, max: 10 }}
+                          onChange={(e) => setXmlServerForm({ ...xmlServerForm, connection_attempts: Number(e.target.value) })}
+                        />
+                        <TextField
+                          label="Задержка между попытками (секунды)"
+                          type="number"
+                          value={xmlServerForm.retry_delay_seconds}
+                          inputProps={{ min: 0, max: 60 }}
+                          onChange={(e) => setXmlServerForm({ ...xmlServerForm, retry_delay_seconds: Number(e.target.value) })}
+                        />
                         <Stack direction="row" gap={1} flexWrap="wrap">
                           <Button
                             variant="contained"

@@ -167,13 +167,29 @@ class XmlServerSetting(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     protocol: Mapped[str] = mapped_column(String(16), default="FTP")
-    host: Mapped[str] = mapped_column(String(255), default="176.53.160.144")
+    host: Mapped[str] = mapped_column(String(255), default="")
     port: Mapped[int] = mapped_column(Integer, default=21)
-    username: Mapped[str] = mapped_column(String(255), default="uploader")
-    password: Mapped[str] = mapped_column(String(255), default="9963396")
+    username: Mapped[str] = mapped_column(String(255), default="")
+    password: Mapped[str] = mapped_column(String(255), default="")
     xml_dir: Mapped[str] = mapped_column(String(512), default="/xml")
+    connection_attempts: Mapped[int] = mapped_column(Integer, default=5)
+    retry_delay_seconds: Mapped[int] = mapped_column(Integer, default=3)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class FtpConnectionLog(Base):
+    __tablename__ = "ftp_connection_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(Integer)
+    duration_ms: Mapped[float] = mapped_column(Float)
+    attempt_number: Mapped[int] = mapped_column(Integer)
+    success: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    error_type: Mapped[str | None] = mapped_column(String(255))
+    error_message: Mapped[str | None] = mapped_column(Text)
 
 
 class AutoImportState(Base):

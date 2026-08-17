@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import logging
+import errno
 import re
+import socket
 import tempfile
 import traceback
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from ftplib import FTP
+from ftplib import FTP, error_perm, error_temp
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -15,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.importer.xml_importer import XMLCatalogImporter, xml_product_count
-from app.models.catalog import AutoImportState, XmlServerSetting
+from app.models.catalog import AutoImportState, FtpConnectionLog, XmlServerSetting
 from app.services.logging import add_log
 from app.services.notifications import add_notification
 
@@ -59,11 +61,13 @@ def _ftp_size(ftp: FTP | None, filename: str) -> int | None:
 def default_xml_server_setting() -> XmlServerSetting:
     return XmlServerSetting(
         protocol="FTP",
-        host="176.53.160.144",
+        host="",
         port=21,
-        username="uploader",
-        password="9963396",
+        username="",
+        password="",
         xml_dir="/xml",
+        connection_attempts=5,
+        retry_delay_seconds=3,
     )
 
 
@@ -89,24 +93,98 @@ def get_auto_import_state(db: Session) -> AutoImportState:
     return state
 
 
-def connect(setting: XmlServerSetting) -> FTP:
+NETWORK_ERRNOS = {
+    errno.ECONNREFUSED, errno.ETIMEDOUT, errno.EHOSTUNREACH, errno.ENETUNREACH,
+    errno.ECONNRESET, errno.ENETDOWN, errno.EHOSTDOWN, errno.EPIPE,
+}
+
+
+def _temporary_connection_error(exc: Exception) -> bool:
+    if isinstance(exc, error_perm):
+        return False
+    if isinstance(exc, (ConnectionRefusedError, TimeoutError, error_temp)):
+        return True
+    if isinstance(exc, socket.gaierror):
+        return exc.errno == socket.EAI_AGAIN
+    return isinstance(exc, OSError) and exc.errno in NETWORK_ERRNOS
+
+
+def _connection_log(db: Session | None, setting: XmlServerSetting, attempt: int, started: float, exc: Exception | None = None) -> None:
+    if db is None:
+        return
+    duration_ms = round((time.perf_counter() - started) * 1000, 3)
+    db.add(FtpConnectionLog(
+        host=setting.host, port=setting.port, duration_ms=duration_ms,
+        attempt_number=attempt, success=exc is None,
+        error_type=type(exc).__name__ if exc else None,
+        error_message=str(exc) if exc else None,
+    ))
+    if exc:
+        message = f"Попытка {attempt} завершилась ошибкой:\n{type(exc).__name__}: {exc}\nHost: {setting.host}\nPort: {setting.port}"
+        add_log(db, "ftp_connection_attempt_error", message, "error", type(exc).__name__)
+    else:
+        add_log(db, "ftp_connection_attempt_success", f"Подключение выполнено успешно с попытки {attempt}.\nHost: {setting.host}\nPort: {setting.port}\nВремя подключения: {duration_ms} мс")
+    db.commit()
+
+
+def connect(setting: XmlServerSetting, db: Session | None = None) -> FTP:
     if setting.protocol.upper() != "FTP":
         raise ValueError(f"Протокол {setting.protocol} пока не поддерживается")
-    ftp = FTP()
-    ftp.connect(setting.host, setting.port, timeout=30)
-    ftp.login(setting.username, setting.password)
-    ftp.cwd(setting.xml_dir)
-    return ftp
+    if not setting.host.strip() or not setting.username.strip():
+        raise ValueError("Не заполнены host или пользователь FTP")
+    attempts = max(1, min(int(setting.connection_attempts or 5), 10))
+    delay = max(0, min(int(setting.retry_delay_seconds or 3), 60))
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        started = time.perf_counter()
+        if db:
+            add_log(db, "ftp_connection_attempt", f"Попытка подключения {attempt} из {attempts}\nHost: {setting.host}\nPort: {setting.port}")
+            db.commit()
+        ftp = FTP()
+        try:
+            ftp.connect(setting.host, setting.port, timeout=30)
+            ftp.login(setting.username, setting.password)
+            ftp.cwd(setting.xml_dir)
+            setattr(ftp, "_vrcatalog_attempt", attempt)
+            setattr(ftp, "_vrcatalog_duration_ms", round((time.perf_counter() - started) * 1000, 3))
+            _connection_log(db, setting, attempt, started)
+            return ftp
+        except Exception as exc:
+            last_error = exc
+            try:
+                ftp.close()
+            except Exception:  # noqa: BLE001
+                pass
+            _connection_log(db, setting, attempt, started, exc)
+            if not _temporary_connection_error(exc) or attempt == attempts:
+                if db and attempt == attempts and _temporary_connection_error(exc):
+                    add_log(db, "ftp_connection_exhausted", f"Не удалось подключиться после {attempts} попыток.\n{type(exc).__name__}: {exc}", "error", type(exc).__name__)
+                    db.commit()
+                setattr(exc, "vrcatalog_attempts", attempt)
+                raise
+            time.sleep(delay)
+    raise last_error or RuntimeError("Не удалось подключиться к FTP")
 
 
 def test_connection(db: Session) -> tuple[bool, str]:
     setting = get_xml_server_setting(db)
+    started = time.perf_counter()
     try:
-        ftp = connect(setting)
+        ftp = connect(setting, db)
+        attempt = getattr(ftp, "_vrcatalog_attempt", 1)
         ftp.quit()
-        return True, "Подключение успешно."
+        return True, (
+            f"Host: {setting.host}\nPort: {setting.port}\nПротокол: {setting.protocol}\n"
+            f"Время подключения: {round((time.perf_counter() - started) * 1000, 3)} мс\n"
+            f"Количество попыток: {attempt}\nРезультат: Подключено"
+        )
     except Exception as exc:  # noqa: BLE001 - пользователю нужен полный текст ошибки
-        return False, f"Не удалось подключиться.\n\nПричина:\n{exc}"
+        return False, (
+            f"Host: {setting.host}\nPort: {setting.port}\nПротокол: {setting.protocol}\n"
+            f"Время подключения: {round((time.perf_counter() - started) * 1000, 3)} мс\n"
+            f"Количество попыток: {getattr(exc, 'vrcatalog_attempts', 1)}\n"
+            f"Результат: Ошибка\nПричина: {type(exc).__name__}: {exc}"
+        )
 
 
 def moscow_now() -> datetime:
@@ -144,7 +222,7 @@ def run_once() -> None:
         add_log(db, "ftp_auto_import_check", "Автоматическая проверка FTP...")
         setting = get_xml_server_setting(db)
         try:
-            ftp = connect(setting)
+            ftp = connect(setting, db)
         except Exception as exc:
             logger.exception("Ошибка подключения к FTP")
             message, trace = _exception_details(
