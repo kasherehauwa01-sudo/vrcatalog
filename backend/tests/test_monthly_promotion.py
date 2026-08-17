@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
-from app.models.catalog import MailSetting, NotificationScenarioSetting, Product, ProductTypeChange
+from app.models.catalog import MailSetting, NotificationEmailHistory, NotificationScenarioSetting, Product, ProductTypeChange
 from app.services.monthly_promotion import PROMOTION_VALUE, build_preview, encrypt_password, run_scenario
 
 
@@ -27,7 +27,7 @@ class MonthlyPromotionTests(unittest.TestCase):
     def setUp(self):
         FakeSmtp.sent = []
         self.db = Session(self.engine)
-        for model in (ProductTypeChange, Product, MailSetting, NotificationScenarioSetting):
+        for model in (NotificationEmailHistory, ProductTypeChange, Product, MailSetting, NotificationScenarioSetting):
             self.db.query(model).delete()
         self.product = Product(code="P-1", article="ARTICLE-1", name="Семена тестовые", product_type="Обычный", search_text="")
         self.db.add(self.product)
@@ -66,6 +66,10 @@ class MonthlyPromotionTests(unittest.TestCase):
         self.assertEqual(second["status"], "empty")
         self.assertEqual(len(FakeSmtp.sent), 1)
         self.assertTrue(self.db.query(ProductTypeChange).one().processed)
+        history = self.db.query(NotificationEmailHistory).one()
+        self.assertEqual(history.status, "sent")
+        self.assertIn("Добавлены в Акцию месяца", history.body_html)
+        self.assertEqual(json.loads(history.recipients_json), ["one@test.local", "two@test.local"])
 
     def test_smtp_error_keeps_change_unprocessed_for_retry(self):
         self.configure()
@@ -76,6 +80,9 @@ class MonthlyPromotionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertFalse(self.db.query(ProductTypeChange).one().processed)
+        history = self.db.query(NotificationEmailHistory).one()
+        self.assertEqual(history.status, "error")
+        self.assertEqual(history.error_message, "SMTP unavailable")
 
     def test_preview_contains_added_and_removed_sections(self):
         self.db.add_all([

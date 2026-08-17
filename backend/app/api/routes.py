@@ -23,8 +23,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.importer.xml_importer import XMLCatalogImporter
-from app.models.catalog import Favorite, Notification, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MailSettingIn, MailSettingOut, MetaOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
+from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.catalog import decorate, list_filters, meta, product_query, paginated_products
 from app.services.logging import add_log
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
@@ -252,12 +252,30 @@ def monthly_promotion_settings(db: Session = Depends(get_db)):
     return {"code": item.code, "enabled": item.enabled, "send_time": item.send_time, "recipients": scenario_recipients(item)}
 
 
+@router.get("/notification-scenarios", response_model=list[ScenarioSummaryOut])
+def notification_scenarios(db: Session = Depends(get_db)):
+    item = get_scenario_setting(db)
+    return [{"code": item.code, "name": "Акция месяца", "enabled": item.enabled}]
+
+
+@router.patch("/notification-scenarios/{code}/enabled", response_model=ScenarioSummaryOut)
+def toggle_notification_scenario(code: str, enabled: bool = Body(embed=True), db: Session = Depends(get_db)):
+    if code != "monthly_promotion":
+        raise HTTPException(404, "Сценарий не найден")
+    item = get_scenario_setting(db)
+    item.enabled = enabled
+    add_log(db, "notification_scenario_toggled", json.dumps({"scenario": code, "enabled": enabled}, ensure_ascii=False))
+    db.commit()
+    return {"code": item.code, "name": "Акция месяца", "enabled": item.enabled}
+
+
 @router.put("/notification-scenarios/monthly-promotion", response_model=ScenarioSettingOut)
 def update_monthly_promotion_settings(payload: ScenarioSettingIn, db: Session = Depends(get_db)):
     item = get_scenario_setting(db)
     item.enabled = payload.enabled
     item.send_time = payload.send_time
     item.recipients_json = json.dumps(list(dict.fromkeys(payload.recipients)), ensure_ascii=False)
+    add_log(db, "notification_scenario_updated", json.dumps({"scenario": item.code, "send_time": item.send_time, "recipients": len(payload.recipients)}, ensure_ascii=False))
     db.commit()
     return {"code": item.code, "enabled": item.enabled, "send_time": item.send_time, "recipients": scenario_recipients(item)}
 
@@ -272,7 +290,34 @@ def preview_monthly_promotion(db: Session = Depends(get_db)):
     from app.models.catalog import ProductTypeChange
     from app.services.monthly_promotion import build_preview
     changes = db.query(ProductTypeChange).filter(ProductTypeChange.processed.is_(False)).order_by(ProductTypeChange.changed_at).all()
-    return {"status": "preview", "changes": len(changes), "sent": 0, "recipients": scenario_recipients(get_scenario_setting(db)), "html": build_preview(changes)}
+    html = build_preview(changes)
+    add_log(db, "notification_scenario_preview", json.dumps({"scenario": "monthly_promotion", "changes": len(changes)}, ensure_ascii=False))
+    db.commit()
+    return {"status": "preview", "changes": len(changes), "sent": 0, "recipients": scenario_recipients(get_scenario_setting(db)), "html": html}
+
+
+@router.get("/notification-scenarios/{code}/history", response_model=list[NotificationHistoryOut])
+def notification_scenario_history(
+    code: str,
+    search: str = "",
+    status: Literal["all", "sent", "error"] = "all",
+    db: Session = Depends(get_db),
+):
+    query = db.query(NotificationEmailHistory).filter(NotificationEmailHistory.scenario_code == code)
+    if search.strip():
+        query = query.filter(NotificationEmailHistory.recipients_json.ilike(f"%{search.strip()}%"))
+    if status != "all":
+        query = query.filter(NotificationEmailHistory.status == status)
+    rows = query.order_by(NotificationEmailHistory.sent_at.desc(), NotificationEmailHistory.id.desc()).limit(500).all()
+    result = []
+    for item in rows:
+        result.append({
+            "id": item.id, "scenario_code": item.scenario_code, "sent_at": item.sent_at,
+            "recipients": json.loads(item.recipients_json), "subject": item.subject,
+            "body_html": item.body_html, "status": item.status, "error_message": item.error_message,
+            "duration_ms": item.duration_ms,
+        })
+    return result
 
 @router.get("/auto-import-state", response_model=AutoImportStateOut)
 def auto_import_state(db: Session = Depends(get_db)):

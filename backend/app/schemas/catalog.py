@@ -196,6 +196,24 @@ class ScenarioRunOut(BaseModel):
     html: str = ""
 
 
+class ScenarioSummaryOut(BaseModel):
+    code: str
+    name: str
+    enabled: bool
+
+
+class NotificationHistoryOut(BaseModel):
+    id: int
+    scenario_code: str
+    sent_at: datetime
+    recipients: list[str]
+    subject: str
+    body_html: str
+    status: str
+    error_message: str | None
+    duration_ms: float
+
+
 class InternalStockOut(BaseModel):
     warehouse: str
     warehouse_name: str

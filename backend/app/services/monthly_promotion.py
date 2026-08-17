@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.catalog import MailSetting, NotificationScenarioSetting, Product, ProductTypeChange, ProductTypeSetting
+from app.models.catalog import MailSetting, NotificationEmailHistory, NotificationScenarioSetting, Product, ProductTypeChange, ProductTypeSetting
 from app.services.logging import add_log
 
 PROMOTION_VALUE = "Акция месяца"
@@ -166,13 +166,19 @@ def run_scenario(db: Session, *, force: bool = False) -> dict:
         result["status"] = "no_recipients"
         log_scenario_run(db, result, started)
         return result
+    subject = 'Изменения товаров "Акция месяца"'
     try:
-        send_email(db, targets, 'Изменения товаров "Акция месяца"', result["html"])
+        send_email(db, targets, subject, result["html"])
         now = datetime.utcnow()
         for item in changes:
             item.processed = True
             item.processed_at = now
         result.update(status="sent", sent=1)
+        db.add(NotificationEmailHistory(
+            scenario_code=SCENARIO_CODE, sent_at=now, recipients_json=json.dumps(targets, ensure_ascii=False),
+            subject=subject, body_html=result["html"], status="sent",
+            duration_ms=round((perf_counter() - started) * 1000, 3),
+        ))
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
@@ -180,6 +186,11 @@ def run_scenario(db: Session, *, force: bool = False) -> dict:
         mail.connection_status = "error"
         mail.last_error = str(exc)
         result.update(status="error", error=str(exc))
+        db.add(NotificationEmailHistory(
+            scenario_code=SCENARIO_CODE, sent_at=datetime.utcnow(), recipients_json=json.dumps(targets, ensure_ascii=False),
+            subject=subject, body_html=result["html"], status="error", error_message=str(exc),
+            duration_ms=round((perf_counter() - started) * 1000, 3),
+        ))
     finally:
         log_scenario_run(db, result, started)
     return result

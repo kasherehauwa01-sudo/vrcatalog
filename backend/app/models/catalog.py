@@ -249,3 +249,17 @@ class NotificationScenarioSetting(Base):
     recipients_json: Mapped[str] = mapped_column(Text, default="[]")
     last_run_date: Mapped[str | None] = mapped_column(String(10), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NotificationEmailHistory(Base):
+    __tablename__ = "notification_email_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scenario_code: Mapped[str] = mapped_column(String(64), index=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    recipients_json: Mapped[str] = mapped_column(Text)
+    subject: Mapped[str] = mapped_column(String(512))
+    body_html: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    duration_ms: Mapped[float] = mapped_column(Float, default=0)

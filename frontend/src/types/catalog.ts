@@ -133,3 +133,16 @@ export type ScenarioRun = {
   html: string;
   error?: string;
 };
+
+export type ScenarioSummary = { code: string; name: string; enabled: boolean };
+export type NotificationHistory = {
+  id: number;
+  scenario_code: string;
+  sent_at: string;
+  recipients: string[];
+  subject: string;
+  body_html: string;
+  status: "sent" | "error";
+  error_message?: string;
+  duration_ms: number;
+};

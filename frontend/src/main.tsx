@@ -63,6 +63,8 @@ import type {
   MailSetting,
   NotificationScenario,
   ScenarioRun,
+  ScenarioSummary,
+  NotificationHistory,
 } from "./types/catalog";
 
 const theme = createTheme({
@@ -285,6 +287,12 @@ function App() {
   const [manualImportMessage, setManualImportMessage] = useState<string | null>(null);
   const [mailForm, setMailForm] = useState<MailSetting | null>(null);
   const [scenarioForm, setScenarioForm] = useState<NotificationScenario | null>(null);
+  const [scenarioList, setScenarioList] = useState<ScenarioSummary[]>([]);
+  const [selectedScenario, setSelectedScenario] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyRows, setHistoryRows] = useState<NotificationHistory[]>([]);
+  const [historySearch, setHistorySearch] = useState("");
+  const [historyStatus, setHistoryStatus] = useState("all");
   const [testMailOpen, setTestMailOpen] = useState(false);
   const [testEmail, setTestEmail] = useState("");
   const [mailMessage, setMailMessage] = useState<string | null>(null);
@@ -609,7 +617,17 @@ function App() {
   };
   const openScenarios = async () => {
     setSettingsTab("scenarios");
-    setScenarioForm(await api.monthlyPromotionScenario());
+    setScenarioList(await api.notificationScenarios());
+    setSelectedScenario(null);
+    setScenarioForm(null);
+  };
+  const openScenarioCard = async (code: string) => {
+    setSelectedScenario(code);
+    if (code === "monthly_promotion") setScenarioForm(await api.monthlyPromotionScenario());
+  };
+  const loadHistory = async (search = historySearch, status = historyStatus) => {
+    if (!selectedScenario) return;
+    setHistoryRows(await api.notificationHistory(selectedScenario, search, status));
   };
   const openWarehouseDialog = (warehouse?: Warehouse) => {
     setWarehouseForm(
@@ -782,6 +800,29 @@ function App() {
               <Button onClick={() => setTestMailOpen(false)}>Отмена</Button>
               <Button variant="contained" onClick={async () => { try { const result = await api.sendTestMail(testEmail); setMailMessage(result.message); setMailForm(await api.mailSettings()); } catch (error) { setMailMessage(error instanceof Error ? error.message : "Ошибка отправки"); } finally { setTestMailOpen(false); } }}>Отправить</Button>
             </DialogActions>
+          </Dialog>
+
+          <Dialog open={historyOpen} onClose={() => setHistoryOpen(false)} fullWidth maxWidth="lg">
+            <DialogTitle>История уведомлений</DialogTitle>
+            <DialogContent>
+              <Stack direction={{ xs: "column", sm: "row" }} gap={1} sx={{ my: 1 }}>
+                <TextField fullWidth label="Поиск по получателю" value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") loadHistory(); }} />
+                <TextField select label="Статус" value={historyStatus} onChange={async (event) => { setHistoryStatus(event.target.value); await loadHistory(historySearch, event.target.value); }} sx={{ minWidth: 190 }}>
+                  <MenuItem value="all">Все</MenuItem><MenuItem value="sent">Отправлено</MenuItem><MenuItem value="error">Ошибка</MenuItem>
+                </TextField>
+                <Button onClick={() => loadHistory()}>Найти</Button>
+              </Stack>
+              <TableContainer><Table size="small">
+                <TableHead><TableRow><TableCell>Дата и время</TableCell><TableCell>Получатели</TableCell><TableCell>Тема</TableCell><TableCell>Текст письма</TableCell><TableCell>Статус</TableCell></TableRow></TableHead>
+                <TableBody>{historyRows.map((row) => <TableRow key={row.id}>
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>{new Date(row.sent_at).toLocaleString("ru-RU")}</TableCell>
+                  <TableCell>{row.recipients.join(", ")}</TableCell><TableCell>{row.subject}</TableCell>
+                  <TableCell><Box sx={{ maxHeight: 220, overflow: "auto" }} dangerouslySetInnerHTML={{ __html: row.body_html }} /></TableCell>
+                  <TableCell>{row.status === "sent" ? "Отправлено" : <><Typography color="error">Ошибка отправки</Typography><Typography variant="caption">{row.error_message}</Typography></>}</TableCell>
+                </TableRow>)}</TableBody>
+              </Table></TableContainer>
+            </DialogContent>
+            <DialogActions><Button onClick={() => setHistoryOpen(false)}>Закрыть</Button></DialogActions>
           </Dialog>
 
           <Dialog open={deleteDialogOpen} onClose={closeDeleteDialog} maxWidth="xs" fullWidth>
@@ -1183,19 +1224,38 @@ function App() {
                     {mailMessage && <Typography>{mailMessage}</Typography>}
                   </Stack>
                 )}
-                {settingsTab === "scenarios" && scenarioForm && (
+                {settingsTab === "scenarios" && (
                   <Stack spacing={2}>
-                    <Typography variant="h6">Акция месяца</Typography>
-                    <FormControlLabel control={<Switch checked={scenarioForm.enabled} onChange={(event) => setScenarioForm({ ...scenarioForm, enabled: event.target.checked })} />} label={scenarioForm.enabled ? "Сценарий включён" : "Сценарий выключен"} />
-                    <TextField label="Время отправки" type="time" value={scenarioForm.send_time} onChange={(event) => setScenarioForm({ ...scenarioForm, send_time: event.target.value })} InputLabelProps={{ shrink: true }} />
-                    <TextField label="Получатели (по одному email в строке)" multiline minRows={4} value={scenarioForm.recipients.join("\n")} onChange={(event) => setScenarioForm({ ...scenarioForm, recipients: event.target.value.split(/\n|,/).map((item) => item.trim()).filter(Boolean) })} />
-                    <Stack direction="row" gap={1} flexWrap="wrap">
-                      <Button variant="contained" onClick={async () => setScenarioForm(await api.updateMonthlyPromotionScenario(scenarioForm))}>Сохранить</Button>
-                      <Button variant="outlined" onClick={async () => setScenarioResult(await api.runMonthlyPromotion())}>Отправить сейчас</Button>
-                      <Button onClick={async () => setScenarioResult(await api.previewMonthlyPromotion())}>Предпросмотр</Button>
-                    </Stack>
-                    {scenarioResult && <Typography>Статус: {scenarioResult.status}; изменений: {scenarioResult.changes}; писем: {scenarioResult.sent}</Typography>}
-                    {scenarioResult?.html && <Paper variant="outlined" sx={{ p: 2 }} dangerouslySetInnerHTML={{ __html: scenarioResult.html }} />}
+                    <Typography variant="h6">Сценарии</Typography>
+                    {!selectedScenario && scenarioList.map((scenario) => (
+                      <Paper key={scenario.code} variant="outlined" onClick={() => openScenarioCard(scenario.code)} sx={{ p: 2, cursor: "pointer" }}>
+                        <Stack direction="row" alignItems="center" justifyContent="space-between">
+                          <Typography fontWeight={800}>{scenario.name}</Typography>
+                          <Switch checked={scenario.enabled} onClick={(event) => event.stopPropagation()} onChange={async (event) => { const updated = await api.toggleNotificationScenario(scenario.code, event.target.checked); setScenarioList((current) => current.map((item) => item.code === updated.code ? updated : item)); }} />
+                        </Stack>
+                      </Paper>
+                    ))}
+                    {selectedScenario === "monthly_promotion" && scenarioForm && <>
+                      <Button onClick={() => { setSelectedScenario(null); setScenarioForm(null); }}>← К списку сценариев</Button>
+                      <Typography variant="h6">Акция месяца</Typography>
+                      <TextField label="Время отправки" type="time" value={scenarioForm.send_time} onChange={(event) => setScenarioForm({ ...scenarioForm, send_time: event.target.value })} InputLabelProps={{ shrink: true }} />
+                      <Typography fontWeight={700}>Получатели</Typography>
+                      {scenarioForm.recipients.map((email, index) => (
+                        <Stack key={index} direction="row" gap={1}>
+                          <TextField fullWidth label={`Email ${index + 1}`} value={email} onChange={(event) => setScenarioForm({ ...scenarioForm, recipients: scenarioForm.recipients.map((item, itemIndex) => itemIndex === index ? event.target.value : item) })} />
+                          <Button color="error" onClick={() => setScenarioForm({ ...scenarioForm, recipients: scenarioForm.recipients.filter((_, itemIndex) => itemIndex !== index) })}>Удалить</Button>
+                        </Stack>
+                      ))}
+                      <Button variant="outlined" onClick={() => setScenarioForm({ ...scenarioForm, recipients: [...scenarioForm.recipients, ""] })}>Добавить получателя</Button>
+                      <Stack direction="row" gap={1} flexWrap="wrap">
+                        <Button variant="contained" onClick={async () => setScenarioForm(await api.updateMonthlyPromotionScenario(scenarioForm))}>Сохранить</Button>
+                        <Button variant="outlined" onClick={async () => setScenarioResult(await api.runMonthlyPromotion())}>Отправить сейчас</Button>
+                        <Button onClick={async () => setScenarioResult(await api.previewMonthlyPromotion())}>Предпросмотр</Button>
+                        <Button onClick={async () => { setHistoryOpen(true); await loadHistory(); }}>История уведомлений</Button>
+                      </Stack>
+                      {scenarioResult && <Typography>Статус: {scenarioResult.status}; изменений: {scenarioResult.changes}; писем: {scenarioResult.sent}</Typography>}
+                      {scenarioResult?.html && <Paper variant="outlined" sx={{ p: 2 }} dangerouslySetInnerHTML={{ __html: scenarioResult.html }} />}
+                    </>}
                   </Stack>
                 )}
                 {settingsTab === "mappings" && (
