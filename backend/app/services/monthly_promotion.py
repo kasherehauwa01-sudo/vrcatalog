@@ -5,18 +5,19 @@ import logging
 import smtplib
 import ssl
 import threading
+import uuid
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from html import escape
 from time import perf_counter
 
 from cryptography.fernet import Fernet
-from sqlalchemy import event, inspect
+from sqlalchemy import event, inspect, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.catalog import MailSetting, NotificationEmailHistory, NotificationScenarioSetting, Product, ProductTypeChange, ProductTypeSetting
+from app.models.catalog import MailSetting, NotificationEmailHistory, NotificationScenarioSetting, Product, ProductPromotionState, ProductTypeChange, ProductTypeSetting
 from app.services.logging import add_log
 
 PROMOTION_VALUE = "Акция месяца"
@@ -24,6 +25,69 @@ SCENARIO_CODE = "monthly_promotion"
 MOSCOW_OFFSET_HOURS = 3
 logger = logging.getLogger(__name__)
 _run_lock = threading.Lock()
+
+
+def article_key(product: Product) -> str:
+    """Возвращает стабильный ключ товара: нормализованный артикул либо код карточки."""
+    return str(product.article or product.code).strip()
+
+
+def normalize_month_promo(value: object) -> bool:
+    """Нормализует реальные представления признака «Акция месяца»."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    normalized = " ".join(str(value or "").replace("\xa0", " ").split()).casefold()
+    return normalized in {PROMOTION_VALUE.casefold(), "да", "true", "1"}
+
+
+def normalized_promo_value(value: object) -> str | None:
+    if normalize_month_promo(value):
+        return PROMOTION_VALUE
+    normalized = " ".join(str(value or "").replace("\xa0", " ").split())
+    return normalized or None
+
+
+def initialize_promotion_snapshot(db: Session) -> int:
+    """Создаёт первичный снимок без уведомлений; повторный вызов идемпотентен."""
+    if db.bind and db.bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(7242026)"))
+    if db.query(ProductPromotionState.id).first():
+        return 0
+    type_names = dict(db.query(ProductTypeSetting.code, ProductTypeSetting.name).all())
+    products = db.query(Product).order_by(Product.id).all()
+    states: dict[str, ProductPromotionState] = {}
+    duplicates = 0
+    for product in products:
+        key = article_key(product)
+        display = type_names.get(product.product_type, product.product_type)
+        if key in states:
+            duplicates += 1
+            if states[key].promo != normalize_month_promo(display):
+                add_log(db, "promotion_snapshot_conflict", f"Conflicting duplicate article={key} promo_values=[{states[key].promo}, {normalize_month_promo(display)}]", "error")
+            continue
+        states[key] = ProductPromotionState(
+            article_key=key, product_id=product.id, promo=normalize_month_promo(display),
+            current_value=normalized_promo_value(display), version=0, updated_at=datetime.utcnow(),
+        )
+    db.add_all(states.values())
+    add_log(db, "promotion_snapshot_initialized", f"Initial catalog snapshot created: {len(states)} products, no notifications generated; duplicates={duplicates}")
+    db.commit()
+    return len(states)
+
+
+def initialize_product_promotion_state(db: Session, product: Product) -> None:
+    """Добавляет в snapshot новую карточку без создания ложного события."""
+    key = article_key(product)
+    if db.query(ProductPromotionState.id).filter(ProductPromotionState.article_key == key).first():
+        return
+    type_name = db.query(ProductTypeSetting.name).filter(ProductTypeSetting.code == product.product_type).scalar()
+    display = type_name or product.product_type
+    db.add(ProductPromotionState(
+        article_key=key, product_id=product.id, promo=normalize_month_promo(display),
+        current_value=normalized_promo_value(display), version=0, updated_at=datetime.utcnow(),
+    ))
 
 
 def _fernet() -> Fernet:
@@ -121,8 +185,8 @@ def send_email(db: Session, to: list[str], subject: str, html: str) -> None:
 def build_preview(changes: list[ProductTypeChange]) -> str:
     sections = []
     for title, selected in (
-        ("Добавлены в Акцию месяца", [item for item in changes if item.new_value == PROMOTION_VALUE]),
-        ("Исключены из Акции месяца", [item for item in changes if item.old_value == PROMOTION_VALUE]),
+        ("Добавлены в Акцию месяца", [item for item in changes if normalize_month_promo(item.new_value) and not normalize_month_promo(item.old_value)]),
+        ("Исключены из Акции месяца", [item for item in changes if normalize_month_promo(item.old_value) and not normalize_month_promo(item.new_value)]),
     ):
         if not selected:
             continue
@@ -140,6 +204,29 @@ def build_preview(changes: list[ProductTypeChange]) -> str:
     return "".join(sections)
 
 
+def consolidate_changes(changes: list[ProductTypeChange]) -> list[ProductTypeChange]:
+    """Сворачивает старые/конкурентные события до одного итогового перехода на артикул."""
+    grouped: dict[str, list[ProductTypeChange]] = {}
+    for item in changes:
+        key = str(item.article or item.product_id).strip()
+        grouped.setdefault(key, []).append(item)
+    result: list[ProductTypeChange] = []
+    for items in grouped.values():
+        items.sort(key=lambda item: (item.changed_at, item.id or 0))
+        initial = normalize_month_promo(items[0].old_value)
+        final = normalize_month_promo(items[-1].new_value)
+        if initial == final:
+            continue
+        wanted = final
+        representative = next(
+            item for item in reversed(items)
+            if normalize_month_promo(item.new_value) == wanted
+            and normalize_month_promo(item.old_value) != wanted
+        )
+        result.append(representative)
+    return sorted(result, key=lambda item: (item.changed_at, item.id or 0))
+
+
 def log_scenario_run(db: Session, result: dict, started: float) -> None:
     add_log(db, "monthly_promotion_scenario", json.dumps({
         **{key: value for key, value in result.items() if key != "html"},
@@ -152,14 +239,24 @@ def run_scenario(db: Session, *, force: bool = False) -> dict:
     started = perf_counter()
     scenario = get_scenario_setting(db)
     targets = recipients(scenario)
-    changes = db.query(ProductTypeChange).filter(ProductTypeChange.processed.is_(False)).order_by(ProductTypeChange.changed_at).all()
-    result = {"changes": len(changes), "sent": 0, "recipients": targets, "html": build_preview(changes)}
+    pending_changes = (
+        db.query(ProductTypeChange).filter(
+            ProductTypeChange.processed.is_(False), ProductTypeChange.claim_token.is_(None),
+        )
+        .order_by(ProductTypeChange.changed_at).with_for_update(skip_locked=True).all()
+    )
+    changes = consolidate_changes(pending_changes)
+    result = {"changes": len(changes), "pending_rows": len(pending_changes), "sent": 0, "recipients": targets, "html": build_preview(changes)}
     if not force and not scenario.enabled:
         result["status"] = "disabled"
         log_scenario_run(db, result, started)
         return result
     if not changes:
         result["status"] = "empty"
+        now = datetime.utcnow()
+        for item in pending_changes:
+            item.processed = True
+            item.processed_at = now
         log_scenario_run(db, result, started)
         return result
     if not targets:
@@ -167,12 +264,21 @@ def run_scenario(db: Session, *, force: bool = False) -> dict:
         log_scenario_run(db, result, started)
         return result
     subject = 'Изменения товаров "Акция месяца"'
+    claim_token = uuid.uuid4().hex
+    claimed_ids = [item.id for item in pending_changes]
+    for item in pending_changes:
+        item.claim_token = claim_token
+    db.commit()
+    smtp_completed = False
     try:
         send_email(db, targets, subject, result["html"])
+        smtp_completed = True
         now = datetime.utcnow()
-        for item in changes:
+        claimed_changes = db.query(ProductTypeChange).filter(ProductTypeChange.id.in_(claimed_ids), ProductTypeChange.claim_token == claim_token).all()
+        for item in claimed_changes:
             item.processed = True
             item.processed_at = now
+            item.claim_token = None
         result.update(status="sent", sent=1)
         db.add(NotificationEmailHistory(
             scenario_code=SCENARIO_CODE, sent_at=now, recipients_json=json.dumps(targets, ensure_ascii=False),
@@ -182,6 +288,10 @@ def run_scenario(db: Session, *, force: bool = False) -> dict:
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
+        if not smtp_completed:
+            db.query(ProductTypeChange).filter(
+                ProductTypeChange.id.in_(claimed_ids), ProductTypeChange.claim_token == claim_token,
+            ).update({ProductTypeChange.claim_token: None}, synchronize_session=False)
         mail = get_mail_setting(db)
         mail.connection_status = "error"
         mail.last_error = str(exc)
@@ -222,20 +332,57 @@ def track_product_type_changes(session: Session, _flush_context, _instances) -> 
     if not dirty_products:
         return
     type_names = dict(session.query(ProductTypeSetting.code, ProductTypeSetting.name).all())
+    seen = session.info.setdefault("promotion_event_keys", set())
     for product in dirty_products:
         history = inspect(product).attrs.product_type.history
-        old = history.deleted[0] if history.deleted else None
-        new = history.added[0] if history.added else product.product_type
-        old_display = type_names.get(old, old)
-        new_display = type_names.get(new, new)
-        if old == new or PROMOTION_VALUE not in {old_display, new_display}:
+        if not history.has_changes():
             continue
+        new = history.added[0] if history.added else product.product_type
+        new_display = type_names.get(new, new)
+        key = article_key(product)
+        owner = session.info.get("promotion_article_owner", {}).get(key)
+        if owner and owner != product.code:
+            add_log(session, "promotion_duplicate_product_skipped", f"Skipped duplicate product article={key}; canonical_code={owner}; skipped_code={product.code}")
+            continue
+        state = (
+            session.query(ProductPromotionState)
+            .filter(ProductPromotionState.article_key == key)
+            .with_for_update()
+            .first()
+        )
+        new_promo = normalize_month_promo(new_display)
+        new_value = normalized_promo_value(new_display)
+        if state is None:
+            session.add(ProductPromotionState(
+                article_key=key, product_id=product.id, promo=new_promo,
+                current_value=new_value, version=0, updated_at=datetime.utcnow(),
+            ))
+            add_log(session, "promotion_snapshot_product_initialized", f"Initial product snapshot created: article={key}, no notification generated")
+            continue
+        if state.promo == new_promo:
+            state.product_id = product.id
+            state.current_value = new_value
+            continue
+        transition_key = (key, state.promo, new_promo, state.version + 1)
+        if transition_key in seen:
+            add_log(session, "promotion_duplicate_event_skipped", f"Skipped duplicate promo event: article={key}")
+            continue
+        seen.add(transition_key)
+        old_value = state.current_value
+        state.promo = new_promo
+        state.current_value = new_value
+        state.product_id = product.id
+        state.version += 1
+        state.updated_at = datetime.utcnow()
+        event_key = f"{key}:{state.version}:{int(not new_promo)}->{int(new_promo)}"
+        add_log(session, "promotion_change_detected", f"PROMO CHANGE article={key} old={not new_promo} new={new_promo}")
         session.add(ProductTypeChange(
             product_id=product.id,
             article=product.article,
             product_name=product.name,
-            old_value=old_display,
-            new_value=new_display,
+            old_value=old_value,
+            new_value=new_value,
             source=source,
             changed_at=datetime.utcnow(),
+            event_key=event_key,
         ))

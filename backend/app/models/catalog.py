@@ -235,6 +235,20 @@ class ProductTypeChange(Base):
     processed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     changed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    event_key: Mapped[str | None] = mapped_column(String(512), unique=True, index=True)
+    claim_token: Mapped[str | None] = mapped_column(String(64), index=True)
+
+
+class ProductPromotionState(Base):
+    __tablename__ = "product_promotion_states"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    article_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    promo: Mapped[bool] = mapped_column(Boolean, default=False)
+    current_value: Mapped[str | None] = mapped_column(String(255))
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class MailSetting(Base):

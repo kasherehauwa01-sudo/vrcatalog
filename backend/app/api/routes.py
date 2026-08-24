@@ -290,8 +290,8 @@ def run_monthly_promotion(db: Session = Depends(get_db)):
 @router.get("/notification-scenarios/monthly-promotion/preview", response_model=ScenarioRunOut)
 def preview_monthly_promotion(db: Session = Depends(get_db)):
     from app.models.catalog import ProductTypeChange
-    from app.services.monthly_promotion import build_preview
-    changes = db.query(ProductTypeChange).filter(ProductTypeChange.processed.is_(False)).order_by(ProductTypeChange.changed_at).all()
+    from app.services.monthly_promotion import build_preview, consolidate_changes
+    changes = consolidate_changes(db.query(ProductTypeChange).filter(ProductTypeChange.processed.is_(False)).order_by(ProductTypeChange.changed_at).all())
     html = build_preview(changes)
     add_log(db, "notification_scenario_preview", json.dumps({"scenario": "monthly_promotion", "changes": len(changes)}, ensure_ascii=False))
     db.commit()
