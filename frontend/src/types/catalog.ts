@@ -88,6 +88,8 @@ export type XmlServerSetting = {
   username: string;
   password: string;
   xml_dir: string;
+  connection_attempts: number;
+  retry_delay_seconds: number;
   created_at: string;
   updated_at: string;
 };
@@ -101,4 +103,48 @@ export type AutoImportState = {
   last_error?: string;
   is_running: boolean;
   updated_at?: string;
+};
+
+export type MailSetting = {
+  smtp_host: string;
+  smtp_port: number;
+  encryption: "none" | "starttls" | "ssl";
+  username: string;
+  password?: string;
+  password_configured: boolean;
+  sender_name: string;
+  sender_email: string;
+  connection_status: string;
+  last_success_at?: string;
+  last_sent_at?: string;
+  last_error?: string;
+};
+
+export type NotificationScenario = {
+  code: string;
+  enabled: boolean;
+  send_time: string;
+  recipients: string[];
+};
+
+export type ScenarioRun = {
+  status: string;
+  changes: number;
+  sent: number;
+  recipients: string[];
+  html: string;
+  error?: string;
+};
+
+export type ScenarioSummary = { code: string; name: string; enabled: boolean };
+export type NotificationHistory = {
+  id: number;
+  scenario_code: string;
+  sent_at: string;
+  recipients: string[];
+  subject: string;
+  body_html: string;
+  status: "sent" | "error";
+  error_message?: string;
+  duration_ms: number;
 };

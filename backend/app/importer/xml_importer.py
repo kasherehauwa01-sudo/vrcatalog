@@ -114,6 +114,8 @@ class XMLCatalogImporter:
     """Независимый сервис импорта: XML читается только здесь, API работает уже с БД."""
 
     def import_file(self, db: Session, path: Path, filename: str) -> ImportRun:
+        previous_source = db.info.get("change_source")
+        db.info["change_source"] = "xml"
         run = ImportRun(filename=filename, status="running")
         db.add(run)
         db.flush()
@@ -126,9 +128,30 @@ class XMLCatalogImporter:
             products = _product_nodes(root)
             product_codes = [code for code in (_product_code(item) for item in products) if code]
             existing_products = self._load_existing_products(db, product_codes)
+            seen_codes: set[str] = set()
+            article_values: dict[str, object] = {}
+            article_counts: dict[str, int] = {}
+            db.info["promotion_article_owner"] = {}
             for item in products:
                 try:
                     parsed_product = self._parse_product(item)
+                    if parsed_product.code in seen_codes:
+                        add_log(db, "xml_duplicate_product_code", f"Duplicate product code in source: {parsed_product.code}", "warning")
+                        continue
+                    seen_codes.add(parsed_product.code)
+                    key = str(parsed_product.article or parsed_product.code).strip()
+                    article_counts[key] = article_counts.get(key, 0) + 1
+                    owner = db.info["promotion_article_owner"].setdefault(key, parsed_product.code)
+                    if article_counts[key] > 1:
+                        from app.services.monthly_promotion import normalize_month_promo
+                        current_promo = normalize_month_promo(parsed_product.product_type)
+                        previous_promo = article_values[key]
+                        add_log(db, "xml_duplicate_product_article", f"Duplicate article in source: article={key} count={article_counts[key]}; owner={owner}", "warning")
+                        if previous_promo != current_promo:
+                            add_log(db, "xml_conflicting_product_article", f"Conflicting duplicate: article={key} promo_values=[{previous_promo}, {current_promo}]", "error")
+                    else:
+                        from app.services.monthly_promotion import normalize_month_promo
+                        article_values[key] = normalize_month_promo(parsed_product.product_type)
                     was_existing = parsed_product.code in existing_products
                     product = self._persist_product(db, parsed_product, existing_products)
                     # Обновляем карту кодов, чтобы повторный товар с тем же кодом в этом же XML
@@ -152,6 +175,8 @@ class XMLCatalogImporter:
             run.errors = None
             run.finished_at = datetime.utcnow()
             add_log(db, "xml_import_finish", f"Импорт XML завершен: {filename}; товаров: {imported}; новых: {created}; обновлено: {updated}")
+            duplicate_articles = sum(count - 1 for count in article_counts.values() if count > 1)
+            add_log(db, "promotion_sync_summary", f"Promo sync complete: catalog_products={len(products)}; unique_articles={len(article_counts)}; duplicate_articles={duplicate_articles}")
             add_notification(db, "import_success", "Импорт завершен", f"Импорт завершен. Загружено товаров: {imported}, обновлено: {updated}")
             # Храним последние 10 загрузок как основу версионирования и отката.
             old_runs = db.query(ImportRun).order_by(ImportRun.created_at.desc()).offset(10).all()
@@ -168,6 +193,10 @@ class XMLCatalogImporter:
             add_notification(db, "import_error", "Ошибка загрузки XML", f"Файл:\n{filename}\n\nПричина:\n{exc}")
             db.commit()
             raise
+        if previous_source is None:
+            db.info.pop("change_source", None)
+        else:
+            db.info["change_source"] = previous_source
         return run
 
 
@@ -227,6 +256,8 @@ class XMLCatalogImporter:
             parsed_product.updated_at = loaded_at
             db.add(parsed_product)
             db.flush()
+            from app.services.monthly_promotion import initialize_product_promotion_state
+            initialize_product_promotion_state(db, parsed_product)
             parsed_product._import_changed = True
             add_log(db, "xml_product_created", f"Создан новый товар:\n{parsed_product.code}")
             return parsed_product
@@ -300,6 +331,10 @@ class XMLCatalogImporter:
         }
         for field, value in self._product_scalar_values(parsed_product).items():
             if field == "code":
+                continue
+            # Отсутствие характеристики в конкретной XML-записи не означает снятие
+            # «Акции месяца»: сохраняем последнее подтверждённое значение.
+            if field == "product_type" and value is None:
                 continue
             if getattr(existing, field) != value:
                 setattr(existing, field, value)
