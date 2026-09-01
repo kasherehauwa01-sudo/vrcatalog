@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import logging
+import errno
 import re
+import socket
 import tempfile
 import traceback
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from ftplib import FTP
+from ftplib import FTP, error_perm, error_temp
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -15,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.importer.xml_importer import XMLCatalogImporter, xml_product_count
-from app.models.catalog import AutoImportState, XmlServerSetting
+from app.models.catalog import AutoImportState, FtpConnectionLog, XmlServerSetting
 from app.services.logging import add_log
 from app.services.notifications import add_notification
 
@@ -24,6 +26,10 @@ MOSCOW_TZ = timezone(timedelta(hours=3))
 _lock = threading.Lock()
 _worker_started = False
 logger = logging.getLogger(__name__)
+
+
+class DeferredXmlFile(Exception):
+    """Файл ещё не готов к импорту и должен остаться на FTP до следующей проверки."""
 
 
 def _product_code_from_error(exc: Exception) -> str | None:
@@ -56,14 +62,38 @@ def _ftp_size(ftp: FTP | None, filename: str) -> int | None:
         return None
 
 
+def _pending_xml_files(names: list[str]) -> tuple[list[str], list[str]]:
+    """Отделяет новые XML от уже помеченных ошибочными файлов."""
+    xml_files = sorted(name for name in names if name.lower().endswith(".xml"))
+    return (
+        [name for name in xml_files if not Path(name).name.upper().startswith("ERROR_")],
+        [name for name in xml_files if Path(name).name.upper().startswith("ERROR_")],
+    )
+
+
+def _download_xml_file(ftp: FTP, filename: str, destination) -> int:
+    """Скачивает XML и возвращает фактическое количество полученных байтов."""
+    downloaded = 0
+
+    def write(chunk: bytes) -> None:
+        nonlocal downloaded
+        destination.write(chunk)
+        downloaded += len(chunk)
+
+    ftp.retrbinary(f"RETR {filename}", write)
+    return downloaded
+
+
 def default_xml_server_setting() -> XmlServerSetting:
     return XmlServerSetting(
         protocol="FTP",
-        host="176.53.160.144",
+        host="",
         port=21,
-        username="uploader",
-        password="9963396",
+        username="",
+        password="",
         xml_dir="/xml",
+        connection_attempts=5,
+        retry_delay_seconds=3,
     )
 
 
@@ -89,24 +119,98 @@ def get_auto_import_state(db: Session) -> AutoImportState:
     return state
 
 
-def connect(setting: XmlServerSetting) -> FTP:
+NETWORK_ERRNOS = {
+    errno.ECONNREFUSED, errno.ETIMEDOUT, errno.EHOSTUNREACH, errno.ENETUNREACH,
+    errno.ECONNRESET, errno.ENETDOWN, errno.EHOSTDOWN, errno.EPIPE,
+}
+
+
+def _temporary_connection_error(exc: Exception) -> bool:
+    if isinstance(exc, error_perm):
+        return False
+    if isinstance(exc, (ConnectionRefusedError, TimeoutError, error_temp)):
+        return True
+    if isinstance(exc, socket.gaierror):
+        return exc.errno == socket.EAI_AGAIN
+    return isinstance(exc, OSError) and exc.errno in NETWORK_ERRNOS
+
+
+def _connection_log(db: Session | None, setting: XmlServerSetting, attempt: int, started: float, exc: Exception | None = None) -> None:
+    if db is None:
+        return
+    duration_ms = round((time.perf_counter() - started) * 1000, 3)
+    db.add(FtpConnectionLog(
+        host=setting.host, port=setting.port, duration_ms=duration_ms,
+        attempt_number=attempt, success=exc is None,
+        error_type=type(exc).__name__ if exc else None,
+        error_message=str(exc) if exc else None,
+    ))
+    if exc:
+        message = f"Попытка {attempt} завершилась ошибкой:\n{type(exc).__name__}: {exc}\nHost: {setting.host}\nPort: {setting.port}"
+        add_log(db, "ftp_connection_attempt_error", message, "error", type(exc).__name__)
+    else:
+        add_log(db, "ftp_connection_attempt_success", f"Подключение выполнено успешно с попытки {attempt}.\nHost: {setting.host}\nPort: {setting.port}\nВремя подключения: {duration_ms} мс")
+    db.commit()
+
+
+def connect(setting: XmlServerSetting, db: Session | None = None) -> FTP:
     if setting.protocol.upper() != "FTP":
         raise ValueError(f"Протокол {setting.protocol} пока не поддерживается")
-    ftp = FTP()
-    ftp.connect(setting.host, setting.port, timeout=30)
-    ftp.login(setting.username, setting.password)
-    ftp.cwd(setting.xml_dir)
-    return ftp
+    if not setting.host.strip() or not setting.username.strip():
+        raise ValueError("Не заполнены host или пользователь FTP")
+    attempts = max(1, min(int(setting.connection_attempts or 5), 10))
+    delay = max(0, min(int(setting.retry_delay_seconds or 3), 60))
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        started = time.perf_counter()
+        if db:
+            add_log(db, "ftp_connection_attempt", f"Попытка подключения {attempt} из {attempts}\nHost: {setting.host}\nPort: {setting.port}")
+            db.commit()
+        ftp = FTP()
+        try:
+            ftp.connect(setting.host, setting.port, timeout=30)
+            ftp.login(setting.username, setting.password)
+            ftp.cwd(setting.xml_dir)
+            setattr(ftp, "_vrcatalog_attempt", attempt)
+            setattr(ftp, "_vrcatalog_duration_ms", round((time.perf_counter() - started) * 1000, 3))
+            _connection_log(db, setting, attempt, started)
+            return ftp
+        except Exception as exc:
+            last_error = exc
+            try:
+                ftp.close()
+            except Exception:  # noqa: BLE001
+                pass
+            _connection_log(db, setting, attempt, started, exc)
+            if not _temporary_connection_error(exc) or attempt == attempts:
+                if db and attempt == attempts and _temporary_connection_error(exc):
+                    add_log(db, "ftp_connection_exhausted", f"Не удалось подключиться после {attempts} попыток.\n{type(exc).__name__}: {exc}", "error", type(exc).__name__)
+                    db.commit()
+                setattr(exc, "vrcatalog_attempts", attempt)
+                raise
+            time.sleep(delay)
+    raise last_error or RuntimeError("Не удалось подключиться к FTP")
 
 
 def test_connection(db: Session) -> tuple[bool, str]:
     setting = get_xml_server_setting(db)
+    started = time.perf_counter()
     try:
-        ftp = connect(setting)
+        ftp = connect(setting, db)
+        attempt = getattr(ftp, "_vrcatalog_attempt", 1)
         ftp.quit()
-        return True, "Подключение успешно."
+        return True, (
+            f"Host: {setting.host}\nPort: {setting.port}\nПротокол: {setting.protocol}\n"
+            f"Время подключения: {round((time.perf_counter() - started) * 1000, 3)} мс\n"
+            f"Количество попыток: {attempt}\nРезультат: Подключено"
+        )
     except Exception as exc:  # noqa: BLE001 - пользователю нужен полный текст ошибки
-        return False, f"Не удалось подключиться.\n\nПричина:\n{exc}"
+        return False, (
+            f"Host: {setting.host}\nPort: {setting.port}\nПротокол: {setting.protocol}\n"
+            f"Время подключения: {round((time.perf_counter() - started) * 1000, 3)} мс\n"
+            f"Количество попыток: {getattr(exc, 'vrcatalog_attempts', 1)}\n"
+            f"Результат: Ошибка\nПричина: {type(exc).__name__}: {exc}"
+        )
 
 
 def moscow_now() -> datetime:
@@ -144,7 +248,7 @@ def run_once() -> None:
         add_log(db, "ftp_auto_import_check", "Автоматическая проверка FTP...")
         setting = get_xml_server_setting(db)
         try:
-            ftp = connect(setting)
+            ftp = connect(setting, db)
         except Exception as exc:
             logger.exception("Ошибка подключения к FTP")
             message, trace = _exception_details(
@@ -157,8 +261,14 @@ def run_once() -> None:
             add_log(db, "ftp_connect_error", message, "error", type(exc).__name__, trace)
             raise
         add_log(db, "ftp_auto_import_connected", "Подключение выполнено.")
-        files = sorted(name for name in ftp.nlst() if name.lower().endswith(".xml"))
+        files, error_files = _pending_xml_files(ftp.nlst())
         add_log(db, "ftp_auto_import_files", f"Найдено файлов: {len(files)}")
+        if error_files:
+            add_log(
+                db,
+                "ftp_auto_import_error_files_skipped",
+                f"Пропущено ранее помеченных ошибочными XML-файлов: {len(error_files)}",
+            )
         for filename in files:
             processed += 1
             temp_path: Path | None = None
@@ -168,10 +278,15 @@ def run_once() -> None:
             error_type: str | None = None
             try:
                 add_log(db, "ftp_auto_import_start", f"Начат импорт:\n{filename}")
+                remote_size = _ftp_size(ftp, filename)
+                if remote_size == 0:
+                    raise DeferredXmlFile(
+                        "FTP-файл имеет нулевой размер и, вероятно, ещё формируется"
+                    )
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".xml", dir=settings.upload_dir) as tmp:
                     temp_path = Path(tmp.name)
                     try:
-                        ftp.retrbinary(f"RETR {filename}", tmp.write)
+                        downloaded_size = _download_xml_file(ftp, filename, tmp)
                     except Exception as exc:
                         logger.exception("Ошибка скачивания XML с FTP")
                         message, trace = _exception_details(
@@ -185,6 +300,15 @@ def run_once() -> None:
                         error_trace = trace
                         error_type = type(exc).__name__
                         raise
+                if downloaded_size == 0:
+                    raise DeferredXmlFile(
+                        "С FTP получен пустой файл; импорт отложен до следующей проверки"
+                    )
+                if remote_size is not None and downloaded_size != remote_size:
+                    raise DeferredXmlFile(
+                        "Размер XML изменился во время скачивания "
+                        f"(до скачивания: {remote_size}, получено: {downloaded_size})"
+                    )
                 try:
                     product_count = xml_product_count(temp_path)
                 except Exception as exc:
@@ -234,6 +358,17 @@ def run_once() -> None:
                     f"Файл:\n{filename}\n\nДобавлено товаров: {getattr(run, 'created_count', 0)}\n\nОбновлено товаров: {getattr(run, 'updated_count', 0)}\n\nДата:\n{_format_dt(now)}",
                 )
                 add_log(db, "ftp_auto_import_success", "Импорт завершен успешно.")
+                db.commit()
+            except DeferredXmlFile as exc:
+                db.rollback()
+                processed -= 1
+                add_log(
+                    db,
+                    "ftp_auto_import_file_deferred",
+                    f"Импорт файла отложен без переименования:\n{filename}\n\nПричина:\n{exc}",
+                    "warning",
+                    type(exc).__name__,
+                )
                 db.commit()
             except Exception as exc:  # noqa: BLE001 - продолжаем остальные файлы
                 db.rollback()
@@ -318,6 +453,8 @@ def start_worker() -> None:
     def loop() -> None:
         while True:
             run_once()
+            from app.services.monthly_promotion import run_scheduled_if_due
+            run_scheduled_if_due()
             time.sleep(CHECK_INTERVAL_SECONDS)
 
     threading.Thread(target=loop, daemon=True, name="xml-ftp-auto-import").start()

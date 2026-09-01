@@ -38,6 +38,7 @@ SORT_FIELDS = {
 }
 NEW_PRODUCT_PERIOD = timedelta(days=7)
 NEW_PRODUCT_TYPE_FILTER = "Новинка"
+EXCLUDED_YYY_SECTION = "яяявывод/разукомплектация НЕ ВЫГРУЖАТЬ НА САЙТ"
 
 
 def new_product_cutoff() -> datetime:
@@ -92,6 +93,9 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
         values = _values(params.get(field))
         if values:
             q = q.filter(getattr(Product, field).in_(values))
+
+    if params.get("exclude_yyy"):
+        q = q.filter(or_(Product.section.is_(None), Product.section != EXCLUDED_YYY_SECTION))
 
     type_values = _values(params.get("product_type"))
     if type_values:
