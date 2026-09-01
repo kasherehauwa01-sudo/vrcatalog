@@ -9,9 +9,12 @@ import uuid
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from html import escape
+from io import BytesIO
 from time import perf_counter
 
 from cryptography.fernet import Fernet
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font
 from sqlalchemy import event, inspect, text
 from sqlalchemy.orm import Session
 
@@ -165,7 +168,14 @@ def check_connection(db: Session, mail: MailSetting | None = None) -> tuple[bool
     return result
 
 
-def send_email(db: Session, to: list[str], subject: str, html: str) -> None:
+def send_email(
+    db: Session,
+    to: list[str],
+    subject: str,
+    html: str,
+    attachment: bytes | None = None,
+    attachment_name: str = "Изменения товаров Акция месяца.xlsx",
+) -> None:
     mail = get_mail_setting(db)
     message = EmailMessage()
     message["Subject"] = subject
@@ -173,6 +183,13 @@ def send_email(db: Session, to: list[str], subject: str, html: str) -> None:
     message["To"] = ", ".join(to)
     message.set_content("Для просмотра письма требуется HTML-клиент.")
     message.add_alternative(html, subtype="html")
+    if attachment is not None:
+        message.add_attachment(
+            attachment,
+            maintype="application",
+            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=attachment_name,
+        )
     with _smtp(mail) as client:
         client.send_message(message)
     mail.connection_status = "connected"
@@ -182,26 +199,62 @@ def send_email(db: Session, to: list[str], subject: str, html: str) -> None:
     db.flush()
 
 
-def build_preview(changes: list[ProductTypeChange]) -> str:
-    sections = []
-    for title, selected in (
+def _change_sections(changes: list[ProductTypeChange]):
+    return (
         ("Добавлены в Акцию месяца", [item for item in changes if normalize_month_promo(item.new_value) and not normalize_month_promo(item.old_value)]),
         ("Исключены из Акции месяца", [item for item in changes if normalize_month_promo(item.old_value) and not normalize_month_promo(item.new_value)]),
-    ):
+    )
+
+
+def build_preview(changes: list[ProductTypeChange]) -> str:
+    sections = []
+    for title, selected in _change_sections(changes):
         if not selected:
             continue
         rows = "".join(
-            f"<tr><td>{escape(item.article or '')}</td><td>{escape(item.product_name)}</td>"
+            f"<tr><td>{escape(item.product_code or '')}</td><td>{escape(item.article or '')}</td><td>{escape(item.product_name)}</td>"
             f"<td>{escape(item.old_value or '')}</td><td>{escape(item.new_value or '')}</td>"
             f"<td>{item.changed_at:%d.%m.%Y %H:%M}</td></tr>"
             for item in selected
         )
         sections.append(
             f"<h2>{title}</h2><table border='1' cellpadding='6' cellspacing='0'>"
-            "<tr><th>Артикул</th><th>Наименование</th><th>Было</th><th>Стало</th><th>Время изменения</th></tr>"
+            "<tr><th>Код</th><th>Артикул</th><th>Наименование</th><th>Было</th><th>Стало</th><th>Время изменения</th></tr>"
             f"{rows}</table>"
         )
     return "".join(sections)
+
+
+def build_attachment(changes: list[ProductTypeChange]) -> bytes:
+    """Формирует XLSX со структурой разделов и колонок как в теле уведомления."""
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Акция месяца"
+    headers = ("Код", "Артикул", "Наименование", "Было", "Стало", "Время изменения")
+    for title, selected in _change_sections(changes):
+        if not selected:
+            continue
+        worksheet.append([title])
+        worksheet.merge_cells(start_row=worksheet.max_row, start_column=1, end_row=worksheet.max_row, end_column=len(headers))
+        worksheet.cell(worksheet.max_row, 1).font = Font(bold=True, size=14)
+        worksheet.append(headers)
+        for cell in worksheet[worksheet.max_row]:
+            cell.font = Font(bold=True)
+        for item in selected:
+            worksheet.append((
+                item.product_code or "", item.article or "", item.product_name,
+                item.old_value or "", item.new_value or "", item.changed_at,
+            ))
+            worksheet.cell(worksheet.max_row, len(headers)).number_format = "DD.MM.YYYY HH:MM"
+        worksheet.append([])
+    for column, width in zip("ABCDEF", (18, 18, 60, 24, 24, 21), strict=True):
+        worksheet.column_dimensions[column].width = width
+    for row in worksheet.iter_rows():
+        for cell in row:
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
 
 
 def consolidate_changes(changes: list[ProductTypeChange]) -> list[ProductTypeChange]:
@@ -271,7 +324,7 @@ def run_scenario(db: Session, *, force: bool = False) -> dict:
     db.commit()
     smtp_completed = False
     try:
-        send_email(db, targets, subject, result["html"])
+        send_email(db, targets, subject, result["html"], build_attachment(changes))
         smtp_completed = True
         now = datetime.utcnow()
         claimed_changes = db.query(ProductTypeChange).filter(ProductTypeChange.id.in_(claimed_ids), ProductTypeChange.claim_token == claim_token).all()
@@ -378,6 +431,7 @@ def track_product_type_changes(session: Session, _flush_context, _instances) -> 
         add_log(session, "promotion_change_detected", f"PROMO CHANGE article={key} old={not new_promo} new={new_promo}")
         session.add(ProductTypeChange(
             product_id=product.id,
+            product_code=product.code,
             article=product.article,
             product_name=product.name,
             old_value=old_value,

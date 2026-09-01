@@ -227,6 +227,7 @@ class ProductTypeChange(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    product_code: Mapped[str | None] = mapped_column(String(255))
     article: Mapped[str | None] = mapped_column(String(255))
     product_name: Mapped[str] = mapped_column(String(512))
     old_value: Mapped[str | None] = mapped_column(String(255))
