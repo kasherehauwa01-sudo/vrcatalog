@@ -28,6 +28,10 @@ _worker_started = False
 logger = logging.getLogger(__name__)
 
 
+class DeferredXmlFile(Exception):
+    """Файл ещё не готов к импорту и должен остаться на FTP до следующей проверки."""
+
+
 def _product_code_from_error(exc: Exception) -> str | None:
     match = re.search(r"кодом ([^:]+):", str(exc))
     return match.group(1) if match else None
@@ -56,6 +60,28 @@ def _ftp_size(ftp: FTP | None, filename: str) -> int | None:
         return ftp.size(filename)
     except Exception:
         return None
+
+
+def _pending_xml_files(names: list[str]) -> tuple[list[str], list[str]]:
+    """Отделяет новые XML от уже помеченных ошибочными файлов."""
+    xml_files = sorted(name for name in names if name.lower().endswith(".xml"))
+    return (
+        [name for name in xml_files if not Path(name).name.upper().startswith("ERROR_")],
+        [name for name in xml_files if Path(name).name.upper().startswith("ERROR_")],
+    )
+
+
+def _download_xml_file(ftp: FTP, filename: str, destination) -> int:
+    """Скачивает XML и возвращает фактическое количество полученных байтов."""
+    downloaded = 0
+
+    def write(chunk: bytes) -> None:
+        nonlocal downloaded
+        destination.write(chunk)
+        downloaded += len(chunk)
+
+    ftp.retrbinary(f"RETR {filename}", write)
+    return downloaded
 
 
 def default_xml_server_setting() -> XmlServerSetting:
@@ -235,8 +261,14 @@ def run_once() -> None:
             add_log(db, "ftp_connect_error", message, "error", type(exc).__name__, trace)
             raise
         add_log(db, "ftp_auto_import_connected", "Подключение выполнено.")
-        files = sorted(name for name in ftp.nlst() if name.lower().endswith(".xml"))
+        files, error_files = _pending_xml_files(ftp.nlst())
         add_log(db, "ftp_auto_import_files", f"Найдено файлов: {len(files)}")
+        if error_files:
+            add_log(
+                db,
+                "ftp_auto_import_error_files_skipped",
+                f"Пропущено ранее помеченных ошибочными XML-файлов: {len(error_files)}",
+            )
         for filename in files:
             processed += 1
             temp_path: Path | None = None
@@ -246,10 +278,15 @@ def run_once() -> None:
             error_type: str | None = None
             try:
                 add_log(db, "ftp_auto_import_start", f"Начат импорт:\n{filename}")
+                remote_size = _ftp_size(ftp, filename)
+                if remote_size == 0:
+                    raise DeferredXmlFile(
+                        "FTP-файл имеет нулевой размер и, вероятно, ещё формируется"
+                    )
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".xml", dir=settings.upload_dir) as tmp:
                     temp_path = Path(tmp.name)
                     try:
-                        ftp.retrbinary(f"RETR {filename}", tmp.write)
+                        downloaded_size = _download_xml_file(ftp, filename, tmp)
                     except Exception as exc:
                         logger.exception("Ошибка скачивания XML с FTP")
                         message, trace = _exception_details(
@@ -263,6 +300,15 @@ def run_once() -> None:
                         error_trace = trace
                         error_type = type(exc).__name__
                         raise
+                if downloaded_size == 0:
+                    raise DeferredXmlFile(
+                        "С FTP получен пустой файл; импорт отложен до следующей проверки"
+                    )
+                if remote_size is not None and downloaded_size != remote_size:
+                    raise DeferredXmlFile(
+                        "Размер XML изменился во время скачивания "
+                        f"(до скачивания: {remote_size}, получено: {downloaded_size})"
+                    )
                 try:
                     product_count = xml_product_count(temp_path)
                 except Exception as exc:
@@ -312,6 +358,17 @@ def run_once() -> None:
                     f"Файл:\n{filename}\n\nДобавлено товаров: {getattr(run, 'created_count', 0)}\n\nОбновлено товаров: {getattr(run, 'updated_count', 0)}\n\nДата:\n{_format_dt(now)}",
                 )
                 add_log(db, "ftp_auto_import_success", "Импорт завершен успешно.")
+                db.commit()
+            except DeferredXmlFile as exc:
+                db.rollback()
+                processed -= 1
+                add_log(
+                    db,
+                    "ftp_auto_import_file_deferred",
+                    f"Импорт файла отложен без переименования:\n{filename}\n\nПричина:\n{exc}",
+                    "warning",
+                    type(exc).__name__,
+                )
                 db.commit()
             except Exception as exc:  # noqa: BLE001 - продолжаем остальные файлы
                 db.rollback()

@@ -4,7 +4,7 @@ from ftplib import error_perm, error_temp
 from unittest.mock import MagicMock, patch
 
 from app.models.catalog import XmlServerSetting
-from app.services.xml_auto_import import connect
+from app.services.xml_auto_import import _download_xml_file, _pending_xml_files, connect
 
 
 def setting(attempts=5, delay=3):
@@ -82,6 +82,26 @@ class FtpRetryTests(unittest.TestCase):
             sleep.assert_not_called()
         with self.assertRaises(ValueError):
             connect(XmlServerSetting(protocol="SFTP", host="x", port=22, username="u", password="p", xml_dir="/", connection_attempts=5, retry_delay_seconds=3))
+
+    def test_error_xml_files_are_not_selected_for_reimport(self):
+        pending, failed = _pending_xml_files([
+            "tov.xml", "ERROR_tov-old.xml", "folder/error_broken.XML", "readme.txt",
+        ])
+
+        self.assertEqual(pending, ["tov.xml"])
+        self.assertEqual(failed, ["ERROR_tov-old.xml", "folder/error_broken.XML"])
+
+    def test_download_reports_actual_byte_count(self):
+        ftp = MagicMock()
+        ftp.retrbinary.side_effect = lambda _command, callback: (
+            callback(b"<catalog>"), callback(b"</catalog>")
+        )
+        destination = MagicMock()
+
+        downloaded = _download_xml_file(ftp, "tov.xml", destination)
+
+        self.assertEqual(downloaded, 19)
+        self.assertEqual(destination.write.call_count, 2)
 
 
 if __name__ == "__main__":
