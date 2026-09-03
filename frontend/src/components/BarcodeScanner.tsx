@@ -43,10 +43,7 @@ const isEan13 = (value: string) => {
   return (10 - (sum % 10)) % 10 === digits[12];
 };
 
-const playSignal = (found: boolean) => {
-  const AudioContextClass = window.AudioContext;
-  if (!AudioContextClass) return;
-  const context = new AudioContextClass();
+const playSignal = (context: AudioContext, found: boolean) => {
   const frequencies = found ? [880, 1175] : [220, 165];
   frequencies.forEach((frequency, index) => {
     const oscillator = context.createOscillator();
@@ -59,12 +56,11 @@ const playSignal = (found: boolean) => {
     oscillator.start(start);
     oscillator.stop(start + 0.12);
   });
-  window.setTimeout(() => void context.close(), 500);
 };
 
 function ScanBarcodeIcon() {
   return (
-    <Box component="svg" viewBox="0 0 24 24" sx={{ width: 56, height: 56, fill: "none", stroke: "currentColor", strokeWidth: 1.8 }}>
+    <Box component="svg" viewBox="0 0 24 24" sx={{ width: 112, height: 112, fill: "none", stroke: "currentColor", strokeWidth: 1.8 }}>
       <path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" />
       <path d="M7 8v8M10 8v8M13 8v8M17 8v8" />
     </Box>
@@ -85,6 +81,7 @@ export function BarcodeScanner({ onDetected }: Props) {
   const [manualBarcode, setManualBarcode] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const busyRef = useRef(false);
   const soundEnabledRef = useRef(true);
 
@@ -98,6 +95,21 @@ export function BarcodeScanner({ onDetected }: Props) {
   const close = () => {
     stopCamera();
     setOpen(false);
+    const context = audioContextRef.current;
+    audioContextRef.current = null;
+    // Даём сигналу успешного сканирования доиграть после закрытия окна.
+    window.setTimeout(() => void context?.close(), 500);
+  };
+
+  const openScanner = () => {
+    // Контекст создаётся непосредственно по нажатию пользователя: мобильные
+    // браузеры иначе блокируют звук, запущенный после асинхронного поиска.
+    const AudioContextClass = window.AudioContext;
+    if (AudioContextClass) {
+      audioContextRef.current = new AudioContextClass();
+      void audioContextRef.current.resume();
+    }
+    setOpen(true);
   };
 
   const processBarcode = async (value: string) => {
@@ -106,7 +118,9 @@ export function BarcodeScanner({ onDetected }: Props) {
     busyRef.current = true;
     setStatus("searching");
     const found = await onDetected(barcode).catch(() => false);
-    if (soundEnabledRef.current) playSignal(found);
+    if (soundEnabledRef.current && audioContextRef.current) {
+      playSignal(audioContextRef.current, found);
+    }
     if (found) {
       close();
     } else {
@@ -191,18 +205,18 @@ export function BarcodeScanner({ onDetected }: Props) {
         <Fab
           color="primary"
           aria-label="Сканировать штрихкод"
-          onClick={() => setOpen(true)}
+          onClick={openScanner}
           sx={{
             // На телефонах с широким экраном и планшетах ширина viewport может
             // превышать 600 px, поэтому скрываем кнопку только на desktop (lg).
             display: { xs: "inline-flex", lg: "none" },
             position: "fixed",
-            right: { xs: 16, sm: 24 },
-            bottom: "max(16px, calc(env(safe-area-inset-bottom) + 12px))",
+            right: 15,
+            bottom: 15,
             zIndex: (theme) => theme.zIndex.drawer + 1,
             boxShadow: "0 10px 28px rgba(2, 132, 199, .42)",
-            width: 80,
-            height: 80,
+            width: 144,
+            height: 144,
           }}
         >
           <ScanBarcodeIcon />

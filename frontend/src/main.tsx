@@ -642,6 +642,9 @@ function App() {
     setDetail(await api.product(id));
     try {
       setDynamicAnalogs(await api.productAnalogs(id));
+    } catch {
+      // Ошибка загрузки аналогов не должна отменять открытие карточки товара.
+      setDynamicAnalogs([]);
     } finally {
       setAnalogsLoading(false);
     }
