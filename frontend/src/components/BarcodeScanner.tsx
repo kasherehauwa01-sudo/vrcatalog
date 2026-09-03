@@ -64,7 +64,7 @@ const playSignal = (found: boolean) => {
 
 function ScanBarcodeIcon() {
   return (
-    <Box component="svg" viewBox="0 0 24 24" sx={{ width: 28, height: 28, fill: "none", stroke: "currentColor", strokeWidth: 1.8 }}>
+    <Box component="svg" viewBox="0 0 24 24" sx={{ width: 56, height: 56, fill: "none", stroke: "currentColor", strokeWidth: 1.8 }}>
       <path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" />
       <path d="M7 8v8M10 8v8M13 8v8M17 8v8" />
     </Box>
@@ -201,6 +201,8 @@ export function BarcodeScanner({ onDetected }: Props) {
             bottom: "max(16px, calc(env(safe-area-inset-bottom) + 12px))",
             zIndex: (theme) => theme.zIndex.drawer + 1,
             boxShadow: "0 10px 28px rgba(2, 132, 199, .42)",
+            width: 80,
+            height: 80,
           }}
         >
           <ScanBarcodeIcon />
