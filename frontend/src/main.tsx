@@ -51,6 +51,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import SearchIcon from "@mui/icons-material/Search";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import { api } from "./api/client";
+import { BarcodeScanner } from "./components/BarcodeScanner";
 import type {
   Meta,
   Product,
@@ -641,9 +642,24 @@ function App() {
     setDetail(await api.product(id));
     try {
       setDynamicAnalogs(await api.productAnalogs(id));
+    } catch {
+      // Ошибка загрузки аналогов не должна отменять открытие карточки товара.
+      setDynamicAnalogs([]);
     } finally {
       setAnalogsLoading(false);
     }
+  };
+  const openProductByBarcode = async (barcode: string) => {
+    const result = await api.searchProducts(new URLSearchParams({
+      barcode,
+      inStockOnly: "false",
+      excludeYyy: "false",
+      pageSize: "20",
+    }));
+    const product = result.items[0];
+    if (!product) return false;
+    await openProduct(product.id);
+    return true;
   };
   const openAllAnalogs = async () => {
     if (!detail) return;
@@ -767,6 +783,8 @@ function App() {
             Удалить выбранные ({selectedIds.length})
           </Button>
         )}
+
+        {tab === "catalog" && <BarcodeScanner onDetected={openProductByBarcode} />}
 
         <Container maxWidth="xl" sx={{ py: { xs: 2, md: 4 } }}>
           {uploadError && (
