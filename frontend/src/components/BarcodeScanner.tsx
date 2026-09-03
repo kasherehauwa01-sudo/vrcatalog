@@ -192,7 +192,16 @@ export function BarcodeScanner({ onDetected }: Props) {
           color="primary"
           aria-label="Сканировать штрихкод"
           onClick={() => setOpen(true)}
-          sx={{ display: { xs: "inline-flex", sm: "none" }, position: "fixed", right: 20, bottom: 20, zIndex: (theme) => theme.zIndex.speedDial }}
+          sx={{
+            // На телефонах с широким экраном и планшетах ширина viewport может
+            // превышать 600 px, поэтому скрываем кнопку только на desktop (lg).
+            display: { xs: "inline-flex", lg: "none" },
+            position: "fixed",
+            right: { xs: 16, sm: 24 },
+            bottom: "max(16px, calc(env(safe-area-inset-bottom) + 12px))",
+            zIndex: (theme) => theme.zIndex.drawer + 1,
+            boxShadow: "0 10px 28px rgba(2, 132, 199, .42)",
+          }}
         >
           <ScanBarcodeIcon />
         </Fab>
