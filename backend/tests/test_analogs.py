@@ -76,6 +76,29 @@ class AnalogSelectionTests(unittest.TestCase):
 
         self.assertGreater(scores[primary.id], scores[secondary.id])
 
+    def test_missing_candidate_property_is_excluded_from_weighting(self):
+        candidate = self.product("NO-COLOR", "Посуда", "Кастрюля", "Сталь", None)
+        self.db.commit()
+
+        selected = find_product_analogs(self.db, self.source.id)[0]
+
+        self.assertEqual(selected.product.id, candidate.id)
+        self.assertEqual(selected.similarity, 100)
+        self.assertNotIn("Цвет", selected.matched)
+        self.assertNotIn("Цвет", selected.unmatched)
+
+    def test_missing_source_property_is_excluded_from_weighting(self):
+        self.source.material = None
+        candidate = self.product("EXTRA-MATERIAL", "Посуда", "Кастрюля", "Алюминий", "Черный")
+        self.db.commit()
+
+        selected = find_product_analogs(self.db, self.source.id)[0]
+
+        self.assertEqual(selected.product.id, candidate.id)
+        self.assertEqual(selected.similarity, 100)
+        self.assertNotIn("Материал", selected.matched)
+        self.assertNotIn("Материал", selected.unmatched)
+
     def test_secondary_characteristic_also_contributes_to_score(self):
         candidate = self.product("SECONDARY", "Посуда", "Кастрюля", "Алюминий", "Белый")
         self.source.manufacturer = "Завод"

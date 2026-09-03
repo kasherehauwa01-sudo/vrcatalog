@@ -89,10 +89,15 @@ def _score(source: Product, candidate: Product, primary: list[str]) -> ScoredAna
     matched: list[str] = []
     unmatched: list[str] = []
     for key, (display_name, source_value) in source_values.items():
+        candidate_value = candidate_values.get(key)
+        # Отсутствующее значение у любой из карточек не является несовпадением:
+        # характеристика полностью исключается из числителя и знаменателя.
+        if candidate_value is None:
+            continue
         # Основные признаки имеют вес от 2N до 2 по приоритету, второстепенные — 1.
         weight = max(2, (len(priorities) - priorities[key]) * 2) if key in priorities else 1
         total_weight += weight
-        if candidate_values.get(key, (None, None))[1] == source_value:
+        if candidate_value[1] == source_value:
             matched_weight += weight
             matched.append(display_name)
         else:
