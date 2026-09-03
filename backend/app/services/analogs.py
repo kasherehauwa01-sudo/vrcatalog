@@ -117,13 +117,17 @@ def _score(source: Product, candidate: Product, primary: list[str]) -> ScoredAna
     matched: list[dict[str, str]] = []
     unmatched: list[dict[str, str]] = []
     for key, (display_name, source_value, source_display_value) in source_values.items():
+        # В расчёте участвуют только характеристики, явно выбранные основными.
+        # Остальные фильтры не влияют ни на процент, ни на объяснение результата.
+        if key not in priorities:
+            continue
         candidate_value = candidate_values.get(key)
         # Отсутствующее значение у любой из карточек не является несовпадением:
         # характеристика полностью исключается из числителя и знаменателя.
         if candidate_value is None:
             continue
-        # Основные признаки имеют вес от 2N до 2 по приоритету, второстепенные — 1.
-        weight = max(2, (len(priorities) - priorities[key]) * 2) if key in priorities else 1
+        # Вес основных признаков уменьшается от 2N до 2 согласно их приоритету.
+        weight = max(2, (len(priorities) - priorities[key]) * 2)
         total_weight += weight
         if candidate_value[1] == source_value:
             matched_weight += weight
@@ -147,16 +151,19 @@ def find_product_analogs(db: Session, product_id: int) -> list[ScoredAnalog] | N
     source = db.query(Product).options(selectinload(Product.properties)).filter(Product.id == product_id).first()
     if source is None:
         return None
-    if not source.section or not _characteristics(source):
+    if not source.section:
         return []
     setting = get_analog_settings(db)
+    primary = primary_properties(setting)
+    primary_keys = {_normalized(name) for name in primary}
+    if not primary_keys.intersection(_characteristics(source)):
+        return []
     candidates = (
         db.query(Product)
         .options(selectinload(Product.properties))
         .filter(Product.section == source.section, Product.id != source.id)
         .all()
     )
-    primary = primary_properties(setting)
     scored = [_score(source, candidate, primary) for candidate in candidates]
     eligible = [item for item in scored if item.similarity >= setting.minimum_similarity]
     same_type = [item for item in eligible if source.product_type and item.product.product_type == source.product_type]

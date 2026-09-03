@@ -136,7 +136,7 @@ class AnalogSelectionTests(unittest.TestCase):
         self.assertNotIn("Материал", [item["name"] for item in selected.matched])
         self.assertNotIn("Материал", [item["name"] for item in selected.unmatched])
 
-    def test_secondary_characteristic_also_contributes_to_score(self):
+    def test_secondary_characteristic_is_excluded_from_score(self):
         candidate = self.product("SECONDARY", "Посуда", "Кастрюля", "Алюминий", "Белый")
         self.source.manufacturer = "Завод"
         candidate.manufacturer = "Завод"
@@ -145,8 +145,9 @@ class AnalogSelectionTests(unittest.TestCase):
         result = find_product_analogs(self.db, self.source.id)
         selected = next(item for item in result if item.product.id == candidate.id)
 
-        self.assertGreater(selected.similarity, 0)
-        self.assertIn("Производитель", [item["name"] for item in selected.matched])
+        self.assertEqual(selected.similarity, 0)
+        self.assertNotIn("Производитель", [item["name"] for item in selected.matched])
+        self.assertNotIn("Производитель", [item["name"] for item in selected.unmatched])
 
     def test_many_matching_properties_produce_full_match(self):
         candidate = self.product("MANY", "Посуда", "Кастрюля", "Сталь", "Черный")
@@ -160,7 +161,11 @@ class AnalogSelectionTests(unittest.TestCase):
         result = find_product_analogs(self.db, self.source.id)
 
         self.assertEqual(result[0].similarity, 100)
-        self.assertEqual(len(result[0].matched), 33)
+        self.assertEqual(len(result[0].matched), 2)
+        self.assertEqual(
+            {item["name"] for item in result[0].matched},
+            {"Материал", "Цвет"},
+        )
 
     def test_minimum_similarity_and_limit_are_applied(self):
         setting = self.db.query(AnalogSelectionSetting).one()
