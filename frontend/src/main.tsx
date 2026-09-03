@@ -935,39 +935,41 @@ function App() {
                 spacing={1}
                 alignItems="stretch"
               >
-                <TextField
-                  fullWidth
-                  size="small"
-                  placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  onClick={() => {
-                    setDraftActive(active);
-                    setDraftFields(filterFields);
-                    setFiltersOpen(true);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") updateParams({ search: search.trim() });
-                  }}
-                  aria-label="Поиск товаров"
-                  InputProps={{
-                    startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
-                    endAdornment: search ? (
-                      <InputAdornment position="end">
-                        <IconButton aria-label="Очистить поиск" onClick={() => { setSearch(""); updateParams({ search: null }); }}>
-                          <CloseIcon />
-                        </IconButton>
-                      </InputAdornment>
-                    ) : undefined,
-                  }}
-                  sx={{
-                    flex: 1,
-                    "& .MuiOutlinedInput-root": {
-                      bgcolor: alpha("#ffffff", 0.86),
-                      borderRadius: 999,
-                    },
-                  }}
-                />
+                {!filtersOpen && (
+                  <TextField
+                    fullWidth
+                    size="small"
+                    placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    onClick={() => {
+                      setDraftActive(active);
+                      setDraftFields(filterFields);
+                      setFiltersOpen(true);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") updateParams({ search: search.trim() });
+                    }}
+                    aria-label="Поиск товаров"
+                    InputProps={{
+                      startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
+                      endAdornment: search ? (
+                        <InputAdornment position="end">
+                          <IconButton aria-label="Очистить поиск" onClick={() => { setSearch(""); updateParams({ search: null }); }}>
+                            <CloseIcon />
+                          </IconButton>
+                        </InputAdornment>
+                      ) : undefined,
+                    }}
+                    sx={{
+                      flex: 1,
+                      "& .MuiOutlinedInput-root": {
+                        bgcolor: alpha("#ffffff", 0.86),
+                        borderRadius: 999,
+                      },
+                    }}
+                  />
+                )}
               </Stack>
               <Collapse in={filtersOpen} unmountOnExit>
                 <Paper
@@ -982,7 +984,7 @@ function App() {
                       </IconButton>
                     </Stack>
                     <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(3, 1fr)" }, gap: 1.5 }}>
-                      <TextField label="Поиск по коду" value={draftFields.code} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })} />
+                      <TextField autoFocus label="Поиск по коду" value={draftFields.code} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })} />
                       <TextField label="Поиск по артикулу" value={draftFields.article} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })} />
                       <TextField label="Поиск по наименованию" value={draftFields.name} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })} />
                     </Box>
