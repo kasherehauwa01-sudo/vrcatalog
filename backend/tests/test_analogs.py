@@ -74,15 +74,42 @@ class AnalogSelectionTests(unittest.TestCase):
             self.product("YO", "Посуда", "Кастрюля", "Сталь", "Черный"),
             self.product("A", "Посуда", "Кастрюля", "Сталь", "Черный"),
         ]
-        products[0].name = "Яблоко"
-        products[1].name = "Ёж"
-        products[2].name = "Арбуз"
+        products[0].name = "Товар Яблоко"
+        products[1].name = "Товар Ёж"
+        products[2].name = "Товар Арбуз"
         self.db.commit()
 
         result = find_product_analogs(self.db, self.source.id)
 
         self.assertTrue(all(item.similarity == 100 for item in result))
-        self.assertEqual([item.product.name for item in result], ["Арбуз", "Ёж", "Яблоко"])
+        self.assertEqual(
+            [item.product.name for item in result],
+            ["Товар Арбуз", "Товар Ёж", "Товар Яблоко"],
+        )
+
+    def test_candidate_with_different_first_name_word_is_excluded(self):
+        matching = self.product("MATCHING", "Посуда", "Кастрюля", "Сталь", "Черный")
+        excluded = self.product("EXCLUDED", "Посуда", "Кастрюля", "Сталь", "Черный")
+        matching.name = "  товар подходящий"
+        excluded.name = "Изделие неподходящее"
+        self.db.commit()
+
+        result = find_product_analogs(self.db, self.source.id)
+
+        self.assertEqual([item.product.id for item in result], [matching.id])
+
+    def test_first_name_word_filter_is_applied_after_limit(self):
+        setting = self.db.query(AnalogSelectionSetting).one()
+        setting.maximum_analogs = 1
+        excluded = self.product("EXCLUDED", "Посуда", "Кастрюля", "Сталь", "Черный")
+        fallback = self.product("FALLBACK", "Посуда", "Кастрюля", "Сталь", "Черный")
+        excluded.name = "Изделие Товар SRC"
+        fallback.name = "Товар запасной"
+        self.db.commit()
+
+        result = find_product_analogs(self.db, self.source.id)
+
+        self.assertEqual(result, [])
 
     def test_equal_similarity_prefers_name_closest_to_original(self):
         self.source.name = "Таз 15л 43,5*17см пластик ИЗОБИЛИЕ круглый мерный (30)"
@@ -178,6 +205,21 @@ class AnalogSelectionTests(unittest.TestCase):
         result = find_product_analogs(self.db, self.source.id)
 
         self.assertEqual([item.product.id for item in result], [winner.id])
+
+    def test_all_analogs_ignore_maximum_but_keep_minimum_similarity(self):
+        setting = self.db.query(AnalogSelectionSetting).one()
+        setting.minimum_similarity = 100
+        setting.maximum_analogs = 1
+        matches = [
+            self.product(f"MATCH-{index}", "Посуда", "Кастрюля", "Сталь", "Черный")
+            for index in range(3)
+        ]
+        self.product("LOW", "Посуда", "Кастрюля", "Сталь", "Белый")
+        self.db.commit()
+
+        result = find_product_analogs(self.db, self.source.id, include_all=True)
+
+        self.assertEqual({item.product.id for item in result}, {item.id for item in matches})
 
     def test_product_without_characteristics_returns_no_matches_above_zero(self):
         source = self.product("EMPTY", "Посуда", None)

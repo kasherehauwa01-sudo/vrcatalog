@@ -164,8 +164,15 @@ def product_detail(product_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/products/{product_id}/dynamic-analogs", response_model=list[DynamicAnalogOut])
-def product_dynamic_analogs(product_id: int, db: Session = Depends(get_db)):
-    analogs = find_product_analogs(db, product_id)
+def product_dynamic_analogs(product_id: int, show_all: bool = False, db: Session = Depends(get_db)):
+    # В карточке показываем не более десяти позиций, а отдельное окно получает
+    # полный перечень, прошедший установленный минимальный процент похожести.
+    analogs = find_product_analogs(
+        db,
+        product_id,
+        include_all=show_all,
+        maximum_analogs=10,
+    )
     if analogs is None:
         raise HTTPException(404, "Товар не найден")
     result = []

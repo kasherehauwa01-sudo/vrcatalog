@@ -50,8 +50,8 @@ export const api = {
   async product(id: number): Promise<ProductDetail> {
     return request<ProductDetail>(`${API}/products/${id}`);
   },
-  async productAnalogs(id: number): Promise<DynamicAnalog[]> {
-    return request<DynamicAnalog[]>(`${API}/products/${id}/dynamic-analogs`);
+  async productAnalogs(id: number, showAll = false): Promise<DynamicAnalog[]> {
+    return request<DynamicAnalog[]>(`${API}/products/${id}/dynamic-analogs${showAll ? "?show_all=true" : ""}`);
   },
   async analogSelectionSettings(): Promise<AnalogSelectionSetting> {
     return request<AnalogSelectionSetting>(`${API}/analog-selection-settings`);
