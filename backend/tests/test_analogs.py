@@ -64,6 +64,22 @@ class AnalogSelectionTests(unittest.TestCase):
 
         self.assertEqual([item.product.id for item in result[:2]], [same_type.id, better_other_type.id])
 
+    def test_equal_similarity_is_sorted_by_russian_name(self):
+        products = [
+            self.product("YA", "Посуда", "Кастрюля", "Сталь", "Черный"),
+            self.product("YO", "Посуда", "Кастрюля", "Сталь", "Черный"),
+            self.product("A", "Посуда", "Кастрюля", "Сталь", "Черный"),
+        ]
+        products[0].name = "Яблоко"
+        products[1].name = "Ёж"
+        products[2].name = "Арбуз"
+        self.db.commit()
+
+        result = find_product_analogs(self.db, self.source.id)
+
+        self.assertTrue(all(item.similarity == 100 for item in result))
+        self.assertEqual([item.product.name for item in result], ["Арбуз", "Ёж", "Яблоко"])
+
     def test_primary_match_has_more_weight_than_secondary_match(self):
         primary = self.product("PRIMARY", "Посуда", "Кастрюля", "Сталь", "Белый")
         secondary = self.product("SECONDARY", "Посуда", "Кастрюля", "Алюминий", "Белый")

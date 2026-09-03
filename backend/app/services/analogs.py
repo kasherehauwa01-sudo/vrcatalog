@@ -27,6 +27,12 @@ def _normalized(value: object) -> str:
     return " ".join(str(value or "").replace("\xa0", " ").split()).casefold()
 
 
+def _alphabetical_name(product: Product) -> tuple[str, str]:
+    """Возвращает стабильный ключ русской сортировки, размещая «ё» рядом с «е»."""
+    normalized = _normalized(product.name)
+    return normalized.replace("ё", "е"), normalized
+
+
 def get_analog_settings(db: Session) -> AnalogSelectionSetting:
     setting = db.query(AnalogSelectionSetting).order_by(AnalogSelectionSetting.id).first()
     if setting:
@@ -128,7 +134,9 @@ def find_product_analogs(db: Session, product_id: int) -> list[ScoredAnalog] | N
         item for item in eligible
         if not source.product_type or item.product.product_type != source.product_type
     ]
-    key = lambda item: (-item.similarity, item.product.id)
+    # ID используется только как последний стабильный критерий для полностью
+    # одинаковых названий; при равном проценте товары идут по имени от А до Я.
+    key = lambda item: (-item.similarity, *_alphabetical_name(item.product), item.product.id)
     selected = (sorted(same_type, key=key) + sorted(other_type, key=key))[:setting.maximum_analogs]
     if not selected:
         return []
