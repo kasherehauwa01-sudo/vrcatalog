@@ -7,3 +7,4 @@ pydantic-settings==2.3.4
 openpyxl==3.1.5
 Pillow==10.4.0
 psycopg[binary]==3.2.1
+cryptography==43.0.3
