@@ -60,6 +60,13 @@ import type {
   AutoImportState,
   ServiceLog,
   Warehouse,
+  MailSetting,
+  NotificationScenario,
+  ScenarioRun,
+  ScenarioSummary,
+  NotificationHistory,
+  DynamicAnalog,
+  AnalogSelectionSetting,
 } from "./types/catalog";
 
 const theme = createTheme({
@@ -101,11 +108,11 @@ const SETTINGS_PASSWORD = "8852285";
 const DELETE_PASSWORD = "8852285";
 
 const exportMainColumns = [
-  ["code", "Код"],
-  ["article", "Артикул"],
   ["photo", "Фото"],
+  ["article", "Артикул"],
   ["name", "Наименование"],
   ["section", "Раздел"],
+  ["code", "Код"],
   ["product_type", "Вид товара"],
   ["manufacturer", "Производитель"],
   ["manager", "Менеджер"],
@@ -149,6 +156,7 @@ type FilterFields = {
   article: string;
   name: string;
   inStockOnly: string;
+  excludeYyy: string;
   onlyNew: string;
   availability: string;
   quantityFrom: string;
@@ -163,6 +171,7 @@ const filterFieldLabels: Partial<Record<keyof FilterFields, string>> = {
   article: "Артикул",
   name: "Название",
   inStockOnly: "Только в наличии",
+  excludeYyy: "Исключить категорию ЯЯЯ",
   onlyNew: "Только новинки",
   availability: "Наличие",
   quantityFrom: "Количество от",
@@ -223,7 +232,7 @@ function App() {
     });
     return result;
   };
-  const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ code: p.get("code") ?? "", article: p.get("article") ?? "", name: p.get("name") ?? "", inStockOnly: p.get("inStockOnly") ?? "true", onlyNew: p.get("onlyNew") ?? "false", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
+  const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ code: p.get("code") ?? "", article: p.get("article") ?? "", name: p.get("name") ?? "", inStockOnly: p.get("inStockOnly") ?? "true", excludeYyy: p.get("excludeYyy") ?? "true", onlyNew: p.get("onlyNew") ?? "false", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
   const [search, setSearch] = useState(initialParams.get("search") ?? "");
   const [filters, setFilters] = useState<Record<string, string[]>>({});
   const [propertyOptions, setPropertyOptions] = useState<Record<string, string[]>>({});
@@ -248,7 +257,7 @@ function App() {
   const [settingsPassword, setSettingsPassword] = useState("");
   const [settingsPasswordError, setSettingsPasswordError] = useState(false);
   const [settingsUnlocked, setSettingsUnlocked] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "logs">("settings");
+  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "mail" | "scenarios" | "analogs" | "logs">("settings");
   const [openSettingsGroups, setOpenSettingsGroups] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -278,6 +287,22 @@ function App() {
   const [autoImportState, setAutoImportState] = useState<AutoImportState | null>(null);
   const [ftpTestMessage, setFtpTestMessage] = useState<string | null>(null);
   const [manualImportMessage, setManualImportMessage] = useState<string | null>(null);
+  const [mailForm, setMailForm] = useState<MailSetting | null>(null);
+  const [scenarioForm, setScenarioForm] = useState<NotificationScenario | null>(null);
+  const [scenarioList, setScenarioList] = useState<ScenarioSummary[]>([]);
+  const [selectedScenario, setSelectedScenario] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyRows, setHistoryRows] = useState<NotificationHistory[]>([]);
+  const [historySearch, setHistorySearch] = useState("");
+  const [historyStatus, setHistoryStatus] = useState("all");
+  const [testMailOpen, setTestMailOpen] = useState(false);
+  const [testEmail, setTestEmail] = useState("");
+  const [mailMessage, setMailMessage] = useState<string | null>(null);
+  const [scenarioResult, setScenarioResult] = useState<ScenarioRun | null>(null);
+  const [analogSettings, setAnalogSettings] = useState<AnalogSelectionSetting | null>(null);
+  const [dynamicAnalogs, setDynamicAnalogs] = useState<DynamicAnalog[]>([]);
+  const [analogsLoading, setAnalogsLoading] = useState(false);
+  const [analogReason, setAnalogReason] = useState<DynamicAnalog | null>(null);
   const [queryVersion, setQueryVersion] = useState(0);
   const params = useMemo(() => new URLSearchParams(window.location.search), [queryVersion]);
   const replaceCatalogParams = (next: URLSearchParams) => {
@@ -419,13 +444,13 @@ function App() {
         next.delete("page"); replaceCatalogParams(next);
       } else updateParams({ [key === "product_type" ? "productType" : key]: serializeFilterValues(values) });
     } else {
-      const resetValue = key === "availability" ? "all" : key === "inStockOnly" || key === "onlyNew" ? "false" : "";
+      const resetValue = key === "availability" ? "all" : ["inStockOnly", "excludeYyy", "onlyNew"].includes(key) ? "false" : "";
       const updated = { ...filterFields, [key]: resetValue };
       setFilterFields(updated); setDraftFields(updated); updateParams({ [key]: resetValue || null });
     }
   };
   const isActiveFilterField = ([key, value]: [string, string | undefined]) =>
-    Boolean(value && value !== "all" && !(["inStockOnly", "onlyNew"].includes(key) && value === "false"));
+    Boolean(value && value !== "all" && !(["inStockOnly", "excludeYyy", "onlyNew"].includes(key) && value === "false"));
   const activeConditionCount = Object.values(active).reduce((sum, values) => sum + values.length, 0) + Object.entries(filterFields).filter(isActiveFilterField).length;
   const searchableFilterLabels = new Set(["Раздел", "Производитель", "Бренд", "Материал", "Коллекция", "Штрихкод"]);
   const entriesForOrder = (options: Record<string, string[]>, order: string[]) => {
@@ -592,6 +617,46 @@ function App() {
     setWarehouseCodes((await api.warehouseCodes()).codes);
     setProductTypes(await api.productTypes());
   };
+  const openMailSettings = async () => {
+    setSettingsTab("mail");
+    setMailForm(await api.mailSettings());
+  };
+  const openScenarios = async () => {
+    setSettingsTab("scenarios");
+    setScenarioList(await api.notificationScenarios());
+    setSelectedScenario(null);
+    setScenarioForm(null);
+  };
+  const openAnalogSettings = async () => {
+    setSettingsTab("analogs");
+    setAnalogSettings(await api.analogSelectionSettings());
+  };
+  const openProduct = async (id: number) => {
+    setDynamicAnalogs([]);
+    setAnalogsLoading(true);
+    setDetail(await api.product(id));
+    try {
+      setDynamicAnalogs(await api.productAnalogs(id));
+    } finally {
+      setAnalogsLoading(false);
+    }
+  };
+  const movePrimaryProperty = (index: number, direction: -1 | 1) => {
+    if (!analogSettings) return;
+    const target = index + direction;
+    if (target < 0 || target >= analogSettings.primary_properties.length) return;
+    const values = [...analogSettings.primary_properties];
+    [values[index], values[target]] = [values[target], values[index]];
+    setAnalogSettings({ ...analogSettings, primary_properties: values });
+  };
+  const openScenarioCard = async (code: string) => {
+    setSelectedScenario(code);
+    if (code === "monthly_promotion") setScenarioForm(await api.monthlyPromotionScenario());
+  };
+  const loadHistory = async (search = historySearch, status = historyStatus) => {
+    if (!selectedScenario) return;
+    setHistoryRows(await api.notificationHistory(selectedScenario, search, status));
+  };
   const openWarehouseDialog = (warehouse?: Warehouse) => {
     setWarehouseForm(
       warehouse
@@ -756,6 +821,38 @@ function App() {
             </DialogActions>
           </Dialog>
 
+          <Dialog open={testMailOpen} onClose={() => setTestMailOpen(false)} maxWidth="xs" fullWidth>
+            <DialogTitle>Тест уведомлений</DialogTitle>
+            <DialogContent><TextField autoFocus fullWidth label="Email получателя" value={testEmail} onChange={(event) => setTestEmail(event.target.value)} sx={{ mt: 1 }} /></DialogContent>
+            <DialogActions>
+              <Button onClick={() => setTestMailOpen(false)}>Отмена</Button>
+              <Button variant="contained" onClick={async () => { try { const result = await api.sendTestMail(testEmail); setMailMessage(result.message); setMailForm(await api.mailSettings()); } catch (error) { setMailMessage(error instanceof Error ? error.message : "Ошибка отправки"); } finally { setTestMailOpen(false); } }}>Отправить</Button>
+            </DialogActions>
+          </Dialog>
+
+          <Dialog open={historyOpen} onClose={() => setHistoryOpen(false)} fullWidth maxWidth="lg">
+            <DialogTitle>История уведомлений</DialogTitle>
+            <DialogContent>
+              <Stack direction={{ xs: "column", sm: "row" }} gap={1} sx={{ my: 1 }}>
+                <TextField fullWidth label="Поиск по получателю" value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") loadHistory(); }} />
+                <TextField select label="Статус" value={historyStatus} onChange={async (event) => { setHistoryStatus(event.target.value); await loadHistory(historySearch, event.target.value); }} sx={{ minWidth: 190 }}>
+                  <MenuItem value="all">Все</MenuItem><MenuItem value="sent">Отправлено</MenuItem><MenuItem value="error">Ошибка</MenuItem>
+                </TextField>
+                <Button onClick={() => loadHistory()}>Найти</Button>
+              </Stack>
+              <TableContainer><Table size="small">
+                <TableHead><TableRow><TableCell>Дата и время</TableCell><TableCell>Получатели</TableCell><TableCell>Тема</TableCell><TableCell>Текст письма</TableCell><TableCell>Статус</TableCell></TableRow></TableHead>
+                <TableBody>{historyRows.map((row) => <TableRow key={row.id}>
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>{new Date(row.sent_at).toLocaleString("ru-RU")}</TableCell>
+                  <TableCell>{row.recipients.join(", ")}</TableCell><TableCell>{row.subject}</TableCell>
+                  <TableCell><Box sx={{ maxHeight: 220, overflow: "auto" }} dangerouslySetInnerHTML={{ __html: row.body_html }} /></TableCell>
+                  <TableCell>{row.status === "sent" ? "Отправлено" : <><Typography color="error">Ошибка отправки</Typography><Typography variant="caption">{row.error_message}</Typography></>}</TableCell>
+                </TableRow>)}</TableBody>
+              </Table></TableContainer>
+            </DialogContent>
+            <DialogActions><Button onClick={() => setHistoryOpen(false)}>Закрыть</Button></DialogActions>
+          </Dialog>
+
           <Dialog open={deleteDialogOpen} onClose={closeDeleteDialog} maxWidth="xs" fullWidth>
             <DialogTitle>Подтверждение удаления</DialogTitle>
             <DialogContent>
@@ -871,13 +968,63 @@ function App() {
                     },
                   }}
                 />
-                <Button
-                  href={api.exportUrl("xlsx", params)}
-                  sx={{ alignSelf: { xs: "stretch", md: "center" }, whiteSpace: "nowrap" }}
-                >
-                  Скачать Excel
-                </Button>
               </Stack>
+              <Collapse in={filtersOpen} unmountOnExit>
+                <Paper
+                  variant="outlined"
+                  sx={{ mt: 1, p: { xs: 1.5, sm: 2 }, maxHeight: "70vh", overflowY: "auto" }}
+                >
+                  <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                      <Typography variant="h6">Фильтр товаров</Typography>
+                      <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
+                        <CloseIcon />
+                      </IconButton>
+                    </Stack>
+                    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(3, 1fr)" }, gap: 1.5 }}>
+                      <TextField label="Поиск по коду" value={draftFields.code} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })} />
+                      <TextField label="Поиск по артикулу" value={draftFields.article} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })} />
+                      <TextField label="Поиск по наименованию" value={draftFields.name} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })} />
+                    </Box>
+                    <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                      <FormControlLabel
+                        control={<Switch checked={draftFields.inStockOnly !== "false"} onChange={(event) => setDraftFields({ ...draftFields, inStockOnly: event.target.checked ? "true" : "false" })} />}
+                        label="Показывать только в наличии"
+                      />
+                      <FormControlLabel
+                        control={<Switch checked={draftFields.excludeYyy !== "false"} onChange={(event) => setDraftFields({ ...draftFields, excludeYyy: event.target.checked ? "true" : "false" })} />}
+                        label="Исключить категорию ЯЯЯ"
+                      />
+                    </Stack>
+                    {mainFilterEntries.map(({ key, label }) => (
+                      <Box key={key}>
+                        <Button fullWidth onClick={() => toggleFilterGroup(key)} sx={{ justifyContent: "space-between" }}>
+                          {label}
+                          <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
+                        </Button>
+                        <Collapse in={!!openFilterGroups[key]} unmountOnExit>
+                          {searchableFilterLabels.has(label) && (
+                            <TextField fullWidth size="small" label={`Поиск: ${label}`} value={filterValueSearch[key] ?? ""} onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))} sx={{ mt: 1 }} />
+                          )}
+                          <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
+                            {visibleFilterValues(key).map((value) => (
+                              <Chip key={value} clickable label={value} color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"} variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"} onClick={() => toggleFilter(key, value)} />
+                            ))}
+                            {visibleFilterValues(key).length === 0 && <Typography variant="body2" color="text.secondary">Значения не найдены</Typography>}
+                          </Stack>
+                        </Collapse>
+                      </Box>
+                    ))}
+                    <Button variant="outlined" onClick={openPropertyPicker}>Подобрать по характеристикам</Button>
+                    {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
+                    <Stack direction="row" spacing={1} flexWrap="wrap">
+                      <Button variant="contained" onClick={applyFilters}>Применить</Button>
+                      <Button onClick={resetFilters}>Сбросить</Button>
+                      <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
+                    </Stack>
+                  </Stack>
+                </Paper>
+              </Collapse>
             </Paper>
           )}
 
@@ -891,12 +1038,21 @@ function App() {
                       ? openLogs()
                       : value === "mappings"
                         ? openMappings()
-                        : openGeneralSettings()
+                        : value === "mail"
+                          ? openMailSettings()
+                          : value === "scenarios"
+                            ? openScenarios()
+                            : value === "analogs"
+                              ? openAnalogSettings()
+                            : openGeneralSettings()
                   }
                   sx={{ mb: 2 }}
                 >
                   <Tab value="settings" label="Общие" />
                   <Tab value="mappings" label="Сопоставления" />
+                  <Tab value="mail" label="Почта" />
+                  <Tab value="scenarios" label="Сценарии" />
+                  <Tab value="analogs" label="Подбор аналогов" />
                   <Tab value="logs" label="Логи" />
                 </Tabs>
                 {settingsTab === "settings" && (
@@ -997,6 +1153,20 @@ function App() {
                             setXmlServerForm({ ...xmlServerForm, xml_dir: e.target.value })
                           }
                         />
+                        <TextField
+                          label="Количество попыток подключения"
+                          type="number"
+                          value={xmlServerForm.connection_attempts}
+                          inputProps={{ min: 1, max: 10 }}
+                          onChange={(e) => setXmlServerForm({ ...xmlServerForm, connection_attempts: Number(e.target.value) })}
+                        />
+                        <TextField
+                          label="Задержка между попытками (секунды)"
+                          type="number"
+                          value={xmlServerForm.retry_delay_seconds}
+                          inputProps={{ min: 0, max: 60 }}
+                          onChange={(e) => setXmlServerForm({ ...xmlServerForm, retry_delay_seconds: Number(e.target.value) })}
+                        />
                         <Stack direction="row" gap={1} flexWrap="wrap">
                           <Button
                             variant="contained"
@@ -1075,6 +1245,99 @@ function App() {
                       <Typography sx={{ mt: 1 }}>Автозагрузка еще не выполнялась.</Typography>
                     )}
                   </Box>
+                )}
+                {settingsTab === "mail" && mailForm && (
+                  <Stack spacing={2}>
+                    <Typography variant="h6">Почта</Typography>
+                    <Typography>Статус подключения: {mailForm.connection_status === "connected" ? "Подключено" : mailForm.connection_status === "error" ? "Ошибка" : "Нет соединения"}</Typography>
+                    <Typography>Последнее успешное соединение: {mailForm.last_success_at ?? "—"}</Typography>
+                    <Typography>Последнее отправленное письмо: {mailForm.last_sent_at ?? "—"}</Typography>
+                    {mailForm.last_error && <Typography color="error">{mailForm.last_error}</Typography>}
+                    <TextField label="SMTP сервер" value={mailForm.smtp_host} onChange={(event) => setMailForm({ ...mailForm, smtp_host: event.target.value })} />
+                    <TextField label="SMTP порт" type="number" value={mailForm.smtp_port} onChange={(event) => setMailForm({ ...mailForm, smtp_port: Number(event.target.value) })} />
+                    <TextField select label="Шифрование" value={mailForm.encryption} onChange={(event) => setMailForm({ ...mailForm, encryption: event.target.value as MailSetting["encryption"] })}>
+                      <MenuItem value="none">Без шифрования</MenuItem><MenuItem value="starttls">STARTTLS</MenuItem><MenuItem value="ssl">SSL/TLS</MenuItem>
+                    </TextField>
+                    <TextField label="Логин" value={mailForm.username} onChange={(event) => setMailForm({ ...mailForm, username: event.target.value })} />
+                    <TextField label={mailForm.password_configured ? "Пароль (оставьте пустым, чтобы не менять)" : "Пароль"} type="password" value={mailForm.password ?? ""} onChange={(event) => setMailForm({ ...mailForm, password: event.target.value })} />
+                    <TextField label="Имя отправителя" value={mailForm.sender_name} onChange={(event) => setMailForm({ ...mailForm, sender_name: event.target.value })} />
+                    <TextField label="Email отправителя" value={mailForm.sender_email} onChange={(event) => setMailForm({ ...mailForm, sender_email: event.target.value })} />
+                    <Stack direction="row" gap={1} flexWrap="wrap">
+                      <Button variant="contained" onClick={async () => { const saved = await api.updateMailSettings(mailForm); setMailForm(saved); setMailMessage(saved.connection_status === "connected" ? "Настройки сохранены, подключение проверено." : saved.last_error ?? "Не удалось подключиться."); }}>Проверять соединение и сохранить</Button>
+                      <Button variant="outlined" onClick={() => setTestMailOpen(true)}>Тест уведомлений</Button>
+                    </Stack>
+                    {mailMessage && <Typography>{mailMessage}</Typography>}
+                  </Stack>
+                )}
+                {settingsTab === "scenarios" && (
+                  <Stack spacing={2}>
+                    <Typography variant="h6">Сценарии</Typography>
+                    {!selectedScenario && scenarioList.map((scenario) => (
+                      <Paper key={scenario.code} variant="outlined" onClick={() => openScenarioCard(scenario.code)} sx={{ p: 2, cursor: "pointer" }}>
+                        <Stack direction="row" alignItems="center" justifyContent="space-between">
+                          <Typography fontWeight={800}>{scenario.name}</Typography>
+                          <Switch checked={scenario.enabled} onClick={(event) => event.stopPropagation()} onChange={async (event) => { const updated = await api.toggleNotificationScenario(scenario.code, event.target.checked); setScenarioList((current) => current.map((item) => item.code === updated.code ? updated : item)); }} />
+                        </Stack>
+                      </Paper>
+                    ))}
+                    {selectedScenario === "monthly_promotion" && scenarioForm && <>
+                      <Button onClick={() => { setSelectedScenario(null); setScenarioForm(null); }}>← К списку сценариев</Button>
+                      <Typography variant="h6">Акция месяца</Typography>
+                      <TextField label="Время отправки" type="time" value={scenarioForm.send_time} onChange={(event) => setScenarioForm({ ...scenarioForm, send_time: event.target.value })} InputLabelProps={{ shrink: true }} />
+                      <Typography fontWeight={700}>Получатели</Typography>
+                      {scenarioForm.recipients.map((email, index) => (
+                        <Stack key={index} direction="row" gap={1}>
+                          <TextField fullWidth label={`Email ${index + 1}`} value={email} onChange={(event) => setScenarioForm({ ...scenarioForm, recipients: scenarioForm.recipients.map((item, itemIndex) => itemIndex === index ? event.target.value : item) })} />
+                          <Button color="error" onClick={() => setScenarioForm({ ...scenarioForm, recipients: scenarioForm.recipients.filter((_, itemIndex) => itemIndex !== index) })}>Удалить</Button>
+                        </Stack>
+                      ))}
+                      <Button variant="outlined" onClick={() => setScenarioForm({ ...scenarioForm, recipients: [...scenarioForm.recipients, ""] })}>Добавить получателя</Button>
+                      <Stack direction="row" gap={1} flexWrap="wrap">
+                        <Button variant="contained" onClick={async () => setScenarioForm(await api.updateMonthlyPromotionScenario(scenarioForm))}>Сохранить</Button>
+                        <Button variant="outlined" onClick={async () => setScenarioResult(await api.runMonthlyPromotion())}>Отправить сейчас</Button>
+                        <Button onClick={async () => setScenarioResult(await api.previewMonthlyPromotion())}>Предпросмотр</Button>
+                        <Button onClick={async () => { setHistoryOpen(true); await loadHistory(); }}>История уведомлений</Button>
+                      </Stack>
+                      {scenarioResult && <Typography>Статус: {scenarioResult.status}; изменений: {scenarioResult.changes}; писем: {scenarioResult.sent}</Typography>}
+                      {scenarioResult?.html && <Paper variant="outlined" sx={{ p: 2 }} dangerouslySetInnerHTML={{ __html: scenarioResult.html }} />}
+                    </>}
+                  </Stack>
+                )}
+                {settingsTab === "analogs" && analogSettings && (
+                  <Stack spacing={2}>
+                    <Typography variant="h6">Подбор аналогов</Typography>
+                    <Typography color="text.secondary">
+                      Порядок основных характеристик определяет их вес при расчёте похожести.
+                      Все остальные характеристики автоматически считаются второстепенными.
+                    </Typography>
+                    <Typography fontWeight={800}>Основные характеристики</Typography>
+                    <Stack spacing={1}>
+                      {analogSettings.primary_properties.map((property, index) => (
+                        <Paper key={property} variant="outlined" sx={{ p: 1 }}>
+                          <Stack direction="row" alignItems="center" gap={1}>
+                            <Typography sx={{ flex: 1 }}>{index + 1}. {property}</Typography>
+                            <Button size="small" disabled={index === 0} onClick={() => movePrimaryProperty(index, -1)}>Выше</Button>
+                            <Button size="small" disabled={index === analogSettings.primary_properties.length - 1} onClick={() => movePrimaryProperty(index, 1)}>Ниже</Button>
+                            <Button size="small" color="error" onClick={() => setAnalogSettings({ ...analogSettings, primary_properties: analogSettings.primary_properties.filter((item) => item !== property) })}>Убрать</Button>
+                          </Stack>
+                        </Paper>
+                      ))}
+                    </Stack>
+                    <TextField
+                      select
+                      label="Добавить характеристику"
+                      value=""
+                      onChange={(event) => setAnalogSettings({ ...analogSettings, primary_properties: [...analogSettings.primary_properties, event.target.value] })}
+                    >
+                      <MenuItem value="" disabled>Выберите характеристику</MenuItem>
+                      {analogSettings.available_properties.filter((item) => !analogSettings.primary_properties.includes(item)).map((property) => (
+                        <MenuItem key={property} value={property}>{property}</MenuItem>
+                      ))}
+                    </TextField>
+                    <TextField label="Минимальный процент похожести" type="number" inputProps={{ min: 0, max: 100 }} value={analogSettings.minimum_similarity} onChange={(event) => setAnalogSettings({ ...analogSettings, minimum_similarity: Number(event.target.value) })} />
+                    <TextField label="Максимальное количество аналогов" type="number" inputProps={{ min: 1, max: 50 }} value={analogSettings.maximum_analogs} onChange={(event) => setAnalogSettings({ ...analogSettings, maximum_analogs: Number(event.target.value) })} />
+                    <Button variant="contained" onClick={async () => setAnalogSettings(await api.updateAnalogSelectionSettings(analogSettings))}>Сохранить</Button>
+                  </Stack>
                 )}
                 {settingsTab === "mappings" && (
                   <Box>
@@ -1329,7 +1592,7 @@ function App() {
                   <TableBody>
                     {!loading && products.length === 0 && <TableRow><TableCell colSpan={7} align="center" sx={{ py: 8 }}><Typography variant="h6">{activeConditionCount || search.trim() ? "По заданным условиям товары не найдены" : "Каталог пока пуст"}</Typography><Typography color="text.secondary">{activeConditionCount || search.trim() ? "Попробуйте изменить или сбросить фильтры" : "Загрузите XML-файл, чтобы добавить товары"}</Typography></TableCell></TableRow>}
                     {products.map((p) => (
-                      <TableRow hover key={p.id} selected={selectedIds.includes(p.id)} onClick={() => api.product(p.id).then(setDetail)} sx={{ cursor: "pointer" }}>
+                      <TableRow hover key={p.id} selected={selectedIds.includes(p.id)} onClick={() => openProduct(p.id)} sx={{ cursor: "pointer" }}>
                         <TableCell padding="checkbox"><Checkbox aria-label={`Выбрать ${p.name}`} checked={selectedIds.includes(p.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelected(p.id)} /></TableCell>
                         <TableCell>
                           {p.images[0] ? (
@@ -1360,925 +1623,6 @@ function App() {
           )}
         </Container>
 
-        <Drawer anchor="left" open={filtersOpen} onClose={() => setFiltersOpen(false)} PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}>
-          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
-            <Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h6">Фильтр товаров</Typography><IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}><CloseIcon /></IconButton></Stack>
-            <TextField label="ID" type="number" value={draftFields.id} onChange={(e) => setDraftFields({ ...draftFields, id: e.target.value })} inputProps={{ min: 1 }} />
-            <TextField label="Название" value={draftFields.name} onChange={(e) => setDraftFields({ ...draftFields, name: e.target.value })} onKeyDown={applyFiltersOnEnter} />
-            <TextField label="Артикул" value={draftFields.article} onChange={(e) => setDraftFields({ ...draftFields, article: e.target.value })} onKeyDown={applyFiltersOnEnter} />
-            <TextField select label="Наличие" value={draftFields.availability} onChange={(e) => setDraftFields({ ...draftFields, availability: e.target.value })}><MenuItem value="all">Все</MenuItem><MenuItem value="in_stock">В наличии</MenuItem><MenuItem value="out_of_stock">Нет в наличии</MenuItem></TextField>
-            <Stack direction="row" spacing={1}><TextField fullWidth label="Количество от" type="number" value={draftFields.quantityFrom} onChange={(e) => setDraftFields({ ...draftFields, quantityFrom: e.target.value })} /><TextField fullWidth label="Количество до" type="number" value={draftFields.quantityTo} onChange={(e) => setDraftFields({ ...draftFields, quantityTo: e.target.value })} /></Stack>
-            <Stack direction="row" spacing={1}><TextField fullWidth label="Цена от" type="number" value={draftFields.priceFrom} onChange={(e) => setDraftFields({ ...draftFields, priceFrom: e.target.value })} inputProps={{ min: 0 }} /><TextField fullWidth label="Цена до" type="number" value={draftFields.priceTo} onChange={(e) => setDraftFields({ ...draftFields, priceTo: e.target.value })} inputProps={{ min: 0 }} /></Stack>
-            <Divider />
-            {Object.entries(filterLabels).map(([key, label]) => <Box key={key}><Button fullWidth onClick={() => toggleFilterGroup(key)} sx={{ justifyContent: "space-between" }}>{label}<span>{openFilterGroups[key] ? "−" : "+"}</span></Button><Collapse in={!!openFilterGroups[key]} unmountOnExit><Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>{(filters[key] ?? []).slice(0, 100).map((value) => <Chip key={value} clickable label={value} color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"} variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"} onClick={() => toggleFilter(key, value)} />)}</Stack></Collapse></Box>)}
-            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
-            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}><Button variant="contained" onClick={applyFilters}>Применить</Button><Button onClick={resetFilters}>Сбросить</Button><Button onClick={() => setFiltersOpen(false)}>Закрыть</Button></Stack>
-          </Stack>
-        </Drawer>
-        <Drawer
-          anchor="left"
-          open={filtersOpen}
-          onClose={() => setFiltersOpen(false)}
-          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
-        >
-          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Фильтр товаров</Typography>
-              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
-                <CloseIcon />
-              </IconButton>
-            </Stack>
-            <TextField
-              label="Название"
-              value={draftFields.name}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
-            />
-            <TextField
-              select
-              label="Наличие"
-              value={draftFields.availability}
-              onChange={(event) => setDraftFields({ ...draftFields, availability: event.target.value })}
-            >
-              <MenuItem value="all">Все</MenuItem>
-              <MenuItem value="in_stock">В наличии</MenuItem>
-              <MenuItem value="out_of_stock">Нет в наличии</MenuItem>
-            </TextField>
-            <Stack direction="row" spacing={1}>
-              <TextField fullWidth label="Количество от" type="number" value={draftFields.quantityFrom} onChange={(event) => setDraftFields({ ...draftFields, quantityFrom: event.target.value })} />
-              <TextField fullWidth label="Количество до" type="number" value={draftFields.quantityTo} onChange={(event) => setDraftFields({ ...draftFields, quantityTo: event.target.value })} />
-            </Stack>
-            <Stack direction="row" spacing={1}>
-              <TextField fullWidth label="Цена от" type="number" value={draftFields.priceFrom} onChange={(event) => setDraftFields({ ...draftFields, priceFrom: event.target.value })} inputProps={{ min: 0 }} />
-              <TextField fullWidth label="Цена до" type="number" value={draftFields.priceTo} onChange={(event) => setDraftFields({ ...draftFields, priceTo: event.target.value })} inputProps={{ min: 0 }} />
-            </Stack>
-            <Divider />
-            {Object.entries(filterLabels).map(([key, label]) => (
-              <Box key={key}>
-                <Button
-                  fullWidth
-                  onClick={() => toggleFilterGroup(key)}
-                  sx={{ justifyContent: "space-between" }}
-                >
-                  {label}
-                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
-                </Button>
-                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
-                  {searchableFilterLabels.has(label) && (
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label={`Поиск: ${label}`}
-                      value={filterValueSearch[key] ?? ""}
-                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
-                      sx={{ mt: 1 }}
-                    />
-                  )}
-                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                    {visibleFilterValues(key).map((value) => (
-                      <Chip
-                        key={value}
-                        clickable
-                        label={value}
-                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                        onClick={() => toggleFilter(key, value)}
-                      />
-                    ))}
-                    {visibleFilterValues(key).length === 0 && (
-                      <Typography variant="body2" color="text.secondary">
-                        Значения не найдены
-                      </Typography>
-                    )}
-                  </Stack>
-                </Collapse>
-              </Box>
-            ))}
-            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
-            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
-              <Button variant="contained" onClick={applyFilters}>Применить</Button>
-              <Button onClick={resetFilters}>Сбросить</Button>
-              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
-            </Stack>
-          </Stack>
-        </Drawer>
-        <Drawer
-          anchor="left"
-          open={filtersOpen}
-          onClose={() => setFiltersOpen(false)}
-          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
-        >
-          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Фильтр товаров</Typography>
-              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
-                <CloseIcon />
-              </IconButton>
-            </Stack>
-            <TextField
-              label="Название"
-              value={draftFields.name}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
-            />
-            <TextField
-              select
-              label="Наличие"
-              value={draftFields.availability}
-              onChange={(event) => setDraftFields({ ...draftFields, availability: event.target.value })}
-            >
-              <MenuItem value="all">Все</MenuItem>
-              <MenuItem value="in_stock">В наличии</MenuItem>
-              <MenuItem value="out_of_stock">Нет в наличии</MenuItem>
-            </TextField>
-            <Stack direction="row" spacing={1}>
-              <TextField fullWidth label="Количество от" type="number" value={draftFields.quantityFrom} onChange={(event) => setDraftFields({ ...draftFields, quantityFrom: event.target.value })} />
-              <TextField fullWidth label="Количество до" type="number" value={draftFields.quantityTo} onChange={(event) => setDraftFields({ ...draftFields, quantityTo: event.target.value })} />
-            </Stack>
-            <Stack direction="row" spacing={1}>
-              <TextField fullWidth label="Цена от" type="number" value={draftFields.priceFrom} onChange={(event) => setDraftFields({ ...draftFields, priceFrom: event.target.value })} inputProps={{ min: 0 }} />
-              <TextField fullWidth label="Цена до" type="number" value={draftFields.priceTo} onChange={(event) => setDraftFields({ ...draftFields, priceTo: event.target.value })} inputProps={{ min: 0 }} />
-            </Stack>
-            <Divider />
-            {Object.entries(filterLabels).map(([key, label]) => (
-              <Box key={key}>
-                <Button
-                  fullWidth
-                  onClick={() => toggleFilterGroup(key)}
-                  sx={{ justifyContent: "space-between" }}
-                >
-                  {label}
-                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
-                </Button>
-                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
-                  {searchableFilterLabels.has(label) && (
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label={`Поиск: ${label}`}
-                      value={filterValueSearch[key] ?? ""}
-                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
-                      sx={{ mt: 1 }}
-                    />
-                  )}
-                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                    {visibleFilterValues(key).map((value) => (
-                      <Chip
-                        key={value}
-                        clickable
-                        label={value}
-                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                        onClick={() => toggleFilter(key, value)}
-                      />
-                    ))}
-                    {visibleFilterValues(key).length === 0 && (
-                      <Typography variant="body2" color="text.secondary">
-                        Значения не найдены
-                      </Typography>
-                    )}
-                  </Stack>
-                </Collapse>
-              </Box>
-            ))}
-            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
-            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
-              <Button variant="contained" onClick={applyFilters}>Применить</Button>
-              <Button onClick={resetFilters}>Сбросить</Button>
-              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
-            </Stack>
-          </Stack>
-        </Drawer>
-        <Drawer
-          anchor="left"
-          open={filtersOpen}
-          onClose={() => setFiltersOpen(false)}
-          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
-        >
-          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Фильтр товаров</Typography>
-              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
-                <CloseIcon />
-              </IconButton>
-            </Stack>
-            <TextField
-              label="Название"
-              value={draftFields.name}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
-            />
-            <TextField
-              select
-              label="Наличие"
-              value={draftFields.availability}
-              onChange={(event) => setDraftFields({ ...draftFields, availability: event.target.value })}
-            >
-              <MenuItem value="all">Все</MenuItem>
-              <MenuItem value="in_stock">В наличии</MenuItem>
-              <MenuItem value="out_of_stock">Нет в наличии</MenuItem>
-            </TextField>
-            <Stack direction="row" spacing={1}>
-              <TextField fullWidth label="Количество от" type="number" value={draftFields.quantityFrom} onChange={(event) => setDraftFields({ ...draftFields, quantityFrom: event.target.value })} />
-              <TextField fullWidth label="Количество до" type="number" value={draftFields.quantityTo} onChange={(event) => setDraftFields({ ...draftFields, quantityTo: event.target.value })} />
-            </Stack>
-            <Stack direction="row" spacing={1}>
-              <TextField fullWidth label="Цена от" type="number" value={draftFields.priceFrom} onChange={(event) => setDraftFields({ ...draftFields, priceFrom: event.target.value })} inputProps={{ min: 0 }} />
-              <TextField fullWidth label="Цена до" type="number" value={draftFields.priceTo} onChange={(event) => setDraftFields({ ...draftFields, priceTo: event.target.value })} inputProps={{ min: 0 }} />
-            </Stack>
-            <Divider />
-            {Object.entries(filterLabels).map(([key, label]) => (
-              <Box key={key}>
-                <Button
-                  fullWidth
-                  onClick={() => toggleFilterGroup(key)}
-                  sx={{ justifyContent: "space-between" }}
-                >
-                  {label}
-                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
-                </Button>
-                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
-                  {searchableFilterLabels.has(label) && (
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label={`Поиск: ${label}`}
-                      value={filterValueSearch[key] ?? ""}
-                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
-                      sx={{ mt: 1 }}
-                    />
-                  )}
-                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                    {visibleFilterValues(key).map((value) => (
-                      <Chip
-                        key={value}
-                        clickable
-                        label={value}
-                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                        onClick={() => toggleFilter(key, value)}
-                      />
-                    ))}
-                    {visibleFilterValues(key).length === 0 && (
-                      <Typography variant="body2" color="text.secondary">
-                        Значения не найдены
-                      </Typography>
-                    )}
-                  </Stack>
-                </Collapse>
-              </Box>
-            ))}
-            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
-            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
-              <Button variant="contained" onClick={applyFilters}>Применить</Button>
-              <Button onClick={resetFilters}>Сбросить</Button>
-              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
-            </Stack>
-          </Stack>
-        </Drawer>
-        <Drawer
-          anchor="left"
-          open={filtersOpen}
-          onClose={() => setFiltersOpen(false)}
-          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
-        >
-          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Фильтр товаров</Typography>
-              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
-                <CloseIcon />
-              </IconButton>
-            </Stack>
-            <TextField
-              label="Название"
-              value={draftFields.name}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
-            />
-            <TextField
-              select
-              label="Наличие"
-              value={draftFields.availability}
-              onChange={(event) => setDraftFields({ ...draftFields, availability: event.target.value })}
-            >
-              <MenuItem value="all">Все</MenuItem>
-              <MenuItem value="in_stock">В наличии</MenuItem>
-              <MenuItem value="out_of_stock">Нет в наличии</MenuItem>
-            </TextField>
-            <Stack direction="row" spacing={1}>
-              <TextField fullWidth label="Количество от" type="number" value={draftFields.quantityFrom} onChange={(event) => setDraftFields({ ...draftFields, quantityFrom: event.target.value })} />
-              <TextField fullWidth label="Количество до" type="number" value={draftFields.quantityTo} onChange={(event) => setDraftFields({ ...draftFields, quantityTo: event.target.value })} />
-            </Stack>
-            <Stack direction="row" spacing={1}>
-              <TextField fullWidth label="Цена от" type="number" value={draftFields.priceFrom} onChange={(event) => setDraftFields({ ...draftFields, priceFrom: event.target.value })} inputProps={{ min: 0 }} />
-              <TextField fullWidth label="Цена до" type="number" value={draftFields.priceTo} onChange={(event) => setDraftFields({ ...draftFields, priceTo: event.target.value })} inputProps={{ min: 0 }} />
-            </Stack>
-            <Divider />
-            {Object.entries(filterLabels).map(([key, label]) => (
-              <Box key={key}>
-                <Button
-                  fullWidth
-                  onClick={() => toggleFilterGroup(key)}
-                  sx={{ justifyContent: "space-between" }}
-                >
-                  {label}
-                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
-                </Button>
-                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
-                  {searchableFilterLabels.has(label) && (
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label={`Поиск: ${label}`}
-                      value={filterValueSearch[key] ?? ""}
-                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
-                      sx={{ mt: 1 }}
-                    />
-                  )}
-                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                    {visibleFilterValues(key).map((value) => (
-                      <Chip
-                        key={value}
-                        clickable
-                        label={value}
-                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                        onClick={() => toggleFilter(key, value)}
-                      />
-                    ))}
-                    {visibleFilterValues(key).length === 0 && (
-                      <Typography variant="body2" color="text.secondary">
-                        Значения не найдены
-                      </Typography>
-                    )}
-                  </Stack>
-                </Collapse>
-              </Box>
-            ))}
-            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
-            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
-              <Button variant="contained" onClick={applyFilters}>Применить</Button>
-              <Button onClick={resetFilters}>Сбросить</Button>
-              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
-            </Stack>
-          </Stack>
-        </Drawer>
-        <Drawer
-          anchor="left"
-          open={filtersOpen}
-          onClose={() => setFiltersOpen(false)}
-          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
-        >
-          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Фильтр товаров</Typography>
-              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
-                <CloseIcon />
-              </IconButton>
-            </Stack>
-            <TextField
-              label="Название"
-              value={draftFields.name}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
-            />
-            <TextField
-              select
-              label="Наличие"
-              value={draftFields.availability}
-              onChange={(event) => setDraftFields({ ...draftFields, availability: event.target.value })}
-            >
-              <MenuItem value="all">Все</MenuItem>
-              <MenuItem value="in_stock">В наличии</MenuItem>
-              <MenuItem value="out_of_stock">Нет в наличии</MenuItem>
-            </TextField>
-            <Stack direction="row" spacing={1}>
-              <TextField fullWidth label="Количество от" type="number" value={draftFields.quantityFrom} onChange={(event) => setDraftFields({ ...draftFields, quantityFrom: event.target.value })} />
-              <TextField fullWidth label="Количество до" type="number" value={draftFields.quantityTo} onChange={(event) => setDraftFields({ ...draftFields, quantityTo: event.target.value })} />
-            </Stack>
-            <Stack direction="row" spacing={1}>
-              <TextField fullWidth label="Цена от" type="number" value={draftFields.priceFrom} onChange={(event) => setDraftFields({ ...draftFields, priceFrom: event.target.value })} inputProps={{ min: 0 }} />
-              <TextField fullWidth label="Цена до" type="number" value={draftFields.priceTo} onChange={(event) => setDraftFields({ ...draftFields, priceTo: event.target.value })} inputProps={{ min: 0 }} />
-            </Stack>
-            <Divider />
-            {Object.entries(filterLabels).map(([key, label]) => (
-              <Box key={key}>
-                <Button
-                  fullWidth
-                  onClick={() => toggleFilterGroup(key)}
-                  sx={{ justifyContent: "space-between" }}
-                >
-                  {label}
-                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
-                </Button>
-                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
-                  {searchableFilterLabels.has(label) && (
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label={`Поиск: ${label}`}
-                      value={filterValueSearch[key] ?? ""}
-                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
-                      sx={{ mt: 1 }}
-                    />
-                  )}
-                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                    {visibleFilterValues(key).map((value) => (
-                      <Chip
-                        key={value}
-                        clickable
-                        label={value}
-                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                        onClick={() => toggleFilter(key, value)}
-                      />
-                    ))}
-                    {visibleFilterValues(key).length === 0 && (
-                      <Typography variant="body2" color="text.secondary">
-                        Значения не найдены
-                      </Typography>
-                    )}
-                  </Stack>
-                </Collapse>
-              </Box>
-            ))}
-            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
-            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
-              <Button variant="contained" onClick={applyFilters}>Применить</Button>
-              <Button onClick={resetFilters}>Сбросить</Button>
-              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
-            </Stack>
-          </Stack>
-        </Drawer>
-        <Drawer
-          anchor="left"
-          open={filtersOpen}
-          onClose={() => setFiltersOpen(false)}
-          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
-        >
-          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Фильтр товаров</Typography>
-              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
-                <CloseIcon />
-              </IconButton>
-            </Stack>
-            {mainFilterEntries.map(({ key, label }) => (
-              <Box key={key}>
-                <Button
-                  fullWidth
-                  onClick={() => toggleFilterGroup(key)}
-                  sx={{ justifyContent: "space-between" }}
-                >
-                  {label}
-                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
-                </Button>
-                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
-                  {searchableFilterLabels.has(label) && (
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label={`Поиск: ${label}`}
-                      value={filterValueSearch[key] ?? ""}
-                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
-                      sx={{ mt: 1 }}
-                    />
-                  )}
-                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                    {visibleFilterValues(key).map((value) => (
-                      <Chip
-                        key={value}
-                        clickable
-                        label={value}
-                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                        onClick={() => toggleFilter(key, value)}
-                      />
-                    ))}
-                    {visibleFilterValues(key).length === 0 && (
-                      <Typography variant="body2" color="text.secondary">
-                        Значения не найдены
-                      </Typography>
-                    )}
-                  </Stack>
-                </Collapse>
-              </Box>
-            ))}
-            <Button variant="outlined" onClick={openPropertyPicker}>
-              Подобрать по свойствам
-            </Button>
-            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
-            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
-              <Button variant="contained" onClick={applyFilters}>Применить</Button>
-              <Button onClick={resetFilters}>Сбросить</Button>
-              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
-            </Stack>
-          </Stack>
-        </Drawer>
-        <Dialog
-          open={propertyPickerOpen}
-          onClose={() => setPropertyPickerOpen(false)}
-          fullWidth
-          maxWidth="md"
-        >
-          <DialogTitle>Подобрать по свойствам</DialogTitle>
-          <DialogContent>
-            <Stack spacing={2} sx={{ mt: 1 }}>
-              {propertyFilterEntries.length === 0 && (
-                <Typography color="text.secondary">
-                  Для товаров, выбранных основными фильтрами, дополнительные свойства не найдены.
-                </Typography>
-              )}
-              {propertyFilterEntries.map(({ key, label }) => (
-                <Box key={key}>
-                  <Typography fontWeight={800} sx={{ mb: 1 }}>{label}</Typography>
-                  <Stack direction="row" flexWrap="wrap" gap={1}>
-                    {visibleFilterValues(key, propertyOptions).map((value) => (
-                      <Chip
-                        key={value}
-                        clickable
-                        label={value}
-                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                        onClick={() => toggleFilter(key, value)}
-                      />
-                    ))}
-                  </Stack>
-                </Box>
-              ))}
-            </Stack>
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setPropertyPickerOpen(false)}>Готово</Button>
-          </DialogActions>
-        </Dialog>
-        <Drawer
-          anchor="left"
-          open={filtersOpen}
-          onClose={() => setFiltersOpen(false)}
-          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
-        >
-          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Фильтр товаров</Typography>
-              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
-                <CloseIcon />
-              </IconButton>
-            </Stack>
-            <TextField
-              label="Поиск по коду"
-              helperText="Можно указать несколько кодов через пробел или запятую"
-              value={draftFields.code}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
-            />
-            <TextField
-              label="Поиск по артикулу"
-              helperText="Можно указать несколько артикулов через пробел или запятую"
-              value={draftFields.article}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
-            />
-            <TextField
-              label="Поиск по наименованию"
-              value={draftFields.name}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
-            />
-            {mainFilterEntries.map(({ key, label }) => (
-              <Box key={key}>
-                <Button
-                  fullWidth
-                  onClick={() => toggleFilterGroup(key)}
-                  sx={{ justifyContent: "space-between" }}
-                >
-                  {label}
-                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
-                </Button>
-                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
-                  {searchableFilterLabels.has(label) && (
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label={`Поиск: ${label}`}
-                      value={filterValueSearch[key] ?? ""}
-                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
-                      sx={{ mt: 1 }}
-                    />
-                  )}
-                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                    {visibleFilterValues(key).map((value) => (
-                      <Chip
-                        key={value}
-                        clickable
-                        label={value}
-                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                        onClick={() => toggleFilter(key, value)}
-                      />
-                    ))}
-                    {visibleFilterValues(key).length === 0 && (
-                      <Typography variant="body2" color="text.secondary">
-                        Значения не найдены
-                      </Typography>
-                    )}
-                  </Stack>
-                </Collapse>
-              </Box>
-            ))}
-            <Button variant="outlined" onClick={openPropertyPicker}>
-              Подобрать по свойствам
-            </Button>
-            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
-            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
-              <Button variant="contained" onClick={applyFilters}>Применить</Button>
-              <Button onClick={resetFilters}>Сбросить</Button>
-              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
-            </Stack>
-          </Stack>
-        </Drawer>
-        <Dialog
-          open={propertyPickerOpen}
-          onClose={() => setPropertyPickerOpen(false)}
-          fullWidth
-          maxWidth="md"
-        >
-          <DialogTitle>Подобрать по свойствам</DialogTitle>
-          <DialogContent>
-            <Stack spacing={2} sx={{ mt: 1 }}>
-              {propertyFilterEntries.length === 0 && (
-                <Typography color="text.secondary">
-                  Для товаров, выбранных основными фильтрами, дополнительные свойства не найдены.
-                </Typography>
-              )}
-              {propertyFilterEntries.map(({ key, label }) => (
-                <Box key={key}>
-                  <Typography fontWeight={800} sx={{ mb: 1 }}>{label}</Typography>
-                  <Stack direction="row" flexWrap="wrap" gap={1}>
-                    {visibleFilterValues(key, propertyOptions).map((value) => (
-                      <Chip
-                        key={value}
-                        clickable
-                        label={value}
-                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                        onClick={() => toggleFilter(key, value)}
-                      />
-                    ))}
-                  </Stack>
-                </Box>
-              ))}
-            </Stack>
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setPropertyPickerOpen(false)}>Готово</Button>
-          </DialogActions>
-        </Dialog>
-        <Drawer
-          anchor="left"
-          open={filtersOpen}
-          onClose={() => setFiltersOpen(false)}
-          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
-        >
-          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Фильтр товаров</Typography>
-              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
-                <CloseIcon />
-              </IconButton>
-            </Stack>
-            <TextField
-              label="Поиск по коду"
-              helperText="Можно указать несколько кодов через пробел или запятую"
-              value={draftFields.code}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
-            />
-            <TextField
-              label="Поиск по артикулу"
-              helperText="Можно указать несколько артикулов через пробел или запятую"
-              value={draftFields.article}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
-            />
-            <TextField
-              label="Поиск по наименованию"
-              value={draftFields.name}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
-            />
-            <FormControlLabel
-              control={(
-                <Switch
-                  checked={draftFields.inStockOnly !== "false"}
-                  onChange={(event) => setDraftFields({
-                    ...draftFields,
-                    inStockOnly: event.target.checked ? "true" : "false",
-                  })}
-                />
-              )}
-              label="Показывать только в наличии"
-            />
-            {mainFilterEntries.map(({ key, label }) => (
-              <Box key={key}>
-                <Button
-                  fullWidth
-                  onClick={() => toggleFilterGroup(key)}
-                  sx={{ justifyContent: "space-between" }}
-                >
-                  {label}
-                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
-                </Button>
-                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
-                  {searchableFilterLabels.has(label) && (
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label={`Поиск: ${label}`}
-                      value={filterValueSearch[key] ?? ""}
-                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
-                      sx={{ mt: 1 }}
-                    />
-                  )}
-                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                    {visibleFilterValues(key).map((value) => (
-                      <Chip
-                        key={value}
-                        clickable
-                        label={value}
-                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                        onClick={() => toggleFilter(key, value)}
-                      />
-                    ))}
-                    {visibleFilterValues(key).length === 0 && (
-                      <Typography variant="body2" color="text.secondary">
-                        Значения не найдены
-                      </Typography>
-                    )}
-                  </Stack>
-                </Collapse>
-              </Box>
-            ))}
-            <Button variant="outlined" onClick={openPropertyPicker}>
-              Подобрать по характеристикам
-            </Button>
-            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
-            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
-              <Button variant="contained" onClick={applyFilters}>Применить</Button>
-              <Button onClick={resetFilters}>Сбросить</Button>
-              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
-            </Stack>
-          </Stack>
-        </Drawer>
-        <Dialog
-          open={propertyPickerOpen}
-          onClose={() => setPropertyPickerOpen(false)}
-          fullWidth
-          maxWidth="md"
-        >
-          <DialogTitle>Подобрать по характеристикам</DialogTitle>
-          <DialogContent>
-            <Stack spacing={2} sx={{ mt: 1 }}>
-              {propertyFilterEntries.length === 0 && (
-                <Typography color="text.secondary">
-                  Для товаров, выбранных основными фильтрами, дополнительные свойства не найдены.
-                </Typography>
-              )}
-              {propertyFilterEntries.map(({ key, label }) => (
-                <Box key={key}>
-                  <Button
-                    fullWidth
-                    onClick={() => setOpenCharacteristicGroups((current) => ({
-                      ...current,
-                      [key]: !current[key],
-                    }))}
-                    sx={{ justifyContent: "space-between" }}
-                  >
-                    {label}
-                    <Box component="span" aria-hidden>
-                      {openCharacteristicGroups[key] ? "−" : "+"}
-                    </Box>
-                  </Button>
-                  <Collapse in={!!openCharacteristicGroups[key]} unmountOnExit>
-                    <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                      {visibleFilterValues(key, propertyOptions).map((value) => (
-                        <Chip
-                          key={value}
-                          clickable
-                          label={value}
-                          color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                          variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                          onClick={() => toggleFilter(key, value)}
-                        />
-                      ))}
-                    </Stack>
-                  </Collapse>
-                </Box>
-              ))}
-            </Stack>
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setPropertyPickerOpen(false)}>Готово</Button>
-          </DialogActions>
-        </Dialog>
-        <Drawer
-          anchor="left"
-          open={filtersOpen}
-          onClose={() => setFiltersOpen(false)}
-          PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 3 } }}
-        >
-          <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Фильтр товаров</Typography>
-              <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
-                <CloseIcon />
-              </IconButton>
-            </Stack>
-            <TextField
-              label="Поиск по коду"
-              helperText="Можно указать несколько кодов через пробел или запятую"
-              value={draftFields.code}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })}
-            />
-            <TextField
-              label="Поиск по артикулу"
-              helperText="Можно указать несколько артикулов через пробел или запятую"
-              value={draftFields.article}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })}
-            />
-            <TextField
-              label="Поиск по наименованию"
-              value={draftFields.name}
-              onKeyDown={applyFiltersOnEnter}
-              onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })}
-            />
-            <FormControlLabel
-              control={(
-                <Switch
-                  checked={draftFields.inStockOnly !== "false"}
-                  onChange={(event) => setDraftFields({
-                    ...draftFields,
-                    inStockOnly: event.target.checked ? "true" : "false",
-                  })}
-                />
-              )}
-              label="Показывать только в наличии"
-            />
-            {mainFilterEntries.map(({ key, label }) => (
-              <Box key={key}>
-                <Button
-                  fullWidth
-                  onClick={() => toggleFilterGroup(key)}
-                  sx={{ justifyContent: "space-between" }}
-                >
-                  {label}
-                  <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
-                </Button>
-                <Collapse in={!!openFilterGroups[key]} unmountOnExit>
-                  {searchableFilterLabels.has(label) && (
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label={`Поиск: ${label}`}
-                      value={filterValueSearch[key] ?? ""}
-                      onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))}
-                      sx={{ mt: 1 }}
-                    />
-                  )}
-                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                    {visibleFilterValues(key).map((value) => (
-                      <Chip
-                        key={value}
-                        clickable
-                        label={value}
-                        color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                        variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                        onClick={() => toggleFilter(key, value)}
-                      />
-                    ))}
-                    {visibleFilterValues(key).length === 0 && (
-                      <Typography variant="body2" color="text.secondary">
-                        Значения не найдены
-                      </Typography>
-                    )}
-                  </Stack>
-                </Collapse>
-              </Box>
-            ))}
-            <Button variant="outlined" onClick={openPropertyPicker}>
-              Подобрать по характеристикам
-            </Button>
-            {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
-            <Stack direction="row" spacing={1} sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", py: 1 }}>
-              <Button variant="contained" onClick={applyFilters}>Применить</Button>
-              <Button onClick={resetFilters}>Сбросить</Button>
-              <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
-            </Stack>
-          </Stack>
-        </Drawer>
         <Dialog
           open={propertyPickerOpen}
           onClose={() => setPropertyPickerOpen(false)}
@@ -2333,7 +1677,7 @@ function App() {
         <Drawer
           anchor="right"
           open={!!detail}
-          onClose={() => setDetail(null)}
+          onClose={() => { setDetail(null); setDynamicAnalogs([]); setAnalogReason(null); }}
           PaperProps={{
             sx: { borderTopLeftRadius: 28, borderBottomLeftRadius: 28 },
           }}
@@ -2509,20 +1853,63 @@ function App() {
                     ))}
                   </>
                 )}
-                {detail.analogs.length > 0 && (
-                  <>
-                    <Typography fontWeight={800}>Аналоги</Typography>
-                    {detail.analogs.map((a) => (
-                      <Typography key={a.code}>
-                        {a.code} {a.name}
-                      </Typography>
-                    ))}
-                  </>
-                )}
+                <>
+                  <Typography fontWeight={800}>Аналоги</Typography>
+                  {analogsLoading && <LinearProgress />}
+                  {!analogsLoading && dynamicAnalogs.length === 0 && (
+                    <Typography color="text.secondary">Подходящие аналоги не найдены</Typography>
+                  )}
+                  {dynamicAnalogs.length > 0 && (
+                    <Stack direction="row" gap={1.5} sx={{ overflowX: "auto", pb: 1 }}>
+                      {dynamicAnalogs.map((analog) => (
+                        <Card key={analog.id} variant="outlined" sx={{ minWidth: 210, maxWidth: 210, flex: "0 0 auto" }}>
+                          <CardContent>
+                            <Box
+                              onClick={() => openProduct(analog.id)}
+                              sx={{ cursor: "pointer" }}
+                            >
+                              {analog.image_url ? (
+                                <Box component="img" src={analog.image_url} alt={analog.name} sx={{ width: "100%", height: 110, objectFit: "contain", bgcolor: "#f0f9ff", borderRadius: 2 }} />
+                              ) : (
+                                <Box sx={{ height: 110, display: "flex", alignItems: "center", justifyContent: "center", bgcolor: "#f0f9ff", borderRadius: 2 }}>Нет фото</Box>
+                              )}
+                              <Typography variant="caption" color="text.secondary">{analog.article ?? analog.code}</Typography>
+                              <Typography fontWeight={700} sx={{ minHeight: 48 }}>{analog.name}</Typography>
+                              <Typography color="primary" fontWeight={800}>{analog.similarity}% совпадения</Typography>
+                              <Typography>{analog.retail_price != null ? `${analog.retail_price} руб.` : "Цена не указана"}</Typography>
+                            </Box>
+                            <Button size="small" sx={{ mt: 1 }} onClick={() => setAnalogReason(analog)}>Почему выбран</Button>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </Stack>
+                  )}
+                </>
               </Stack>
             )}
           </Box>
         </Drawer>
+        <Dialog open={!!analogReason} onClose={() => setAnalogReason(null)} fullWidth maxWidth="sm">
+          <DialogTitle>Почему выбран аналог</DialogTitle>
+          <DialogContent>
+            {analogReason && <Stack spacing={2} sx={{ pt: 1 }}>
+              <Typography fontWeight={800}>{analogReason.name} — {analogReason.similarity}%</Typography>
+              <Box>
+                <Typography fontWeight={800}>Совпало</Typography>
+                {analogReason.matched.length ? analogReason.matched.map((item) => (
+                  <Typography key={item.name}>• <Box component="span" fontWeight={700}>{item.name}:</Box> {item.original_value} | {item.analog_value}</Typography>
+                )) : <Typography color="text.secondary">Нет совпавших характеристик</Typography>}
+              </Box>
+              <Box>
+                <Typography fontWeight={800}>Не совпало</Typography>
+                {analogReason.unmatched.length ? analogReason.unmatched.map((item) => (
+                  <Typography key={item.name}>• <Box component="span" fontWeight={700}>{item.name}:</Box> {item.original_value} | {item.analog_value}</Typography>
+                )) : <Typography color="text.secondary">Все характеристики совпали</Typography>}
+              </Box>
+            </Stack>}
+          </DialogContent>
+          <DialogActions><Button onClick={() => setAnalogReason(null)}>Закрыть</Button></DialogActions>
+        </Dialog>
         <Dialog
           open={productTypeDialogOpen}
           onClose={() => setProductTypeDialogOpen(false)}
