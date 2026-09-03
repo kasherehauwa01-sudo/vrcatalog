@@ -49,8 +49,14 @@ export type DynamicAnalog = {
   similarity: number;
   retail_price?: number;
   image_url?: string;
-  matched: string[];
-  unmatched: string[];
+  matched: AnalogCharacteristicComparison[];
+  unmatched: AnalogCharacteristicComparison[];
+};
+
+export type AnalogCharacteristicComparison = {
+  name: string;
+  original_value: string;
+  analog_value: string;
 };
 
 export type AnalogSelectionSetting = {

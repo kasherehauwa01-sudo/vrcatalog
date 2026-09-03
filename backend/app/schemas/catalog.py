@@ -31,6 +31,12 @@ class AnalogOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AnalogCharacteristicComparisonOut(BaseModel):
+    name: str
+    original_value: str
+    analog_value: str
+
+
 class DynamicAnalogOut(BaseModel):
     id: int
     code: str
@@ -39,8 +45,8 @@ class DynamicAnalogOut(BaseModel):
     similarity: int
     retail_price: float | None
     image_url: str | None
-    matched: list[str]
-    unmatched: list[str]
+    matched: list[AnalogCharacteristicComparisonOut]
+    unmatched: list[AnalogCharacteristicComparisonOut]
 
 
 class AnalogSelectionSettingIn(BaseModel):

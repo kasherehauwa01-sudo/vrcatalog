@@ -28,6 +28,10 @@ def _normalized(value: object) -> str:
     return " ".join(str(value or "").replace("\xa0", " ").split()).casefold()
 
 
+def _display_value(value: object) -> str:
+    return " ".join(str(value or "").replace("\xa0", " ").split())
+
+
 def _alphabetical_name(product: Product) -> tuple[str, str]:
     """Возвращает стабильный ключ русской сортировки, размещая «ё» рядом с «е»."""
     normalized = _normalized(product.name)
@@ -83,17 +87,17 @@ def available_characteristics(db: Session) -> list[str]:
     return sorted(set(BUILTIN_CHARACTERISTICS) | set(property_names), key=str.casefold)
 
 
-def _characteristics(product: Product) -> dict[str, tuple[str, str]]:
-    result: dict[str, tuple[str, str]] = {}
+def _characteristics(product: Product) -> dict[str, tuple[str, str, str]]:
+    result: dict[str, tuple[str, str, str]] = {}
     for label, field in BUILTIN_CHARACTERISTICS.items():
         value = getattr(product, field)
         if _normalized(value):
-            result[_normalized(label)] = (label, _normalized(value))
+            result[_normalized(label)] = (label, _normalized(value), _display_value(value))
     for prop in product.properties:
         name = " ".join(prop.name.split())
         value = _normalized(prop.value)
         if name and value and name.casefold() not in EXCLUDED_CHARACTERISTICS:
-            result[_normalized(name)] = (name, value)
+            result[_normalized(name)] = (name, value, _display_value(prop.value))
     return result
 
 
@@ -101,8 +105,8 @@ def _characteristics(product: Product) -> dict[str, tuple[str, str]]:
 class ScoredAnalog:
     product: Product
     similarity: int
-    matched: list[str]
-    unmatched: list[str]
+    matched: list[dict[str, str]]
+    unmatched: list[dict[str, str]]
 
 
 def _score(source: Product, candidate: Product, primary: list[str]) -> ScoredAnalog:
@@ -110,9 +114,9 @@ def _score(source: Product, candidate: Product, primary: list[str]) -> ScoredAna
     candidate_values = _characteristics(candidate)
     priorities = {_normalized(name): index for index, name in enumerate(primary)}
     total_weight = matched_weight = 0
-    matched: list[str] = []
-    unmatched: list[str] = []
-    for key, (display_name, source_value) in source_values.items():
+    matched: list[dict[str, str]] = []
+    unmatched: list[dict[str, str]] = []
+    for key, (display_name, source_value, source_display_value) in source_values.items():
         candidate_value = candidate_values.get(key)
         # Отсутствующее значение у любой из карточек не является несовпадением:
         # характеристика полностью исключается из числителя и знаменателя.
@@ -123,9 +127,17 @@ def _score(source: Product, candidate: Product, primary: list[str]) -> ScoredAna
         total_weight += weight
         if candidate_value[1] == source_value:
             matched_weight += weight
-            matched.append(display_name)
+            matched.append({
+                "name": display_name,
+                "original_value": source_display_value,
+                "analog_value": candidate_value[2],
+            })
         else:
-            unmatched.append(display_name)
+            unmatched.append({
+                "name": display_name,
+                "original_value": source_display_value,
+                "analog_value": candidate_value[2],
+            })
     similarity = round(matched_weight * 100 / total_weight) if total_weight else 0
     return ScoredAnalog(candidate, similarity, matched, unmatched)
 

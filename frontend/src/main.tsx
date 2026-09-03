@@ -1896,11 +1896,15 @@ function App() {
               <Typography fontWeight={800}>{analogReason.name} — {analogReason.similarity}%</Typography>
               <Box>
                 <Typography fontWeight={800}>Совпало</Typography>
-                {analogReason.matched.length ? analogReason.matched.map((item) => <Typography key={item}>• {item}</Typography>) : <Typography color="text.secondary">Нет совпавших характеристик</Typography>}
+                {analogReason.matched.length ? analogReason.matched.map((item) => (
+                  <Typography key={item.name}>• <Box component="span" fontWeight={700}>{item.name}:</Box> {item.original_value} | {item.analog_value}</Typography>
+                )) : <Typography color="text.secondary">Нет совпавших характеристик</Typography>}
               </Box>
               <Box>
                 <Typography fontWeight={800}>Не совпало</Typography>
-                {analogReason.unmatched.length ? analogReason.unmatched.map((item) => <Typography key={item}>• {item}</Typography>) : <Typography color="text.secondary">Все характеристики совпали</Typography>}
+                {analogReason.unmatched.length ? analogReason.unmatched.map((item) => (
+                  <Typography key={item.name}>• <Box component="span" fontWeight={700}>{item.name}:</Box> {item.original_value} | {item.analog_value}</Typography>
+                )) : <Typography color="text.secondary">Все характеристики совпали</Typography>}
               </Box>
             </Stack>}
           </DialogContent>

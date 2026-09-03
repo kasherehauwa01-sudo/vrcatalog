@@ -48,7 +48,11 @@ class AnalogSelectionTests(unittest.TestCase):
 
         self.assertEqual([item.product.id for item in result], [candidate.id])
         self.assertEqual(result[0].similarity, 100)
-        self.assertIn("Материал", result[0].matched)
+        self.assertIn("Материал", [item["name"] for item in result[0].matched])
+        material = next(item for item in result[0].matched if item["name"] == "Материал")
+        self.assertEqual(material, {
+            "name": "Материал", "original_value": "Сталь", "analog_value": "Сталь",
+        })
 
     def test_different_category_is_never_considered(self):
         self.product("OTHER", "Сад", "Кастрюля", "Сталь", "Черный")
@@ -104,6 +108,10 @@ class AnalogSelectionTests(unittest.TestCase):
         scores = {item.product.id: item.similarity for item in result}
 
         self.assertGreater(scores[primary.id], scores[secondary.id])
+        material = next(item for item in result if item.product.id == secondary.id)
+        comparison = next(item for item in material.unmatched if item["name"] == "Материал")
+        self.assertEqual(comparison["original_value"], "Сталь")
+        self.assertEqual(comparison["analog_value"], "Алюминий")
 
     def test_missing_candidate_property_is_excluded_from_weighting(self):
         candidate = self.product("NO-COLOR", "Посуда", "Кастрюля", "Сталь", None)
@@ -113,8 +121,8 @@ class AnalogSelectionTests(unittest.TestCase):
 
         self.assertEqual(selected.product.id, candidate.id)
         self.assertEqual(selected.similarity, 100)
-        self.assertNotIn("Цвет", selected.matched)
-        self.assertNotIn("Цвет", selected.unmatched)
+        self.assertNotIn("Цвет", [item["name"] for item in selected.matched])
+        self.assertNotIn("Цвет", [item["name"] for item in selected.unmatched])
 
     def test_missing_source_property_is_excluded_from_weighting(self):
         self.source.material = None
@@ -125,8 +133,8 @@ class AnalogSelectionTests(unittest.TestCase):
 
         self.assertEqual(selected.product.id, candidate.id)
         self.assertEqual(selected.similarity, 100)
-        self.assertNotIn("Материал", selected.matched)
-        self.assertNotIn("Материал", selected.unmatched)
+        self.assertNotIn("Материал", [item["name"] for item in selected.matched])
+        self.assertNotIn("Материал", [item["name"] for item in selected.unmatched])
 
     def test_secondary_characteristic_also_contributes_to_score(self):
         candidate = self.product("SECONDARY", "Посуда", "Кастрюля", "Алюминий", "Белый")
@@ -138,7 +146,7 @@ class AnalogSelectionTests(unittest.TestCase):
         selected = next(item for item in result if item.product.id == candidate.id)
 
         self.assertGreater(selected.similarity, 0)
-        self.assertIn("Производитель", selected.matched)
+        self.assertIn("Производитель", [item["name"] for item in selected.matched])
 
     def test_many_matching_properties_produce_full_match(self):
         candidate = self.product("MANY", "Посуда", "Кастрюля", "Сталь", "Черный")
