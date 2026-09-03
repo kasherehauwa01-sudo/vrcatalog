@@ -14,6 +14,8 @@ import type {
   ScenarioRun,
   ScenarioSummary,
   NotificationHistory,
+  DynamicAnalog,
+  AnalogSelectionSetting,
 } from "../types/catalog";
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -47,6 +49,19 @@ export const api = {
   },
   async product(id: number): Promise<ProductDetail> {
     return request<ProductDetail>(`${API}/products/${id}`);
+  },
+  async productAnalogs(id: number): Promise<DynamicAnalog[]> {
+    return request<DynamicAnalog[]>(`${API}/products/${id}/dynamic-analogs`);
+  },
+  async analogSelectionSettings(): Promise<AnalogSelectionSetting> {
+    return request<AnalogSelectionSetting>(`${API}/analog-selection-settings`);
+  },
+  async updateAnalogSelectionSettings(payload: AnalogSelectionSetting): Promise<AnalogSelectionSetting> {
+    return request<AnalogSelectionSetting>(`${API}/analog-selection-settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
   },
   async deleteProducts(ids: number[]): Promise<{ deleted: number }> {
     return request<{ deleted: number }>(`${API}/products`, {

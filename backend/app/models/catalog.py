@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -21,6 +21,10 @@ class ImportRun(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        # Составной индекс ускоряет двухэтапный подбор по категории и виду товара.
+        Index("ix_products_section_product_type", "section", "product_type"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(128), index=True, unique=True)
@@ -220,6 +224,16 @@ class ProductTypeSetting(Base):
     code: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AnalogSelectionSetting(Base):
+    __tablename__ = "analog_selection_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    primary_properties_json: Mapped[str] = mapped_column(Text, default="[]")
+    minimum_similarity: Mapped[int] = mapped_column(Integer, default=60)
+    maximum_analogs: Mapped[int] = mapped_column(Integer, default=10)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class ProductTypeChange(Base):

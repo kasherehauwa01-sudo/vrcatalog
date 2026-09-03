@@ -24,7 +24,8 @@ from sqlalchemy.orm import Session, selectinload
 from app.db.session import get_db
 from app.importer.xml_importer import XMLCatalogImporter
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import AutoImportStateOut, FtpConnectionTestOut, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
 from app.services.catalog import decorate, list_filters, meta, product_query, paginated_products
 from app.services.logging import add_log
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
@@ -160,6 +161,47 @@ def product_detail(product_id: int, db: Session = Depends(get_db)):
     for stock in product.stocks:
         stock.warehouse_name = warehouse_names.get(stock.warehouse, stock.warehouse)
     return decorate(product, type_names)
+
+
+@router.get("/products/{product_id}/dynamic-analogs", response_model=list[DynamicAnalogOut])
+def product_dynamic_analogs(product_id: int, db: Session = Depends(get_db)):
+    analogs = find_product_analogs(db, product_id)
+    if analogs is None:
+        raise HTTPException(404, "Товар не найден")
+    result = []
+    for item in analogs:
+        product = item.product
+        retail = next((price.value for price in product.prices if "рознич" in price.price_type.lower()), product.prices[0].value if product.prices else None)
+        result.append({
+            "id": product.id, "code": product.code, "article": product.article,
+            "name": product.name, "similarity": item.similarity,
+            "retail_price": retail,
+            "image_url": product.images[0].image_url if product.images else None,
+            "matched": item.matched, "unmatched": item.unmatched,
+        })
+    return result
+
+
+@router.get("/analog-selection-settings", response_model=AnalogSelectionSettingOut)
+def analog_selection_settings(db: Session = Depends(get_db)):
+    setting = get_analog_settings(db)
+    return {
+        "primary_properties": primary_properties(setting),
+        "minimum_similarity": setting.minimum_similarity,
+        "maximum_analogs": setting.maximum_analogs,
+        "available_properties": available_characteristics(db),
+    }
+
+
+@router.put("/analog-selection-settings", response_model=AnalogSelectionSettingOut)
+def update_analog_selection_settings(payload: AnalogSelectionSettingIn, db: Session = Depends(get_db)):
+    setting = get_analog_settings(db)
+    setting.primary_properties_json = json.dumps(payload.primary_properties, ensure_ascii=False)
+    setting.minimum_similarity = payload.minimum_similarity
+    setting.maximum_analogs = payload.maximum_analogs
+    add_log(db, "analog_selection_settings_updated", json.dumps(payload.model_dump(), ensure_ascii=False))
+    db.commit()
+    return analog_selection_settings(db)
 
 
 @router.patch("/products/{product_id}/product-type")

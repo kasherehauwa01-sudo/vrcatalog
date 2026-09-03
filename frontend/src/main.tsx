@@ -65,6 +65,8 @@ import type {
   ScenarioRun,
   ScenarioSummary,
   NotificationHistory,
+  DynamicAnalog,
+  AnalogSelectionSetting,
 } from "./types/catalog";
 
 const theme = createTheme({
@@ -255,7 +257,7 @@ function App() {
   const [settingsPassword, setSettingsPassword] = useState("");
   const [settingsPasswordError, setSettingsPasswordError] = useState(false);
   const [settingsUnlocked, setSettingsUnlocked] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "mail" | "scenarios" | "logs">("settings");
+  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "mail" | "scenarios" | "analogs" | "logs">("settings");
   const [openSettingsGroups, setOpenSettingsGroups] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -297,6 +299,10 @@ function App() {
   const [testEmail, setTestEmail] = useState("");
   const [mailMessage, setMailMessage] = useState<string | null>(null);
   const [scenarioResult, setScenarioResult] = useState<ScenarioRun | null>(null);
+  const [analogSettings, setAnalogSettings] = useState<AnalogSelectionSetting | null>(null);
+  const [dynamicAnalogs, setDynamicAnalogs] = useState<DynamicAnalog[]>([]);
+  const [analogsLoading, setAnalogsLoading] = useState(false);
+  const [analogReason, setAnalogReason] = useState<DynamicAnalog | null>(null);
   const [queryVersion, setQueryVersion] = useState(0);
   const params = useMemo(() => new URLSearchParams(window.location.search), [queryVersion]);
   const replaceCatalogParams = (next: URLSearchParams) => {
@@ -620,6 +626,28 @@ function App() {
     setScenarioList(await api.notificationScenarios());
     setSelectedScenario(null);
     setScenarioForm(null);
+  };
+  const openAnalogSettings = async () => {
+    setSettingsTab("analogs");
+    setAnalogSettings(await api.analogSelectionSettings());
+  };
+  const openProduct = async (id: number) => {
+    setDynamicAnalogs([]);
+    setAnalogsLoading(true);
+    setDetail(await api.product(id));
+    try {
+      setDynamicAnalogs(await api.productAnalogs(id));
+    } finally {
+      setAnalogsLoading(false);
+    }
+  };
+  const movePrimaryProperty = (index: number, direction: -1 | 1) => {
+    if (!analogSettings) return;
+    const target = index + direction;
+    if (target < 0 || target >= analogSettings.primary_properties.length) return;
+    const values = [...analogSettings.primary_properties];
+    [values[index], values[target]] = [values[target], values[index]];
+    setAnalogSettings({ ...analogSettings, primary_properties: values });
   };
   const openScenarioCard = async (code: string) => {
     setSelectedScenario(code);
@@ -1014,6 +1042,8 @@ function App() {
                           ? openMailSettings()
                           : value === "scenarios"
                             ? openScenarios()
+                            : value === "analogs"
+                              ? openAnalogSettings()
                             : openGeneralSettings()
                   }
                   sx={{ mb: 2 }}
@@ -1022,6 +1052,7 @@ function App() {
                   <Tab value="mappings" label="Сопоставления" />
                   <Tab value="mail" label="Почта" />
                   <Tab value="scenarios" label="Сценарии" />
+                  <Tab value="analogs" label="Подбор аналогов" />
                   <Tab value="logs" label="Логи" />
                 </Tabs>
                 {settingsTab === "settings" && (
@@ -1270,6 +1301,42 @@ function App() {
                       {scenarioResult && <Typography>Статус: {scenarioResult.status}; изменений: {scenarioResult.changes}; писем: {scenarioResult.sent}</Typography>}
                       {scenarioResult?.html && <Paper variant="outlined" sx={{ p: 2 }} dangerouslySetInnerHTML={{ __html: scenarioResult.html }} />}
                     </>}
+                  </Stack>
+                )}
+                {settingsTab === "analogs" && analogSettings && (
+                  <Stack spacing={2}>
+                    <Typography variant="h6">Подбор аналогов</Typography>
+                    <Typography color="text.secondary">
+                      Порядок основных характеристик определяет их вес при расчёте похожести.
+                      Все остальные характеристики автоматически считаются второстепенными.
+                    </Typography>
+                    <Typography fontWeight={800}>Основные характеристики</Typography>
+                    <Stack spacing={1}>
+                      {analogSettings.primary_properties.map((property, index) => (
+                        <Paper key={property} variant="outlined" sx={{ p: 1 }}>
+                          <Stack direction="row" alignItems="center" gap={1}>
+                            <Typography sx={{ flex: 1 }}>{index + 1}. {property}</Typography>
+                            <Button size="small" disabled={index === 0} onClick={() => movePrimaryProperty(index, -1)}>Выше</Button>
+                            <Button size="small" disabled={index === analogSettings.primary_properties.length - 1} onClick={() => movePrimaryProperty(index, 1)}>Ниже</Button>
+                            <Button size="small" color="error" onClick={() => setAnalogSettings({ ...analogSettings, primary_properties: analogSettings.primary_properties.filter((item) => item !== property) })}>Убрать</Button>
+                          </Stack>
+                        </Paper>
+                      ))}
+                    </Stack>
+                    <TextField
+                      select
+                      label="Добавить характеристику"
+                      value=""
+                      onChange={(event) => setAnalogSettings({ ...analogSettings, primary_properties: [...analogSettings.primary_properties, event.target.value] })}
+                    >
+                      <MenuItem value="" disabled>Выберите характеристику</MenuItem>
+                      {analogSettings.available_properties.filter((item) => !analogSettings.primary_properties.includes(item)).map((property) => (
+                        <MenuItem key={property} value={property}>{property}</MenuItem>
+                      ))}
+                    </TextField>
+                    <TextField label="Минимальный процент похожести" type="number" inputProps={{ min: 0, max: 100 }} value={analogSettings.minimum_similarity} onChange={(event) => setAnalogSettings({ ...analogSettings, minimum_similarity: Number(event.target.value) })} />
+                    <TextField label="Максимальное количество аналогов" type="number" inputProps={{ min: 1, max: 50 }} value={analogSettings.maximum_analogs} onChange={(event) => setAnalogSettings({ ...analogSettings, maximum_analogs: Number(event.target.value) })} />
+                    <Button variant="contained" onClick={async () => setAnalogSettings(await api.updateAnalogSelectionSettings(analogSettings))}>Сохранить</Button>
                   </Stack>
                 )}
                 {settingsTab === "mappings" && (
@@ -1525,7 +1592,7 @@ function App() {
                   <TableBody>
                     {!loading && products.length === 0 && <TableRow><TableCell colSpan={7} align="center" sx={{ py: 8 }}><Typography variant="h6">{activeConditionCount || search.trim() ? "По заданным условиям товары не найдены" : "Каталог пока пуст"}</Typography><Typography color="text.secondary">{activeConditionCount || search.trim() ? "Попробуйте изменить или сбросить фильтры" : "Загрузите XML-файл, чтобы добавить товары"}</Typography></TableCell></TableRow>}
                     {products.map((p) => (
-                      <TableRow hover key={p.id} selected={selectedIds.includes(p.id)} onClick={() => api.product(p.id).then(setDetail)} sx={{ cursor: "pointer" }}>
+                      <TableRow hover key={p.id} selected={selectedIds.includes(p.id)} onClick={() => openProduct(p.id)} sx={{ cursor: "pointer" }}>
                         <TableCell padding="checkbox"><Checkbox aria-label={`Выбрать ${p.name}`} checked={selectedIds.includes(p.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelected(p.id)} /></TableCell>
                         <TableCell>
                           {p.images[0] ? (
@@ -1610,7 +1677,7 @@ function App() {
         <Drawer
           anchor="right"
           open={!!detail}
-          onClose={() => setDetail(null)}
+          onClose={() => { setDetail(null); setDynamicAnalogs([]); setAnalogReason(null); }}
           PaperProps={{
             sx: { borderTopLeftRadius: 28, borderBottomLeftRadius: 28 },
           }}
@@ -1786,20 +1853,59 @@ function App() {
                     ))}
                   </>
                 )}
-                {detail.analogs.length > 0 && (
-                  <>
-                    <Typography fontWeight={800}>Аналоги</Typography>
-                    {detail.analogs.map((a) => (
-                      <Typography key={a.code}>
-                        {a.code} {a.name}
-                      </Typography>
-                    ))}
-                  </>
-                )}
+                <>
+                  <Typography fontWeight={800}>Аналоги</Typography>
+                  {analogsLoading && <LinearProgress />}
+                  {!analogsLoading && dynamicAnalogs.length === 0 && (
+                    <Typography color="text.secondary">Подходящие аналоги не найдены</Typography>
+                  )}
+                  {dynamicAnalogs.length > 0 && (
+                    <Stack direction="row" gap={1.5} sx={{ overflowX: "auto", pb: 1 }}>
+                      {dynamicAnalogs.map((analog) => (
+                        <Card key={analog.id} variant="outlined" sx={{ minWidth: 210, maxWidth: 210, flex: "0 0 auto" }}>
+                          <CardContent>
+                            <Box
+                              onClick={() => openProduct(analog.id)}
+                              sx={{ cursor: "pointer" }}
+                            >
+                              {analog.image_url ? (
+                                <Box component="img" src={analog.image_url} alt={analog.name} sx={{ width: "100%", height: 110, objectFit: "contain", bgcolor: "#f0f9ff", borderRadius: 2 }} />
+                              ) : (
+                                <Box sx={{ height: 110, display: "flex", alignItems: "center", justifyContent: "center", bgcolor: "#f0f9ff", borderRadius: 2 }}>Нет фото</Box>
+                              )}
+                              <Typography variant="caption" color="text.secondary">{analog.article ?? analog.code}</Typography>
+                              <Typography fontWeight={700} sx={{ minHeight: 48 }}>{analog.name}</Typography>
+                              <Typography color="primary" fontWeight={800}>{analog.similarity}% совпадения</Typography>
+                              <Typography>{analog.retail_price != null ? `${analog.retail_price} руб.` : "Цена не указана"}</Typography>
+                            </Box>
+                            <Button size="small" sx={{ mt: 1 }} onClick={() => setAnalogReason(analog)}>Почему выбран</Button>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </Stack>
+                  )}
+                </>
               </Stack>
             )}
           </Box>
         </Drawer>
+        <Dialog open={!!analogReason} onClose={() => setAnalogReason(null)} fullWidth maxWidth="sm">
+          <DialogTitle>Почему выбран аналог</DialogTitle>
+          <DialogContent>
+            {analogReason && <Stack spacing={2} sx={{ pt: 1 }}>
+              <Typography fontWeight={800}>{analogReason.name} — {analogReason.similarity}%</Typography>
+              <Box>
+                <Typography fontWeight={800}>Совпало</Typography>
+                {analogReason.matched.length ? analogReason.matched.map((item) => <Typography key={item}>• {item}</Typography>) : <Typography color="text.secondary">Нет совпавших характеристик</Typography>}
+              </Box>
+              <Box>
+                <Typography fontWeight={800}>Не совпало</Typography>
+                {analogReason.unmatched.length ? analogReason.unmatched.map((item) => <Typography key={item}>• {item}</Typography>) : <Typography color="text.secondary">Все характеристики совпали</Typography>}
+              </Box>
+            </Stack>}
+          </DialogContent>
+          <DialogActions><Button onClick={() => setAnalogReason(null)}>Закрыть</Button></DialogActions>
+        </Dialog>
         <Dialog
           open={productTypeDialogOpen}
           onClose={() => setProductTypeDialogOpen(false)}

@@ -29,6 +29,28 @@ class AnalogOut(BaseModel):
     code: str | None
     name: str | None
     model_config = ConfigDict(from_attributes=True)
+
+
+class DynamicAnalogOut(BaseModel):
+    id: int
+    code: str
+    article: str | None
+    name: str
+    similarity: int
+    retail_price: float | None
+    image_url: str | None
+    matched: list[str]
+    unmatched: list[str]
+
+
+class AnalogSelectionSettingIn(BaseModel):
+    primary_properties: list[str]
+    minimum_similarity: int = Field(ge=0, le=100)
+    maximum_analogs: int = Field(ge=1, le=50)
+
+
+class AnalogSelectionSettingOut(AnalogSelectionSettingIn):
+    available_properties: list[str]
 class BarcodeOut(BaseModel):
     value: str
     model_config = ConfigDict(from_attributes=True)

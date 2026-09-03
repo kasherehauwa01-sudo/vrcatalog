@@ -40,6 +40,25 @@ export type ProductDetail = Product & {
   analogs: { code?: string; name?: string }[];
   barcodes: { value: string }[];
 };
+
+export type DynamicAnalog = {
+  id: number;
+  code: string;
+  article?: string;
+  name: string;
+  similarity: number;
+  retail_price?: number;
+  image_url?: string;
+  matched: string[];
+  unmatched: string[];
+};
+
+export type AnalogSelectionSetting = {
+  primary_properties: string[];
+  minimum_similarity: number;
+  maximum_analogs: number;
+  available_properties: string[];
+};
 export type Meta = {
   last_import?: string;
   product_count: number;
