@@ -206,6 +206,21 @@ class AnalogSelectionTests(unittest.TestCase):
 
         self.assertEqual([item.product.id for item in result], [winner.id])
 
+    def test_all_analogs_ignore_maximum_but_keep_minimum_similarity(self):
+        setting = self.db.query(AnalogSelectionSetting).one()
+        setting.minimum_similarity = 100
+        setting.maximum_analogs = 1
+        matches = [
+            self.product(f"MATCH-{index}", "Посуда", "Кастрюля", "Сталь", "Черный")
+            for index in range(3)
+        ]
+        self.product("LOW", "Посуда", "Кастрюля", "Сталь", "Белый")
+        self.db.commit()
+
+        result = find_product_analogs(self.db, self.source.id, include_all=True)
+
+        self.assertEqual({item.product.id for item in result}, {item.id for item in matches})
+
     def test_product_without_characteristics_returns_no_matches_above_zero(self):
         source = self.product("EMPTY", "Посуда", None)
         self.db.query(AnalogSelectionSetting).one().minimum_similarity = 1

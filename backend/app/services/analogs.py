@@ -152,7 +152,13 @@ def _score(source: Product, candidate: Product, primary: list[str]) -> ScoredAna
     return ScoredAnalog(candidate, similarity, matched, unmatched)
 
 
-def find_product_analogs(db: Session, product_id: int) -> list[ScoredAnalog] | None:
+def find_product_analogs(
+    db: Session,
+    product_id: int,
+    *,
+    include_all: bool = False,
+    maximum_analogs: int | None = None,
+) -> list[ScoredAnalog] | None:
     """Считает аналоги динамически, ограничивая выборку индексированной категорией."""
     source = db.query(Product).options(selectinload(Product.properties)).filter(Product.id == product_id).first()
     if source is None:
@@ -185,7 +191,9 @@ def find_product_analogs(db: Session, product_id: int) -> list[ScoredAnalog] | N
         *_alphabetical_name(item.product),
         item.product.id,
     )
-    selected = (sorted(same_type, key=key) + sorted(other_type, key=key))[:setting.maximum_analogs]
+    sorted_analogs = sorted(same_type, key=key) + sorted(other_type, key=key)
+    limit = maximum_analogs if maximum_analogs is not None else setting.maximum_analogs
+    selected = sorted_analogs if include_all else sorted_analogs[:limit]
     # Фильтр применяется к уже сформированному перечню: товар считается аналогом,
     # только если первое слово его наименования совпадает с первым словом оригинала.
     source_first_word = _first_name_word(source)

@@ -302,6 +302,9 @@ function App() {
   const [analogSettings, setAnalogSettings] = useState<AnalogSelectionSetting | null>(null);
   const [dynamicAnalogs, setDynamicAnalogs] = useState<DynamicAnalog[]>([]);
   const [analogsLoading, setAnalogsLoading] = useState(false);
+  const [allAnalogs, setAllAnalogs] = useState<DynamicAnalog[]>([]);
+  const [allAnalogsOpen, setAllAnalogsOpen] = useState(false);
+  const [allAnalogsLoading, setAllAnalogsLoading] = useState(false);
   const [analogReason, setAnalogReason] = useState<DynamicAnalog | null>(null);
   const [queryVersion, setQueryVersion] = useState(0);
   const params = useMemo(() => new URLSearchParams(window.location.search), [queryVersion]);
@@ -632,6 +635,7 @@ function App() {
     setAnalogSettings(await api.analogSelectionSettings());
   };
   const openProduct = async (id: number) => {
+    setAllAnalogsOpen(false);
     setDynamicAnalogs([]);
     setAnalogsLoading(true);
     setDetail(await api.product(id));
@@ -639,6 +643,17 @@ function App() {
       setDynamicAnalogs(await api.productAnalogs(id));
     } finally {
       setAnalogsLoading(false);
+    }
+  };
+  const openAllAnalogs = async () => {
+    if (!detail) return;
+    setAllAnalogs([]);
+    setAllAnalogsOpen(true);
+    setAllAnalogsLoading(true);
+    try {
+      setAllAnalogs(await api.productAnalogs(detail.id, true));
+    } finally {
+      setAllAnalogsLoading(false);
     }
   };
   const movePrimaryProperty = (index: number, direction: -1 | 1) => {
@@ -1856,7 +1871,12 @@ function App() {
                   </>
                 )}
                 <>
-                  <Typography fontWeight={800}>Аналоги</Typography>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Typography fontWeight={800}>Аналоги</Typography>
+                    {!analogsLoading && (
+                      <Button variant="text" size="small" onClick={openAllAnalogs}>Смотреть все</Button>
+                    )}
+                  </Stack>
                   {analogsLoading && <LinearProgress />}
                   {!analogsLoading && dynamicAnalogs.length === 0 && (
                     <Typography color="text.secondary">Подходящие аналоги не найдены</Typography>
@@ -1891,6 +1911,40 @@ function App() {
             )}
           </Box>
         </Drawer>
+        <Dialog open={allAnalogsOpen} onClose={() => setAllAnalogsOpen(false)} fullWidth maxWidth="lg">
+          <DialogTitle>Все аналоги</DialogTitle>
+          <DialogContent>
+            {allAnalogsLoading && <LinearProgress />}
+            {!allAnalogsLoading && allAnalogs.length === 0 && (
+              <Typography color="text.secondary" sx={{ pt: 1 }}>Подходящие аналоги не найдены</Typography>
+            )}
+            {allAnalogs.length > 0 && (
+              <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 1.5, pt: 1 }}>
+                {allAnalogs.map((analog) => (
+                  <Card key={analog.id} variant="outlined">
+                    <CardContent>
+                      <Box onClick={() => openProduct(analog.id)} sx={{ cursor: "pointer" }}>
+                        {analog.image_url ? (
+                          <Box component="img" src={analog.image_url} alt={analog.name} sx={{ width: "100%", height: 140, objectFit: "contain", bgcolor: "#f0f9ff", borderRadius: 2 }} />
+                        ) : (
+                          <Box sx={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", bgcolor: "#f0f9ff", borderRadius: 2 }}>Нет фото</Box>
+                        )}
+                        <Typography variant="caption" color="text.secondary">{analog.article ?? analog.code}</Typography>
+                        <Typography fontWeight={700} sx={{ minHeight: 48 }}>{analog.name}</Typography>
+                        <Typography color="primary" fontWeight={800}>{analog.similarity}% совпадения</Typography>
+                        <Typography>{analog.retail_price != null ? `${analog.retail_price} руб.` : "Цена не указана"}</Typography>
+                      </Box>
+                      <Button size="small" sx={{ mt: 1 }} onClick={() => setAnalogReason(analog)}>Почему выбран</Button>
+                    </CardContent>
+                  </Card>
+                ))}
+              </Box>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setAllAnalogsOpen(false)}>Закрыть</Button>
+          </DialogActions>
+        </Dialog>
         <Dialog open={!!analogReason} onClose={() => setAnalogReason(null)} fullWidth maxWidth="sm">
           <DialogTitle>Почему выбран аналог</DialogTitle>
           <DialogContent>
