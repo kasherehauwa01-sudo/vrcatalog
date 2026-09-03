@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session, selectinload
@@ -31,6 +32,23 @@ def _alphabetical_name(product: Product) -> tuple[str, str]:
     """Возвращает стабильный ключ русской сортировки, размещая «ё» рядом с «е»."""
     normalized = _normalized(product.name)
     return normalized.replace("ё", "е"), normalized
+
+
+def _name_similarity(source: Product, candidate: Product) -> float:
+    """Сравнивает слова и числовые обозначения в наименованиях."""
+    pattern = r"\d+(?:[.,]\d+)?[a-zа-яё]*|[a-zа-яё]+"
+    source_tokens = set(re.findall(pattern, _normalized(source.name)))
+    candidate_tokens = set(re.findall(pattern, _normalized(candidate.name)))
+    union = source_tokens | candidate_tokens
+    if not union:
+        return 0
+
+    # Объём, размер и другие числовые обозначения помогают отличить, например,
+    # «Таз 15л» от «Таз 11л», поэтому для них используется повышенный вес.
+    weight = lambda token: 5 if token[0].isdigit() else 1
+    return sum(weight(token) for token in source_tokens & candidate_tokens) / sum(
+        weight(token) for token in union
+    )
 
 
 def get_analog_settings(db: Session) -> AnalogSelectionSetting:
@@ -134,9 +152,14 @@ def find_product_analogs(db: Session, product_id: int) -> list[ScoredAnalog] | N
         item for item in eligible
         if not source.product_type or item.product.product_type != source.product_type
     ]
-    # ID используется только как последний стабильный критерий для полностью
-    # одинаковых названий; при равном проценте товары идут по имени от А до Я.
-    key = lambda item: (-item.similarity, *_alphabetical_name(item.product), item.product.id)
+    # При равном проценте сначала показывается наиболее близкое к оригиналу
+    # наименование, затем применяется алфавитный и стабильный порядок.
+    key = lambda item: (
+        -item.similarity,
+        -_name_similarity(source, item.product),
+        *_alphabetical_name(item.product),
+        item.product.id,
+    )
     selected = (sorted(same_type, key=key) + sorted(other_type, key=key))[:setting.maximum_analogs]
     if not selected:
         return []

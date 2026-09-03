@@ -80,6 +80,19 @@ class AnalogSelectionTests(unittest.TestCase):
         self.assertTrue(all(item.similarity == 100 for item in result))
         self.assertEqual([item.product.name for item in result], ["Арбуз", "Ёж", "Яблоко"])
 
+    def test_equal_similarity_prefers_name_closest_to_original(self):
+        self.source.name = "Таз 15л 43,5*17см пластик ИЗОБИЛИЕ круглый мерный (30)"
+        first_by_id = self.product("BASIN-11", "Посуда", "Кастрюля", "Сталь", "Черный")
+        expected_first = self.product("BASIN-15", "Посуда", "Кастрюля", "Сталь", "Черный")
+        first_by_id.name = "Таз 11л пластик ИЗОБИЛИЕ круглый мерный 39,5*15см (30)"
+        expected_first.name = "Таз 15л пластик круглый Бр.2.09 (30)"
+        self.db.commit()
+
+        result = find_product_analogs(self.db, self.source.id)
+
+        self.assertEqual(result[0].similarity, result[1].similarity)
+        self.assertEqual(result[0].product.id, expected_first.id)
+
     def test_primary_match_has_more_weight_than_secondary_match(self):
         primary = self.product("PRIMARY", "Посуда", "Кастрюля", "Сталь", "Белый")
         secondary = self.product("SECONDARY", "Посуда", "Кастрюля", "Алюминий", "Белый")
