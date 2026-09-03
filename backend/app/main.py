@@ -8,9 +8,10 @@ from app.api.routes import router
 from app.api.internal_routes import router as internal_router
 from app.core.config import settings
 from app.db.schema_migrations import ensure_price_columns, ensure_product_columns
-from app.db.session import Base, engine
+from app.db.session import Base, SessionLocal, engine
 from app.models import catalog  # noqa: F401
 from app.services.xml_auto_import import start_worker
+from app.services import monthly_promotion  # noqa: F401 — регистрирует журнал изменений
 
 logging.basicConfig(level=logging.INFO)
 Base.metadata.create_all(bind=engine)
@@ -32,4 +33,6 @@ app.include_router(internal_router, prefix="/api")
 
 @app.on_event("startup")
 def start_xml_auto_import() -> None:
+    with SessionLocal() as db:
+        monthly_promotion.initialize_promotion_snapshot(db)
     start_worker()
