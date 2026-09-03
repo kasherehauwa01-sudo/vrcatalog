@@ -60,6 +60,7 @@ class InternalProductApiTests(unittest.TestCase):
                         article="10001",
                         name="Товар А",
                         manager="Иванов Иван",
+                        section="  <b>Средства&nbsp; для бассейнов</b>  ",
                         search_text="",
                         stocks=[
                             Stock(warehouse="MAIN", quantity=3),
@@ -80,6 +81,7 @@ class InternalProductApiTests(unittest.TestCase):
                         article="00123",
                         name="Товар с ведущими нулями",
                         manager="Петров Пётр",
+                        section="Семена",
                         search_text="",
                     ),
                     Product(
@@ -175,6 +177,42 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertTrue(all(item["manager_name"] == "" for item in response.json()["items"]))
         self.assertTrue(all(item["stocks"] == [] for item in response.json()["items"]))
 
+    def test_include_section_returns_normalized_section_and_null_for_missing(self):
+        response = self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": ["10001", "10002", "missing"], "include_section": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        found, without_section, missing = response.json()["items"]
+        self.assertEqual(found["section"], "Средства для бассейнов")
+        self.assertIsNone(without_section["section"])
+        self.assertFalse(missing["found"])
+        self.assertIsNone(missing["section"])
+
+    def test_section_is_absent_when_not_requested_for_backward_compatibility(self):
+        response = self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": ["10001"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("section", response.json()["items"][0])
+
+    def test_multiple_products_receive_their_own_sections_without_duplicates(self):
+        response = self.client.post(
+            "/api/internal/products/by-articles",
+            headers=self.headers,
+            json={"articles": ["00123", "10001", "00123"], "include_section": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        items = response.json()["items"]
+        self.assertEqual([item["article"] for item in items], ["00123", "10001", "00123"])
+        self.assertEqual([item["section"] for item in items], ["Семена", "Средства для бассейнов", "Семена"])
+
     def test_include_zero_stock_returns_exact_article_and_trimmed_manager(self):
         response = self.client.post(
             "/api/internal/products/by-articles",
@@ -263,6 +301,7 @@ class InternalProductApiTests(unittest.TestCase):
                 "articles": ["10001"],
                 "include_zero_stock": True,
                 "include_warehouse_stocks": True,
+                "include_section": True,
             },
         )
 
@@ -270,12 +309,14 @@ class InternalProductApiTests(unittest.TestCase):
         item = response.json()["items"][0]
         stocks_by_name = {stock["warehouse_name"]: stock for stock in item["stocks"]}
         self.assertEqual(item["code"], "P-1")
+        self.assertEqual(item["section"], "Средства для бассейнов")
         self.assertIn("Бахтурова", stocks_by_name)
         self.assertIn("Авиаторов Зал+Склад", stocks_by_name)
         self.assertGreater(stocks_by_name["Бахтурова"]["quantity"], 0)
         self.assertGreater(stocks_by_name["Авиаторов Зал+Склад"]["quantity"], 0)
         self.assertIsInstance(stocks_by_name["Бахтурова"]["quantity"], (int, float))
         self.assertEqual(stocks_by_name["Основной склад"]["quantity"], 7.0)
+        self.assertEqual(stocks_by_name["Авиаторов Зал+Склад"]["quantity"], 13.0)
 
     def test_include_warehouse_stocks_adds_zero_rows_for_known_warehouses(self):
         response = self.client.post(
@@ -301,6 +342,7 @@ class InternalProductApiTests(unittest.TestCase):
         for payload in (
             {"articles": ["ОКА-27134"], "include_zero_stock": "not-a-boolean"},
             {"articles": ["ОКА-27134"], "include_warehouse_stocks": "not-a-boolean"},
+            {"articles": ["ОКА-27134"], "include_section": "not-a-boolean"},
         ):
             with self.subTest(payload=payload):
                 response = self.client.post(
@@ -372,6 +414,10 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertEqual(metrics["not_found_count"], 1)
         self.assertEqual(metrics["status_code"], 200)
         self.assertFalse(metrics["include_warehouse_stocks"])
+        self.assertFalse(metrics["include_zero_stock"])
+        self.assertFalse(metrics["include_section"])
+        self.assertEqual(metrics["section_count"], 0)
+        self.assertEqual(metrics["section_missing_count"], 0)
         self.assertEqual(metrics["stock_rows_count"], 0)
         self.assertEqual(metrics["stock_diagnostics"], "warehouse stocks were not requested")
         self.assertNotIn("test-internal-token", log.message)
@@ -382,13 +428,22 @@ class InternalProductApiTests(unittest.TestCase):
         self.client.post(
             "/api/internal/products/by-articles",
             headers=self.headers,
-            json={"articles": ["10001"], "include_warehouse_stocks": True},
+            json={
+                "articles": ["10001", "10002"],
+                "include_zero_stock": True,
+                "include_warehouse_stocks": True,
+                "include_section": True,
+            },
         )
 
         with Session(self.engine) as db:
             metrics = json.loads(db.query(ServiceLog).one().message)
         self.assertTrue(metrics["include_warehouse_stocks"])
-        self.assertEqual(metrics["stock_rows_count"], 3)
+        self.assertTrue(metrics["include_zero_stock"])
+        self.assertTrue(metrics["include_section"])
+        self.assertEqual(metrics["section_count"], 1)
+        self.assertEqual(metrics["section_missing_count"], 1)
+        self.assertEqual(metrics["stock_rows_count"], 6)
         self.assertEqual(
             metrics["warehouses"],
             ["Авиаторов Зал+Склад", "Бахтурова", "Основной склад"],
@@ -397,14 +452,17 @@ class InternalProductApiTests(unittest.TestCase):
 
     def test_batch_uses_one_product_select_for_duplicate_articles(self):
         product_selects = 0
+        property_selects = 0
         stock_selects = 0
         warehouse_selects = 0
 
         def count_product_selects(_conn, _cursor, statement, _parameters, _context, _many):
-            nonlocal product_selects, stock_selects, warehouse_selects
+            nonlocal product_selects, property_selects, stock_selects, warehouse_selects
             normalized = statement.lower()
             if normalized.lstrip().startswith("select") and "from products" in normalized:
                 product_selects += 1
+            if normalized.lstrip().startswith("select") and "from product_properties" in normalized:
+                property_selects += 1
             if normalized.lstrip().startswith("select") and "from stocks" in normalized:
                 stock_selects += 1
             if normalized.lstrip().startswith("select") and "from warehouse_settings" in normalized:
@@ -415,13 +473,14 @@ class InternalProductApiTests(unittest.TestCase):
             response = self.client.post(
                 "/api/internal/products/by-articles",
                 headers=self.headers,
-                json={"articles": ["10001", "10001", "10002"]},
+                json={"articles": ["10001", "10001", "10002"], "include_section": True},
             )
         finally:
             event.remove(self.engine, "before_cursor_execute", count_product_selects)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(product_selects, 1)
+        self.assertEqual(property_selects, 1)
         self.assertEqual(stock_selects, 1)
         self.assertEqual(warehouse_selects, 1)
 
