@@ -32,6 +32,12 @@ def _display_value(value: object) -> str:
     return " ".join(str(value or "").replace("\xa0", " ").split())
 
 
+def _first_name_word(product: Product) -> str:
+    """Возвращает первое слово наименования без учёта регистра и лишних пробелов."""
+    normalized = _normalized(product.name)
+    return normalized.split(maxsplit=1)[0] if normalized else ""
+
+
 def _alphabetical_name(product: Product) -> tuple[str, str]:
     """Возвращает стабильный ключ русской сортировки, размещая «ё» рядом с «е»."""
     normalized = _normalized(product.name)
@@ -180,6 +186,13 @@ def find_product_analogs(db: Session, product_id: int) -> list[ScoredAnalog] | N
         item.product.id,
     )
     selected = (sorted(same_type, key=key) + sorted(other_type, key=key))[:setting.maximum_analogs]
+    # Фильтр применяется к уже сформированному перечню: товар считается аналогом,
+    # только если первое слово его наименования совпадает с первым словом оригинала.
+    source_first_word = _first_name_word(source)
+    selected = [
+        item for item in selected
+        if source_first_word and _first_name_word(item.product) == source_first_word
+    ]
     if not selected:
         return []
     display_products = (
