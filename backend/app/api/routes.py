@@ -27,6 +27,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import SessionLocal, get_db
@@ -602,8 +603,13 @@ def cleanup_export_jobs() -> None:
             Path(job["path"]).unlink(missing_ok=True)
 
 
-def create_export_pdf(db: Session, params: dict, path: str) -> None:
-    """Создаёт облегчённый PDF без фотографий, если Excel не успел сформироваться."""
+def create_export_pdf(
+    db: Session,
+    params: dict,
+    path: str,
+    image_loader: Callable[[str], BytesIO | None] | None = None,
+) -> None:
+    """Создаёт облегчённый PDF с фотографиями, если Excel не успел сформироваться."""
     font_name = "Helvetica"
     font_path = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
     if font_path.exists():
@@ -613,38 +619,68 @@ def create_export_pdf(db: Session, params: dict, path: str) -> None:
 
     page_width, page_height = landscape(A4)
     document = canvas.Canvas(path, pagesize=(page_width, page_height))
-    columns = (("Код", 28, 125), ("Артикул", 18, 120), ("Наименование", 48, 365), ("Раздел", 30, 190))
-    row_height = 16
-    top = page_height - 34
-    y = top
+    image_loader = image_loader or download_export_image
+    columns = (("Фото", 0, 64), ("Код", 24, 105), ("Артикул", 18, 105), ("Наименование", 42, 320), ("Раздел", 25, 170))
+    row_height = 58
 
     def draw_header() -> float:
         document.setFont(font_name, 12)
         document.drawString(24, page_height - 22, "Каталог товаров — резервный PDF")
-        document.setFont(font_name, 8)
+        document.setFont(font_name, 7)
         x = 24
         for title, _, width in columns:
             document.drawString(x, page_height - 42, title)
             x += width
         document.line(24, page_height - 46, page_width - 24, page_height - 46)
-        return page_height - 60
+        return page_height - 66
 
     y = draw_header()
-    products = product_query(db, params).distinct().order_by(Product.id).enable_eagerloads(False).yield_per(500)
+    products = product_query(db, params).distinct().order_by(Product.id).yield_per(100)
+    product_batch = []
+
+    def draw_batch(batch: list[Product], current_y: float) -> float:
+        image_urls = [product.images[0].image_url for product in batch if product.images]
+        downloaded_images = download_export_images(image_urls, image_loader)
+        for product in batch:
+            if current_y < 56:
+                document.showPage()
+                current_y = draw_header()
+            photo_url = product.images[0].image_url if product.images else ""
+            image_content = downloaded_images.get(photo_url)
+            if image_content:
+                try:
+                    document.drawImage(
+                        ImageReader(BytesIO(image_content)),
+                        28,
+                        current_y - 46,
+                        width=48,
+                        height=48,
+                        preserveAspectRatio=True,
+                        anchor="c",
+                        mask="auto",
+                    )
+                except (OSError, ValueError):
+                    pass
+            values = (product.code or "", product.article or "", product.name or "", product.section or "")
+            document.setFont(font_name, 7)
+            x = 24 + columns[0][2]
+            for value, (_, max_chars, width) in zip(values, columns[1:]):
+                text_value = str(value).replace("\n", " ")
+                if len(text_value) > max_chars:
+                    text_value = f"{text_value[:max_chars - 1]}…"
+                document.drawString(x, current_y - 20, text_value)
+                x += width
+            document.line(24, current_y - 50, page_width - 24, current_y - 50)
+            current_y -= row_height
+        return current_y
+
     for product in products:
-        if y < 28:
-            document.showPage()
-            y = draw_header()
-        values = (product.code or "", product.article or "", product.name or "", product.section or "")
-        document.setFont(font_name, 7)
-        x = 24
-        for value, (_, max_chars, width) in zip(values, columns):
-            text_value = str(value).replace("\n", " ")
-            if len(text_value) > max_chars:
-                text_value = f"{text_value[:max_chars - 1]}…"
-            document.drawString(x, y, text_value)
-            x += width
-        y -= row_height
+        product_batch.append(product)
+        if len(product_batch) == 20:
+            y = draw_batch(product_batch, y)
+            product_batch.clear()
+    if product_batch:
+        draw_batch(product_batch, y)
     document.save()
 
 
