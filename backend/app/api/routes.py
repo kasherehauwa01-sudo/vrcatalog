@@ -701,14 +701,17 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
         with SessionLocal() as db:
             deadline = time.monotonic() + EXPORT_XLSX_DEADLINE_SECONDS
             product_count = product_query(db, params).order_by(None).with_entities(Product.id).distinct().count()
-            # Для большой выгрузки с фото сразу создаём PDF. Попытка сначала
-            # собрать Excel только тратила минуту и повторно скачивала изображения.
+            # В большой выгрузке Excel сам загружает фото по URL через IMAGE().
+            # Это избавляет backend от скачивания и встраивания тысяч файлов.
             if product_count > EXPORT_ROWS_PER_FILE and columns and "photo" in columns:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as output:
+                workbook = build_export_workbook(db, params, columns, embed_photos=False)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
                     path = output.name
-                create_export_pdf(db, params, path)
-                filename = "products.pdf"
-                media_type = "application/pdf"
+                workbook.save(path)
+                workbook.close()
+                del workbook
+                filename = "products.xlsx"
+                media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             elif product_count <= EXPORT_ROWS_PER_FILE:
                 workbook = build_export_workbook(db, params, columns)
                 if time.monotonic() < deadline:
@@ -973,6 +976,7 @@ def build_export_workbook(
     image_loader: Callable[[str], BytesIO | None] = download_export_image,
     offset: int = 0,
     limit: int | None = None,
+    embed_photos: bool = True,
 ) -> Workbook:
     selected_columns = columns or LEGACY_EXPORT_COLUMNS
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
@@ -1031,7 +1035,7 @@ def build_export_workbook(
         downloaded_images = download_export_images(
             [product.images[0].image_url for product in photo_products],
             image_loader,
-        ) if photo_column else {}
+        ) if photo_column and embed_photos else {}
         for product in product_batch:
             photo_url = product.images[0].image_url if photo_column and product.images else ""
             image_content = downloaded_images.get(photo_url)
@@ -1047,9 +1051,15 @@ def build_export_workbook(
             main_values = {
                 "code": product.code,
                 "article": product.article or "",
-                # Если лимит встроенных изображений исчерпан, в Excel остаётся
-                # исходная ссылка: данные не теряются, а книга не переполняет память.
-                "photo": "" if image_content or not photo_url else "Открыть фото",
+                # В быстром режиме IMAGE() загружает фото при открытии книги;
+                # в обычном режиме после лимита остаётся ссылка на оригинал.
+                "photo": (
+                    ""
+                    if image_content or not photo_url
+                    else f'=IMAGE("{photo_url.replace(chr(34), chr(34) * 2)}")'
+                    if not embed_photos
+                    else "Открыть фото"
+                ),
                 "name": product.name,
                 "section": product.section or "",
                 "product_type": product_type_names.get(product.product_type, product.product_type or ""),
@@ -1070,7 +1080,9 @@ def build_export_workbook(
                 else:
                     row.append(stocks.get(column.removeprefix("stock:"), 0))
             worksheet.append(row)
-            if photo_column and photo_url and not image_content:
+            if photo_column and photo_url and not embed_photos:
+                worksheet.row_dimensions[worksheet.max_row].height = 82.5
+            if photo_column and photo_url and not image_content and embed_photos:
                 photo_cell = worksheet.cell(row=worksheet.max_row, column=photo_column)
                 photo_cell.hyperlink = photo_url
                 photo_cell.style = "Hyperlink"

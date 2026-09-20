@@ -984,6 +984,11 @@ function App() {
                   />
                 ))}
               </Box>
+              {exportColumns.includes("photo") && (
+                <Typography variant="caption" color="text.secondary">
+                  Для больших выгрузок фотографии загружаются Excel по ссылкам — файл формируется значительно быстрее.
+                </Typography>
+              )}
               <Divider sx={{ my: 2 }} />
               <Typography variant="h6">Цены</Typography>
               <Stack>
