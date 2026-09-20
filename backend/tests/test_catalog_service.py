@@ -1,8 +1,12 @@
 import unittest
+import tempfile
 from base64 import b64decode
 from datetime import datetime, timedelta
 from io import BytesIO
+from pathlib import Path
+from unittest.mock import patch
 
+from openpyxl import load_workbook
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -18,7 +22,7 @@ from app.models.catalog import (
     Stock,
     WarehouseSetting,
 )
-from app.api.routes import build_export_workbook, download_export_images, normalize_image_url
+from app.api.routes import build_export_workbook, download_export_images, normalize_image_url, write_export_workbook_streaming
 from app.services.catalog import catalog_product_query, list_filters, paginated_products
 from app.services.logging import add_log
 from app.schemas.catalog import ProductDetailOut
@@ -286,6 +290,122 @@ class CatalogProductQueryTests(unittest.TestCase):
     def test_excel_export_rejects_unknown_columns(self):
         with self.assertRaisesRegex(Exception, "Неизвестные колонки экспорта"):
             build_export_workbook(self.db, {}, ["unknown"])
+
+    def test_excel_export_can_build_fixed_size_parts(self):
+        first_part = build_export_workbook(
+            self.db,
+            {"in_stock_only": False},
+            ["code", "name"],
+            offset=0,
+            limit=2,
+        )
+        second_part = build_export_workbook(
+            self.db,
+            {"in_stock_only": False},
+            ["code", "name"],
+            offset=2,
+            limit=2,
+        )
+
+        self.assertEqual(first_part.active.max_row, 3)
+        self.assertEqual(second_part.active.max_row, 2)
+        exported_codes = [
+            *(row[1] for row in list(first_part.active.values)[1:]),
+            *(row[1] for row in list(second_part.active.values)[1:]),
+        ]
+        self.assertEqual(exported_codes, [product.code for product in self.products])
+
+    def test_streaming_excel_export_handles_one_thousand_products(self):
+        extra_products = [
+            Product(
+                code=f"BULK-{index:04d}",
+                name=f"Товар {index}",
+                article=f"ARTICLE-{index:04d}",
+                section="Большой экспорт",
+                quantity=index,
+                search_text=f"bulk {index}",
+            )
+            for index in range(997)
+        ]
+        self.db.add_all(extra_products)
+        self.db.commit()
+
+        with tempfile.NamedTemporaryFile(suffix=".xlsx") as output:
+            write_export_workbook_streaming(
+                self.db,
+                {"in_stock_only": False},
+                ["code", "article", "name", "quantity"],
+                output.name,
+                "test-large-export",
+                1000,
+            )
+            workbook = load_workbook(output.name, read_only=True)
+            rows = list(workbook.active.values)
+            workbook.close()
+
+        self.assertEqual(len(rows), 1001)
+        self.assertEqual(rows[0], ("Артикул", "Наименование", "Код", "Остаток"))
+        self.assertEqual({row[2] for row in rows[1:]}, {product.code for product in [*self.products, *extra_products]})
+
+    def test_streaming_excel_export_handles_photos_in_several_batches(self):
+        products = [
+            Product(
+                code=f"PHOTO-{index:04d}",
+                name=f"Товар с фото {index}",
+                section="Фото-пакет",
+                search_text=f"photo {index}",
+                images=[ProductImage(image_order=1, image_url=f"https://example.test/{index}.png")],
+            )
+            for index in range(250)
+        ]
+        self.db.add_all(products)
+        self.db.commit()
+        png = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "thumbnail.png"
+            image_path.write_bytes(png)
+            output_path = Path(directory) / "products.xlsx"
+            with (
+                patch("app.api.routes.export_image_cache_path", return_value=image_path),
+                patch("app.api.routes.download_export_images", return_value={}),
+            ):
+                write_export_workbook_streaming(
+                    self.db,
+                    {"section": "Фото-пакет", "page": 51, "page_size": 5, "limit": 5, "offset": 250},
+                    ["photo", "code", "name"],
+                    str(output_path),
+                    "test-photo-export",
+                    250,
+                )
+            workbook = load_workbook(output_path, read_only=False)
+            worksheet = workbook.active
+
+        self.assertEqual(worksheet.max_row, 251)
+        self.assertEqual(len(worksheet._images), 250)
+        workbook.close()
+
+    def test_streaming_export_uses_the_same_filters_and_ignores_pagination(self):
+        scenarios = [
+            ({"section": "Мебель"}, {"CHAIR-1", "TABLE-3"}),
+            ({"properties": {"Коллекция": ["Лето"]}}, {"CHAIR-1"}),
+            ({"search": "стул", "section": "Мебель"}, {"CHAIR-1"}),
+            ({"page": 2, "page_size": 1}, {"CHAIR-1", "PAN-2", "TABLE-3"}),
+        ]
+        for index, (params, expected_codes) in enumerate(scenarios):
+            with self.subTest(params=params), tempfile.NamedTemporaryFile(suffix=".xlsx") as output:
+                write_export_workbook_streaming(
+                    self.db,
+                    params,
+                    ["code", "name"],
+                    output.name,
+                    f"test-filter-{index}",
+                    len(expected_codes),
+                )
+                workbook = load_workbook(output.name, read_only=True)
+                rows = list(workbook.active.values)
+                workbook.close()
+            self.assertEqual({row[1] for row in rows[1:]}, expected_codes)
 
     def test_excel_export_embeds_first_photo_at_one_hundred_pixels(self):
         self.products[0].images = [
