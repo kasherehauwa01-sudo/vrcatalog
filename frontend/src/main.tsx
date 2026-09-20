@@ -618,7 +618,7 @@ function App() {
       const { job_id: jobId } = await api.startExcelExport(exportParams);
       for (let attempt = 0; attempt < 900; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
-        if (attempt === 59) setExportMessage("Excel не успел сформироваться. Готовим облегчённый PDF…");
+        if (attempt === 59) setExportMessage("Большой Excel продолжает формироваться пакетами…");
         const result = await api.excelExportStatus(jobId);
         if (result.status === "ready") {
           const chunks: BlobPart[] = [];

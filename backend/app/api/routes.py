@@ -1,9 +1,11 @@
 import csv
 import hashlib
 import json
+import logging
 import tempfile
 import time
 import uuid
+import gc
 from copy import copy
 from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO, BytesIO
@@ -24,11 +26,7 @@ from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.units import pixels_to_EMU
 from PIL import Image as PillowImage, UnidentifiedImageError
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
+import xlsxwriter
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import SessionLocal, get_db
@@ -55,8 +53,9 @@ EXPORT_DOWNLOAD_CHUNK_SIZE = 2 * 1024 * 1024
 # защищает backend от OOM на больших каталогах; остальные фото остаются ссылками.
 MAX_EMBEDDED_EXPORT_IMAGES = 10_000
 EXPORT_ROWS_PER_FILE = 50
-EXPORT_XLSX_DEADLINE_SECONDS = 60
-PDF_IMAGE_BATCH_SIZE = 200
+EXPORT_PRODUCT_BATCH_SIZE = 100
+
+logger = logging.getLogger(__name__)
 
 @router.get("/health")
 def health():
@@ -606,136 +605,28 @@ def cleanup_export_jobs() -> None:
             Path(job["path"]).unlink(missing_ok=True)
 
 
-def create_export_pdf(
-    db: Session,
-    params: dict,
-    path: str,
-    image_loader: Callable[[str], BytesIO | None] | None = None,
-) -> None:
-    """Создаёт облегчённый PDF с фотографиями, если Excel не успел сформироваться."""
-    font_name = "Helvetica"
-    font_path = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-    if font_path.exists():
-        font_name = "VRCatalogDejaVu"
-        if font_name not in pdfmetrics.getRegisteredFontNames():
-            pdfmetrics.registerFont(TTFont(font_name, font_path))
-
-    page_width, page_height = landscape(A4)
-    document = canvas.Canvas(path, pagesize=(page_width, page_height))
-    image_loader = image_loader or download_export_image
-    columns = (("Фото", 0, 64), ("Код", 24, 105), ("Артикул", 18, 105), ("Наименование", 42, 320), ("Раздел", 25, 170))
-    row_height = 58
-
-    def draw_header() -> float:
-        document.setFont(font_name, 12)
-        document.drawString(24, page_height - 22, "Каталог товаров — резервный PDF")
-        document.setFont(font_name, 7)
-        x = 24
-        for title, _, width in columns:
-            document.drawString(x, page_height - 42, title)
-            x += width
-        document.line(24, page_height - 46, page_width - 24, page_height - 46)
-        return page_height - 66
-
-    y = draw_header()
-    products = product_query(db, params).distinct().order_by(Product.id).yield_per(100)
-    product_batch = []
-
-    def draw_batch(batch: list[Product], current_y: float) -> float:
-        image_urls = [product.images[0].image_url for product in batch if product.images]
-        # Для PDF используем больше потоков и крупный пакет: это заметно быстрее
-        # последовательных маленьких групп, при этом память ограничена одним пакетом.
-        downloaded_images = download_export_images(
-            image_urls,
-            image_loader,
-            max_workers=64,
-            timeout=30,
-        )
-        for product in batch:
-            if current_y < 56:
-                document.showPage()
-                current_y = draw_header()
-            photo_url = product.images[0].image_url if product.images else ""
-            image_content = downloaded_images.get(photo_url)
-            if image_content:
-                try:
-                    document.drawImage(
-                        ImageReader(BytesIO(image_content)),
-                        28,
-                        current_y - 46,
-                        width=48,
-                        height=48,
-                        preserveAspectRatio=True,
-                        anchor="c",
-                        mask="auto",
-                    )
-                except (OSError, ValueError):
-                    pass
-            values = (product.code or "", product.article or "", product.name or "", product.section or "")
-            document.setFont(font_name, 7)
-            x = 24 + columns[0][2]
-            for value, (_, max_chars, width) in zip(values, columns[1:]):
-                text_value = str(value).replace("\n", " ")
-                if len(text_value) > max_chars:
-                    text_value = f"{text_value[:max_chars - 1]}…"
-                document.drawString(x, current_y - 20, text_value)
-                x += width
-            document.line(24, current_y - 50, page_width - 24, current_y - 50)
-            current_y -= row_height
-        return current_y
-
-    for product in products:
-        product_batch.append(product)
-        if len(product_batch) == PDF_IMAGE_BATCH_SIZE:
-            y = draw_batch(product_batch, y)
-            product_batch.clear()
-    if product_batch:
-        draw_batch(product_batch, y)
-    document.save()
-
-
 def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> None:
-    """Формирует XLSX или резервный PDF вне HTTP-запроса."""
+    """Формирует XLSX на диске вне HTTP-запроса."""
     path: str | None = None
+    started_at = time.monotonic()
     try:
         with SessionLocal() as db:
-            deadline = time.monotonic() + EXPORT_XLSX_DEADLINE_SECONDS
             product_count = product_query(db, params, eager_load=False).order_by(None).with_entities(Product.id).distinct().count()
-            # Большую выборку собираем одной книгой без дорогостоящего форматирования.
-            # Предыдущее разбиение по 50 строк создавало сотни XLSX и было основной
-            # причиной задержки даже тогда, когда колонка «Фото» не была выбрана.
+            has_photos = bool(columns and "photo" in columns)
+            logger.info("Экспорт %s: товаров=%s, фото=%s, RSS=%s МБ", job_id, product_count, has_photos, current_rss_mb())
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
+                path = output.name
             if product_count > EXPORT_ROWS_PER_FILE:
-                workbook = build_export_workbook(
-                    db,
-                    params,
-                    columns,
-                    apply_formatting=False,
-                )
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
-                    path = output.name
+                write_export_workbook_streaming(db, params, columns, path, job_id)
+            else:
+                workbook = build_export_workbook(db, params, columns)
                 workbook.save(path)
                 workbook.close()
                 del workbook
-                filename = "products.xlsx"
-                media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            elif product_count <= EXPORT_ROWS_PER_FILE:
-                workbook = build_export_workbook(db, params, columns)
-                if time.monotonic() < deadline:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
-                        path = output.name
-                    workbook.save(path)
-                    workbook.close()
-                    del workbook
-                    filename = "products.xlsx"
-                    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                else:
-                    workbook.close()
-                    del workbook
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as output:
-                        path = output.name
-                    create_export_pdf(db, params, path)
-                    filename = "products.pdf"
-                    media_type = "application/pdf"
+            filename = "products.xlsx"
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            gc.collect()
+            logger.info("Экспорт %s готов за %.1f сек., RSS=%s МБ", job_id, time.monotonic() - started_at, current_rss_mb())
         with export_jobs_lock:
             export_jobs[job_id].update(status="ready", path=path, filename=filename, media_type=media_type)
     except Exception as exc:
@@ -875,12 +766,17 @@ def normalize_image_url(url: str) -> str:
     ))
 
 
+def export_image_cache_path(url: str) -> Path:
+    normalized_url = normalize_image_url(url)
+    return Path(settings.upload_dir) / "export-image-cache" / f"{hashlib.sha256(normalized_url.encode()).hexdigest()}.jpg"
+
+
 def download_export_image(url: str) -> BytesIO | None:
     """Возвращает миниатюру из кэша либо загружает и сохраняет её."""
     try:
         normalized_url = normalize_image_url(url)
-        cache_dir = Path(settings.upload_dir) / "export-image-cache"
-        cache_path = cache_dir / f"{hashlib.sha256(normalized_url.encode()).hexdigest()}.jpg"
+        cache_path = export_image_cache_path(normalized_url)
+        cache_dir = cache_path.parent
         if cache_path.exists():
             return BytesIO(cache_path.read_bytes())
         request = Request(normalized_url, headers={
@@ -935,6 +831,125 @@ def download_export_images(
         future.cancel()
     executor.shutdown(wait=False, cancel_futures=True)
     return images
+
+
+def current_rss_mb() -> float | str:
+    """Возвращает текущий RSS процесса в Linux без дополнительных зависимостей."""
+    try:
+        status = Path("/proc/self/status").read_text()
+        rss_kb = int(next(line.split()[1] for line in status.splitlines() if line.startswith("VmRSS:")))
+        return round(rss_kb / 1024, 1)
+    except (OSError, StopIteration, ValueError):
+        return "н/д"
+
+
+def write_export_workbook_streaming(
+    db: Session,
+    params: dict,
+    columns: list[str] | None,
+    path: str,
+    job_id: str,
+) -> None:
+    """Пишет большой XLSX на диск пакетами, не удерживая строки каталога в памяти."""
+    selected_columns = columns or LEGACY_EXPORT_COLUMNS
+    warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
+    product_type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
+    selected_columns = [
+        *(column for column in EXPORT_LEADING_COLUMNS if column in selected_columns),
+        *(column for column in selected_columns if column not in EXPORT_LEADING_COLUMNS),
+    ]
+    headers = [
+        EXPORT_MAIN_COLUMNS[column] if column in EXPORT_MAIN_COLUMNS
+        else "Остаток" if column == "quantity"
+        else column.removeprefix("price:") if column.startswith("price:")
+        else warehouse_names[column.removeprefix("stock:")]
+        for column in selected_columns
+    ]
+    needs_photos = "photo" in selected_columns
+    needs_prices = any(column.startswith("price:") for column in selected_columns)
+    needs_stocks = any(column.startswith("stock:") for column in selected_columns)
+    needs_properties = any(column in {"manager", "marking_code"} for column in selected_columns)
+    needs_barcodes = "barcodes" in selected_columns
+    relation_options = []
+    if needs_photos:
+        relation_options.append(selectinload(Product.images))
+    if needs_prices:
+        relation_options.append(selectinload(Product.prices))
+    if needs_stocks:
+        relation_options.append(selectinload(Product.stocks))
+    if needs_properties:
+        relation_options.append(selectinload(Product.properties))
+    if needs_barcodes:
+        relation_options.append(selectinload(Product.barcodes))
+
+    workbook = xlsxwriter.Workbook(path, {"constant_memory": True})
+    worksheet = workbook.add_worksheet("Товары")
+    for column_index, header in enumerate(headers):
+        worksheet.write(0, column_index, header)
+        worksheet.set_column(column_index, column_index, 16 if selected_columns[column_index] == "photo" else max(12, len(header) + 2))
+    photo_column = selected_columns.index("photo") if needs_photos else None
+    row_index = 1
+    last_id = 0
+    batch_number = 0
+    try:
+        while True:
+            query = product_query(db, params, eager_load=False).filter(Product.id > last_id).distinct().order_by(Product.id).limit(EXPORT_PRODUCT_BATCH_SIZE)
+            if relation_options:
+                query = query.options(*relation_options)
+            products = query.all()
+            if not products:
+                break
+            batch_number += 1
+            logger.info("Экспорт %s: пакет=%s, строк=%s, RSS=%s МБ", job_id, batch_number, len(products), current_rss_mb())
+            if needs_photos:
+                download_export_images(
+                    [product.images[0].image_url for product in products if product.images],
+                    download_export_image,
+                    max_workers=32,
+                    timeout=15,
+                ).clear()
+            for product in products:
+                properties = {}
+                for item in (product.properties if needs_properties else ()):
+                    value = (item.value or "").strip()
+                    for key in (item.name, item.property_code):
+                        normalized_key = normalize_export_property_key(key)
+                        if normalized_key and value:
+                            properties.setdefault(normalized_key, value)
+                prices = {item.price_type: item.price_value for item in product.prices} if needs_prices else {}
+                stocks = {item.warehouse: item.quantity for item in product.stocks} if needs_stocks else {}
+                values = {
+                    "code": product.code, "article": product.article or "", "photo": "",
+                    "name": product.name, "section": product.section or "",
+                    "product_type": product_type_names.get(product.product_type, product.product_type or ""),
+                    "manufacturer": product.manufacturer or "", "manager": product.manager or properties.get("менеджер", ""),
+                    "marking_code": properties.get("кодмаркировки", "") or properties.get("markingcode", ""),
+                    "material": product.material or "", "certificate": product.certificate or "",
+                    "barcodes": ", ".join(item.value for item in product.barcodes) if needs_barcodes else "", "quantity": product.quantity,
+                }
+                for column_index, column in enumerate(selected_columns):
+                    value = values.get(column, prices.get(column.removeprefix("price:"), 0) if column.startswith("price:") else stocks.get(column.removeprefix("stock:"), 0))
+                    worksheet.write(row_index, column_index, value)
+                if needs_photos and product.images:
+                    photo_url = product.images[0].image_url
+                    try:
+                        cache_path = export_image_cache_path(photo_url)
+                        if cache_path.exists():
+                            worksheet.set_row(row_index, 82.5)
+                            worksheet.insert_image(row_index, photo_column, str(cache_path), {"x_offset": 8, "y_offset": 5, "object_position": 1})
+                        else:
+                            worksheet.write_url(row_index, photo_column, photo_url, string="Открыть фото")
+                    except ValueError:
+                        worksheet.write(row_index, photo_column, "Фото недоступно")
+                row_index += 1
+            last_id = products[-1].id
+            del products
+            db.expire_all()
+            gc.collect()
+    finally:
+        workbook.close()
+        del worksheet, workbook
+        gc.collect()
 
 
 def build_export_workbook(
