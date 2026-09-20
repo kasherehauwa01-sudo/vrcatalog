@@ -13,6 +13,7 @@ from pathlib import Path
 from threading import Lock
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from typing import Annotated, Any, Callable, Literal
 
