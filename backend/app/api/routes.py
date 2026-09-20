@@ -27,6 +27,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.units import pixels_to_EMU
 from PIL import Image as PillowImage, UnidentifiedImageError
 import xlsxwriter
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import SessionLocal, get_db
@@ -56,6 +57,19 @@ EXPORT_ROWS_PER_FILE = 50
 EXPORT_PRODUCT_BATCH_SIZE = 100
 
 logger = logging.getLogger(__name__)
+EXPORT_PAGINATION_KEYS = {"page", "page_size", "pageSize", "limit", "offset", "skip", "sort", "order"}
+
+
+def filtered_product_ids_subquery(db: Session, params: dict):
+    """Возвращает единый запрос уникальных ID со всеми фильтрами, но без пагинации UI."""
+    filter_params = {key: value for key, value in params.items() if key not in EXPORT_PAGINATION_KEYS}
+    return (
+        catalog_product_query(db, filter_params, eager_load=False)
+        .order_by(None)
+        .with_entities(Product.id.label("product_id"))
+        .distinct()
+        .subquery()
+    )
 
 @router.get("/health")
 def health():
@@ -611,7 +625,8 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
     started_at = time.monotonic()
     try:
         with SessionLocal() as db:
-            product_count = catalog_product_query(db, params, eager_load=False).order_by(None).with_entities(Product.id).distinct().count()
+            filtered_ids = filtered_product_ids_subquery(db, params)
+            product_count = db.query(func.count()).select_from(filtered_ids).scalar() or 0
             has_photos = bool(columns and "photo" in columns)
             safe_params = {key: value for key, value in params.items() if value not in (None, "", [], {}, False, "all")}
             with export_jobs_lock:
@@ -620,7 +635,7 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
                 path = output.name
             if product_count > EXPORT_ROWS_PER_FILE:
-                processed = write_export_workbook_streaming(db, params, columns, path, job_id, product_count)
+                processed = write_export_workbook_streaming(db, params, columns, path, job_id, product_count, filtered_ids)
             else:
                 workbook = build_export_workbook(db, params, columns)
                 workbook.save(path)
@@ -906,6 +921,7 @@ def write_export_workbook_streaming(
     path: str,
     job_id: str,
     total: int,
+    filtered_ids=None,
 ) -> int:
     """Пишет большой XLSX на диск пакетами, не удерживая строки каталога в памяти."""
     selected_columns = columns or LEGACY_EXPORT_COLUMNS
@@ -948,16 +964,33 @@ def write_export_workbook_streaming(
     row_index = 1
     last_id = 0
     batch_number = 0
+    if filtered_ids is None:
+        filtered_ids = filtered_product_ids_subquery(db, params)
     try:
         while True:
-            query = catalog_product_query(db, params, eager_load=False).filter(Product.id > last_id).distinct().order_by(Product.id).limit(EXPORT_PRODUCT_BATCH_SIZE)
+            batch_ids = [
+                product_id
+                for product_id, in (
+                    db.query(filtered_ids.c.product_id)
+                    .filter(filtered_ids.c.product_id > last_id)
+                    .order_by(filtered_ids.c.product_id)
+                    .limit(EXPORT_PRODUCT_BATCH_SIZE)
+                    .all()
+                )
+            ]
+            if not batch_ids:
+                break
+            query = db.query(Product).filter(Product.id.in_(batch_ids))
             if relation_options:
                 query = query.options(*relation_options)
             products = query.all()
-            if not products:
-                break
+            product_order = {product_id: index for index, product_id in enumerate(batch_ids)}
+            products.sort(key=lambda product: product_order[product.id])
             batch_number += 1
-            logger.info("Экспорт %s: пакет=%s, строк=%s, RSS=%s МБ", job_id, batch_number, len(products), current_rss_mb())
+            logger.info(
+                "Экспорт %s: пакет=%s, min_id=%s, max_id=%s, batch_size=%s, processed=%s, total=%s, RSS=%s МБ",
+                job_id, batch_number, batch_ids[0], batch_ids[-1], len(batch_ids), row_index - 1, total, current_rss_mb(),
+            )
             if needs_photos:
                 download_export_images(
                     [product.images[0].image_url for product in products if product.images],
@@ -999,7 +1032,7 @@ def write_export_workbook_streaming(
                     except ValueError:
                         worksheet.write(row_index, photo_column, "Фото недоступно")
             row_index += 1
-            last_id = products[-1].id
+            last_id = batch_ids[-1]
             processed = row_index - 1
             with export_jobs_lock:
                 job = export_jobs.get(job_id)

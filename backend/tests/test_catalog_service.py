@@ -352,6 +352,7 @@ class CatalogProductQueryTests(unittest.TestCase):
             Product(
                 code=f"PHOTO-{index:04d}",
                 name=f"Товар с фото {index}",
+                section="Фото-пакет",
                 search_text=f"photo {index}",
                 images=[ProductImage(image_order=1, image_url=f"https://example.test/{index}.png")],
             )
@@ -371,16 +372,16 @@ class CatalogProductQueryTests(unittest.TestCase):
             ):
                 write_export_workbook_streaming(
                     self.db,
-                    {"in_stock_only": False},
+                    {"section": "Фото-пакет", "page": 51, "page_size": 5, "limit": 5, "offset": 250},
                     ["photo", "code", "name"],
                     str(output_path),
                     "test-photo-export",
-                    253,
+                    250,
                 )
             workbook = load_workbook(output_path, read_only=False)
             worksheet = workbook.active
 
-        self.assertEqual(worksheet.max_row, 254)
+        self.assertEqual(worksheet.max_row, 251)
         self.assertEqual(len(worksheet._images), 250)
         workbook.close()
 
