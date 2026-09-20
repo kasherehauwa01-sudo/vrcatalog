@@ -259,6 +259,20 @@ server {
 
     client_max_body_size 200m;
 
+    # Экспорт Excel может формироваться дольше стандартных 60 секунд.
+    # Этот location должен находиться во внешнем nginx на VPS.
+    location = /vr/catalog/api/export.xlsx {
+        proxy_pass http://127.0.0.1:8080/vr/catalog/api/export.xlsx;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
+        proxy_buffering off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Prefix /vr/catalog;
+    }
+
     location /vr/catalog/ {
         proxy_pass http://127.0.0.1:8080/vr/catalog/;
         proxy_set_header Host $host;
