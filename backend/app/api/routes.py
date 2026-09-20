@@ -1,17 +1,23 @@
 import csv
+import hashlib
 import json
+import logging
 import tempfile
+import time
+import uuid
+import gc
 from copy import copy
 from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO, BytesIO
 from pathlib import Path
+from threading import Lock
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-from typing import Annotated, Callable, Literal
+from typing import Annotated, Any, Callable, Literal
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
@@ -19,19 +25,49 @@ from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.units import pixels_to_EMU
 from PIL import Image as PillowImage, UnidentifiedImageError
+import xlsxwriter
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
+from app.core.config import settings
 from app.importer.xml_importer import XMLCatalogImporter
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
 from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
-from app.services.catalog import decorate, list_filters, meta, product_query, paginated_products
+from app.services.catalog import catalog_product_query, decorate, list_filters, meta, product_query, paginated_products
 from app.services.logging import add_log
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
 
 router = APIRouter()
+
+# Одновременная генерация нескольких файлов с фотографиями может исчерпать
+# память контейнера и привести к 502 от nginx, поэтому задания выполняются по одному.
+export_executor = ThreadPoolExecutor(max_workers=1)
+export_jobs: dict[str, dict[str, Any]] = {}
+export_jobs_lock = Lock()
+EXPORT_JOB_TTL_SECONDS = 60 * 60
+EXPORT_DOWNLOAD_CHUNK_SIZE = 2 * 1024 * 1024
+# openpyxl хранит каждую картинку в памяти до сохранения книги. Ограничение
+# защищает backend от OOM на больших каталогах; остальные фото остаются ссылками.
+MAX_EMBEDDED_EXPORT_IMAGES = 10_000
+EXPORT_PRODUCT_BATCH_SIZE = 100
+
+logger = logging.getLogger(__name__)
+EXPORT_PAGINATION_KEYS = {"page", "page_size", "pageSize", "limit", "offset", "skip", "sort", "order"}
+
+
+def filtered_product_ids_subquery(db: Session, params: dict):
+    """Возвращает единый запрос уникальных ID со всеми фильтрами, но без пагинации UI."""
+    filter_params = {key: value for key, value in params.items() if key not in EXPORT_PAGINATION_KEYS}
+    return (
+        catalog_product_query(db, filter_params, eager_load=False)
+        .order_by(None)
+        .with_entities(Product.id.label("product_id"))
+        .distinct()
+        .subquery()
+    )
 
 @router.get("/health")
 def health():
@@ -569,6 +605,173 @@ def export_csv(db: Session = Depends(get_db), search: str | None = None):
     for p in product_query(db, {"search": search}).all(): writer.writerow([p.code, p.article, p.name, p.section, p.quantity])
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=products.csv"})
 
+
+def cleanup_export_jobs() -> None:
+    """Удаляет устаревшие задания и временные файлы экспорта."""
+    cutoff = time.monotonic() - EXPORT_JOB_TTL_SECONDS
+    with export_jobs_lock:
+        expired_ids = [job_id for job_id, job in export_jobs.items() if job["created_at"] < cutoff]
+        expired_jobs = [export_jobs.pop(job_id) for job_id in expired_ids]
+    for job in expired_jobs:
+        if job.get("path"):
+            Path(job["path"]).unlink(missing_ok=True)
+
+
+def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> None:
+    """Формирует XLSX на диске вне HTTP-запроса."""
+    path: str | None = None
+    started_at = time.monotonic()
+    try:
+        with SessionLocal() as db:
+            filtered_ids = filtered_product_ids_subquery(db, params)
+            product_count = db.query(func.count()).select_from(filtered_ids).scalar() or 0
+            has_photos = bool(columns and "photo" in columns)
+            safe_params = {key: value for key, value in params.items() if value not in (None, "", [], {}, False, "all")}
+            with export_jobs_lock:
+                export_jobs[job_id].update(total=product_count, processed=0, progress=0)
+            logger.info("Экспорт %s: начало, товаров=%s, фильтры=%s, фото=%s, RSS=%s МБ", job_id, product_count, safe_params, has_photos, current_rss_mb())
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
+                path = output.name
+            processed = write_export_workbook_streaming(db, params, columns, path, job_id, product_count, filtered_ids)
+            filename = "products.xlsx"
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            gc.collect()
+            if processed != product_count:
+                logger.error("Экспорт %s: количество не совпало, обработано=%s, ожидалось=%s", job_id, processed, product_count)
+                raise RuntimeError(f"Количество строк экспорта изменилось: обработано {processed}, ожидалось {product_count}")
+            with export_jobs_lock:
+                export_jobs[job_id].update(processed=processed, progress=100)
+            logger.info("Экспорт %s завершён: обработано=%s, ожидалось=%s, время=%.1f сек., RSS=%s МБ", job_id, processed, product_count, time.monotonic() - started_at, current_rss_mb())
+        with export_jobs_lock:
+            export_jobs[job_id].update(status="ready", path=path, filename=filename, media_type=media_type)
+    except Exception as exc:
+        if path:
+            Path(path).unlink(missing_ok=True)
+        with export_jobs_lock:
+            export_jobs[job_id].update(status="error", error=str(exc) or "Не удалось сформировать Excel")
+
+
+@router.post("/exports/xlsx")
+def start_xlsx_export(
+    search: Annotated[str | None, Query(max_length=255)] = None,
+    id: Annotated[int | None, Query(ge=1)] = None,
+    name: Annotated[str | None, Query(max_length=512)] = None,
+    code: Annotated[str | None, Query(max_length=2000)] = None,
+    article: Annotated[str | None, Query(max_length=2000)] = None,
+    barcode: Annotated[str | None, Query(max_length=2000)] = None,
+    section: Annotated[str | None, Query(max_length=2000)] = None,
+    manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
+    brand: Annotated[str | None, Query(max_length=2000)] = None,
+    manager: Annotated[str | None, Query(max_length=2000)] = None,
+    country: Annotated[str | None, Query(max_length=2000)] = None,
+    material: Annotated[str | None, Query(max_length=2000)] = None,
+    color: Annotated[str | None, Query(max_length=2000)] = None,
+    product_type: Annotated[str | None, Query(alias="productType", max_length=2000)] = None,
+    warehouse: Annotated[str | None, Query(max_length=2000)] = None,
+    availability: Literal["all", "in_stock", "out_of_stock"] = "all",
+    in_stock_only: Annotated[bool, Query(alias="inStockOnly")] = True,
+    exclude_yyy: Annotated[bool, Query(alias="excludeYyy")] = True,
+    only_new: Annotated[bool, Query(alias="onlyNew")] = False,
+    quantity_from: Annotated[float | None, Query(alias="quantityFrom")] = None,
+    quantity_to: Annotated[float | None, Query(alias="quantityTo")] = None,
+    price_from: Annotated[float | None, Query(alias="priceFrom", ge=0)] = None,
+    price_to: Annotated[float | None, Query(alias="priceTo", ge=0)] = None,
+    property: Annotated[list[str] | None, Query()] = None,
+    column: Annotated[list[str] | None, Query()] = None,
+):
+    """Запускает длительное формирование Excel и сразу возвращает идентификатор задания."""
+    if quantity_from is not None and quantity_to is not None and quantity_from > quantity_to:
+        raise HTTPException(422, "Минимальное количество не может быть больше максимального")
+    if price_from is not None and price_to is not None and price_from > price_to:
+        raise HTTPException(422, "Минимальная цена не может быть больше максимальной")
+    properties: dict[str, list[str]] = {}
+    for item in property or []:
+        property_name, separator, value = item.partition(":")
+        if not separator or not property_name.strip() or not value.strip():
+            raise HTTPException(422, "Свойство должно иметь формат «Название:Значение»")
+        properties.setdefault(property_name.strip(), []).append(value.strip())
+    params = {
+        "search": search, "id": id, "name": name, "code": code, "article": article,
+        "barcode": barcode, "section": section, "manufacturer": manufacturer, "brand": brand,
+        "manager": manager, "country": country, "material": material, "color": color,
+        "product_type": product_type, "warehouse": warehouse, "availability": availability,
+        "in_stock_only": in_stock_only, "exclude_yyy": exclude_yyy, "only_new": only_new,
+        "quantity_from": quantity_from, "quantity_to": quantity_to,
+        "price_from": price_from, "price_to": price_to, "properties": properties,
+    }
+    columns = column
+    cleanup_export_jobs()
+    job_id = uuid.uuid4().hex
+    with export_jobs_lock:
+        export_jobs[job_id] = {"status": "processing", "created_at": time.monotonic(), "path": None, "error": None, "processed": 0, "total": None, "progress": 0}
+    export_executor.submit(create_xlsx_export, job_id, params, columns)
+    return {"job_id": job_id, "status": "processing"}
+
+
+@router.get("/exports/xlsx/{job_id}")
+def xlsx_export_status(job_id: str):
+    """Возвращает состояние фонового экспорта."""
+    cleanup_export_jobs()
+    with export_jobs_lock:
+        job = export_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "Задание экспорта не найдено или устарело")
+        size = Path(job["path"]).stat().st_size if job["status"] == "ready" and job["path"] else None
+        return {
+            "status": job["status"],
+            "error": job["error"],
+            "size": size,
+            "filename": job.get("filename"),
+            "media_type": job.get("media_type"),
+            "processed": job.get("processed", 0),
+            "total": job.get("total"),
+            "progress": job.get("progress", 0),
+        }
+
+
+@router.get("/exports/xlsx/{job_id}/download")
+def download_xlsx_export(job_id: str):
+    """Отдаёт уже сформированный файл без длительного ожидания в прокси."""
+    with export_jobs_lock:
+        job = export_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "Задание экспорта не найдено или устарело")
+        if job["status"] != "ready" or not job["path"]:
+            raise HTTPException(409, "Файл Excel ещё не готов")
+        path = job["path"]
+    return FileResponse(
+        path,
+        media_type=job.get("media_type") or "application/octet-stream",
+        filename=job.get("filename") or "products.xlsx",
+    )
+
+
+@router.get("/exports/xlsx/{job_id}/chunk")
+def download_xlsx_export_chunk(job_id: str, offset: Annotated[int, Query(ge=0)] = 0):
+    """Отдаёт небольшой фрагмент файла, чтобы внешний прокси не ожидал всю выгрузку целиком."""
+    with export_jobs_lock:
+        job = export_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "Задание экспорта не найдено или устарело")
+        if job["status"] != "ready" or not job["path"]:
+            raise HTTPException(409, "Файл Excel ещё не готов")
+        path = Path(job["path"])
+    file_size = path.stat().st_size
+    if offset >= file_size:
+        raise HTTPException(416, "Смещение находится за пределами файла")
+    with path.open("rb") as source:
+        source.seek(offset)
+        content = source.read(EXPORT_DOWNLOAD_CHUNK_SIZE)
+    return Response(
+        content,
+        media_type="application/octet-stream",
+        headers={
+            "X-File-Size": str(file_size),
+            "X-Next-Offset": str(offset + len(content)),
+        },
+    )
+
+
 @router.get("/export.xlsx")
 def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):
     params = locals(); params.pop("db"); columns = params.pop("column")
@@ -625,10 +828,19 @@ def normalize_image_url(url: str) -> str:
     ))
 
 
+def export_image_cache_path(url: str) -> Path:
+    normalized_url = normalize_image_url(url)
+    return Path(settings.upload_dir) / "export-image-cache" / f"{hashlib.sha256(normalized_url.encode()).hexdigest()}.jpg"
+
+
 def download_export_image(url: str) -> BytesIO | None:
-    """Загружает изображение для Excel с ограничением времени и объёма ответа."""
+    """Возвращает миниатюру из кэша либо загружает и сохраняет её."""
     try:
         normalized_url = normalize_image_url(url)
+        cache_path = export_image_cache_path(normalized_url)
+        cache_dir = cache_path.parent
+        if cache_path.exists():
+            return BytesIO(cache_path.read_bytes())
         request = Request(normalized_url, headers={
             "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
             "Referer": "https://volgorost.ru/",
@@ -642,8 +854,14 @@ def download_export_image(url: str) -> BytesIO | None:
         with PillowImage.open(source) as image:
             image.thumbnail((100, 100))
             prepared = BytesIO()
-            image.convert("RGBA" if image.mode == "RGBA" else "RGB").save(prepared, format="PNG")
+            # JPEG значительно компактнее PNG для фотографий товаров. Это уменьшает
+            # память при создании книги и итоговый размер выгрузки.
+            image.convert("RGB").save(prepared, format="JPEG", quality=70, optimize=True)
             prepared.seek(0)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            temporary_cache_path = cache_path.with_suffix(".tmp")
+            temporary_cache_path.write_bytes(prepared.getvalue())
+            temporary_cache_path.replace(cache_path)
             return prepared
     except (OSError, ValueError, UnidentifiedImageError):
         return None
@@ -652,14 +870,17 @@ def download_export_image(url: str) -> BytesIO | None:
 def download_export_images(
     urls: list[str],
     image_loader: Callable[[str], BytesIO | None],
+    *,
+    max_workers: int = 24,
+    timeout: float = 15,
 ) -> dict[str, bytes]:
-    """Параллельно загружает уникальные фото, не задерживая экспорт дольше 15 секунд."""
+    """Параллельно загружает уникальные фото с заданными лимитами."""
     unique_urls = list(dict.fromkeys(urls))
     if not unique_urls:
         return {}
-    executor = ThreadPoolExecutor(max_workers=min(24, len(unique_urls)))
+    executor = ThreadPoolExecutor(max_workers=min(max_workers, len(unique_urls)))
     futures = {executor.submit(image_loader, url): url for url in unique_urls}
-    completed, pending = wait(futures, timeout=15)
+    completed, pending = wait(futures, timeout=timeout)
     images: dict[str, bytes] = {}
     for future in completed:
         try:
@@ -674,11 +895,207 @@ def download_export_images(
     return images
 
 
+def current_rss_mb() -> float | str:
+    """Возвращает текущий RSS процесса в Linux без дополнительных зависимостей."""
+    try:
+        status = Path("/proc/self/status").read_text()
+        rss_kb = int(next(line.split()[1] for line in status.splitlines() if line.startswith("VmRSS:")))
+        return round(rss_kb / 1024, 1)
+    except (OSError, StopIteration, ValueError):
+        return "н/д"
+
+
+def write_export_workbook_streaming(
+    db: Session,
+    params: dict,
+    columns: list[str] | None,
+    path: str,
+    job_id: str,
+    total: int,
+    filtered_ids=None,
+) -> int:
+    """Пишет большой XLSX на диск пакетами, не удерживая строки каталога в памяти."""
+    selected_columns = columns or LEGACY_EXPORT_COLUMNS
+    warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
+    product_type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
+    selected_columns = [
+        *(column for column in EXPORT_LEADING_COLUMNS if column in selected_columns),
+        *(column for column in selected_columns if column not in EXPORT_LEADING_COLUMNS),
+    ]
+    headers = [
+        EXPORT_MAIN_COLUMNS[column] if column in EXPORT_MAIN_COLUMNS
+        else "Остаток" if column == "quantity"
+        else column.removeprefix("price:") if column.startswith("price:")
+        else warehouse_names[column.removeprefix("stock:")]
+        for column in selected_columns
+    ]
+    needs_photos = "photo" in selected_columns
+    needs_prices = any(column.startswith("price:") for column in selected_columns)
+    needs_stocks = any(column.startswith("stock:") for column in selected_columns)
+    needs_properties = any(column in {"manager", "marking_code"} for column in selected_columns)
+    needs_barcodes = "barcodes" in selected_columns
+    relation_options = []
+    if needs_photos:
+        relation_options.append(selectinload(Product.images))
+    if needs_prices:
+        relation_options.append(selectinload(Product.prices))
+    if needs_stocks:
+        relation_options.append(selectinload(Product.stocks))
+    if needs_properties:
+        relation_options.append(selectinload(Product.properties))
+    if needs_barcodes:
+        relation_options.append(selectinload(Product.barcodes))
+
+    workbook = xlsxwriter.Workbook(path, {"constant_memory": True})
+    worksheet = workbook.add_worksheet("Товары")
+    border = 1
+    header_format = workbook.add_format({
+        "bold": True, "bg_color": "#E7E9EC", "border": border,
+        "align": "center", "valign": "vcenter", "text_wrap": True,
+    })
+    text_format = workbook.add_format({"border": border, "valign": "vcenter", "text_wrap": True})
+    text_alt_format = workbook.add_format({"border": border, "valign": "vcenter", "text_wrap": True, "bg_color": "#F7F7F7"})
+    center_format = workbook.add_format({"border": border, "align": "center", "valign": "vcenter", "text_wrap": True})
+    center_alt_format = workbook.add_format({"border": border, "align": "center", "valign": "vcenter", "text_wrap": True, "bg_color": "#F7F7F7"})
+    price_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0.00"})
+    price_alt_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0.00", "bg_color": "#F7F7F7"})
+    number_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0"})
+    number_alt_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0", "bg_color": "#F7F7F7"})
+    column_widths = {
+        "photo": 14, "code": 16, "article": 20, "name": 55, "section": 30,
+        "product_type": 25, "manufacturer": 24, "manager": 20, "marking_code": 20,
+        "material": 22, "certificate": 22, "barcodes": 22, "quantity": 14,
+    }
+    for column_index, header in enumerate(headers):
+        column = selected_columns[column_index]
+        width = 16 if column.startswith("price:") else 14 if column.startswith("stock:") else column_widths.get(column, 24)
+        worksheet.write(0, column_index, header, header_format)
+        worksheet.set_column(column_index, column_index, width)
+    worksheet.set_row(0, 32)
+    worksheet.freeze_panes(1, 0)
+    photo_column = selected_columns.index("photo") if needs_photos else None
+    row_index = 1
+    processed = 0
+    last_id = 0
+    batch_number = 0
+    if filtered_ids is None:
+        filtered_ids = filtered_product_ids_subquery(db, params)
+    try:
+        while True:
+            batch_ids = [
+                product_id
+                for product_id, in (
+                    db.query(filtered_ids.c.product_id)
+                    .filter(filtered_ids.c.product_id > last_id)
+                    .order_by(filtered_ids.c.product_id)
+                    .limit(EXPORT_PRODUCT_BATCH_SIZE)
+                    .all()
+                )
+            ]
+            if not batch_ids:
+                break
+            query = db.query(Product).filter(Product.id.in_(batch_ids))
+            if relation_options:
+                query = query.options(*relation_options)
+            products = query.all()
+            product_order = {product_id: index for index, product_id in enumerate(batch_ids)}
+            products.sort(key=lambda product: product_order[product.id])
+            batch_number += 1
+            logger.info(
+                "Экспорт %s: пакет=%s, min_id=%s, max_id=%s, batch_size=%s, processed=%s, total=%s, RSS=%s МБ",
+                job_id, batch_number, batch_ids[0], batch_ids[-1], len(batch_ids), processed, total, current_rss_mb(),
+            )
+            if needs_photos:
+                download_export_images(
+                    [product.images[0].image_url for product in products if product.images],
+                    download_export_image,
+                    max_workers=32,
+                    timeout=15,
+                ).clear()
+            for product in products:
+                properties = {}
+                for item in (product.properties if needs_properties else ()):
+                    value = (item.value or "").strip()
+                    for key in (item.name, item.property_code):
+                        normalized_key = normalize_export_property_key(key)
+                        if normalized_key and value:
+                            properties.setdefault(normalized_key, value)
+                prices = {item.price_type: item.price_value for item in product.prices} if needs_prices else {}
+                stocks = {item.warehouse: item.quantity for item in product.stocks} if needs_stocks else {}
+                values = {
+                    "code": product.code, "article": product.article or "", "photo": "",
+                    "name": product.name, "section": product.section or "",
+                    "product_type": product_type_names.get(product.product_type, product.product_type or ""),
+                    "manufacturer": product.manufacturer or "", "manager": product.manager or properties.get("менеджер", ""),
+                    "marking_code": properties.get("кодмаркировки", "") or properties.get("markingcode", ""),
+                    "material": product.material or "", "certificate": product.certificate or "",
+                    "barcodes": ", ".join(item.value for item in product.barcodes) if needs_barcodes else "", "quantity": product.quantity,
+                }
+                for column_index, column in enumerate(selected_columns):
+                    value = values.get(column, prices.get(column.removeprefix("price:"), 0) if column.startswith("price:") else stocks.get(column.removeprefix("stock:"), 0))
+                    alternate = row_index % 2 == 0
+                    if column.startswith("price:"):
+                        cell_format = price_alt_format if alternate else price_format
+                    elif column == "quantity" or column.startswith("stock:"):
+                        cell_format = number_alt_format if alternate else number_format
+                    elif column in {"photo", "code", "article"}:
+                        cell_format = center_alt_format if alternate else center_format
+                    else:
+                        cell_format = text_alt_format if alternate else text_format
+                    worksheet.write(row_index, column_index, value, cell_format)
+                if needs_photos and product.images:
+                    photo_url = product.images[0].image_url
+                    try:
+                        cache_path = export_image_cache_path(photo_url)
+                        if cache_path.exists():
+                            with PillowImage.open(cache_path) as thumbnail:
+                                image_width, image_height = thumbnail.size
+                            scale = min(1, 70 / max(image_width, image_height))
+                            displayed_width = image_width * scale
+                            displayed_height = image_height * scale
+                            worksheet.set_row(row_index, 60)
+                            worksheet.insert_image(row_index, photo_column, str(cache_path), {
+                                "x_scale": scale, "y_scale": scale,
+                                "x_offset": max(2, round((98 - displayed_width) / 2)),
+                                "y_offset": max(2, round((80 - displayed_height) / 2)),
+                                "object_position": 1,
+                            })
+                        else:
+                            photo_format = center_alt_format if row_index % 2 == 0 else center_format
+                            worksheet.write_url(row_index, photo_column, photo_url, photo_format, "Открыть фото")
+                    except (OSError, ValueError, UnidentifiedImageError):
+                        photo_format = center_alt_format if row_index % 2 == 0 else center_format
+                        worksheet.write(row_index, photo_column, "Фото недоступно", photo_format)
+                row_index += 1
+            last_id = batch_ids[-1]
+            processed += len(products)
+            with export_jobs_lock:
+                job = export_jobs.get(job_id)
+                if job:
+                    job.update(
+                        processed=processed,
+                        progress=round(processed * 100 / total) if total else 100,
+                    )
+            del products
+            db.expire_all()
+            gc.collect()
+    finally:
+        if row_index > 1 and selected_columns:
+            worksheet.autofilter(0, 0, row_index - 1, len(selected_columns) - 1)
+        workbook.close()
+        del worksheet, workbook
+        gc.collect()
+    return processed
+
+
 def build_export_workbook(
     db: Session,
     params: dict,
     columns: list[str] | None,
     image_loader: Callable[[str], BytesIO | None] = download_export_image,
+    offset: int = 0,
+    limit: int | None = None,
+    apply_formatting: bool = True,
 ) -> Workbook:
     selected_columns = columns or LEGACY_EXPORT_COLUMNS
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
@@ -707,87 +1124,116 @@ def build_export_workbook(
         else:
             headers.append(warehouse_names[column.removeprefix("stock:")])
 
-    products = (
-        product_query(db, params)
-        .options(
-            selectinload(Product.images),
-            selectinload(Product.prices),
-            selectinload(Product.stocks),
-            selectinload(Product.properties),
-            selectinload(Product.barcodes),
-        )
-        .all()
-    )
+    needs_prices = any(column.startswith("price:") for column in selected_columns)
+    needs_stocks = any(column.startswith("stock:") for column in selected_columns)
+    needs_properties = any(column in {"manager", "marking_code"} for column in selected_columns)
+    needs_barcodes = "barcodes" in selected_columns
+    relation_options = []
+    if "photo" in selected_columns:
+        relation_options.append(selectinload(Product.images))
+    if needs_prices:
+        relation_options.append(selectinload(Product.prices))
+    if needs_stocks:
+        relation_options.append(selectinload(Product.stocks))
+    if needs_properties:
+        relation_options.append(selectinload(Product.properties))
+    if needs_barcodes:
+        relation_options.append(selectinload(Product.barcodes))
+    products_query = catalog_product_query(db, params, eager_load=False).distinct().order_by(Product.id)
+    if relation_options:
+        products_query = products_query.options(*relation_options)
+    if offset:
+        products_query = products_query.offset(offset)
+    if limit is not None:
+        products_query = products_query.limit(limit)
+    products = products_query.all()
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.append(headers)
     photo_column = selected_columns.index("photo") + 1 if "photo" in selected_columns else None
-    downloaded_images = download_export_images(
-        [product.images[0].image_url for product in products if product.images],
-        image_loader,
-    ) if photo_column else {}
     if photo_column:
         worksheet.column_dimensions[get_column_letter(photo_column)].width = 16
-    for product in products:
-        properties: dict[str, str] = {}
-        for item in product.properties:
-            value = (item.value or "").strip()
-            for key in (item.name, item.property_code):
-                normalized_key = normalize_export_property_key(key)
-                if normalized_key and value:
-                    properties.setdefault(normalized_key, value)
-        prices = {item.price_type: item.price_value for item in product.prices}
-        stocks = {item.warehouse: item.quantity for item in product.stocks}
-        main_values = {
-            "code": product.code,
-            "article": product.article or "",
-            "photo": "",
-            "name": product.name,
-            "section": product.section or "",
-            "product_type": product_type_names.get(product.product_type, product.product_type or ""),
-            "manufacturer": product.manufacturer or "",
-            "manager": product.manager or properties.get("менеджер", ""),
-            "marking_code": properties.get("кодмаркировки", "") or properties.get("markingcode", ""),
-            "material": product.material or "",
-            "certificate": product.certificate or "",
-            "barcodes": ", ".join(item.value for item in product.barcodes),
-            "quantity": product.quantity,
-        }
-        row = []
-        for column in selected_columns:
-            if column in main_values:
-                row.append(main_values[column])
-            elif column.startswith("price:"):
-                row.append(prices.get(column.removeprefix("price:"), 0))
-            else:
-                row.append(stocks.get(column.removeprefix("stock:"), 0))
-        worksheet.append(row)
-        if photo_column and product.images:
-            image_content = downloaded_images.get(product.images[0].image_url)
+
+    # Фото загружаются небольшими пакетами. Раньше все изображения каталога
+    # одновременно хранились в памяти, из-за чего backend мог быть завершён OOM-killer.
+    batch_size = 200 if photo_column and not apply_formatting else 100 if photo_column else max(1, len(products))
+    embedded_photo_count = 0
+    for batch_start in range(0, len(products), batch_size):
+        product_batch = products[batch_start:batch_start + batch_size]
+        remaining_photo_slots = max(0, MAX_EMBEDDED_EXPORT_IMAGES - embedded_photo_count)
+        photo_products = [product for product in product_batch if product.images][:remaining_photo_slots]
+        downloaded_images = download_export_images(
+            [product.images[0].image_url for product in photo_products],
+            image_loader,
+            max_workers=64 if not apply_formatting else 24,
+            timeout=30 if not apply_formatting else 15,
+        ) if photo_column else {}
+        for product in product_batch:
+            photo_url = product.images[0].image_url if photo_column and product.images else ""
+            image_content = downloaded_images.get(photo_url)
+            properties: dict[str, str] = {}
+            for item in (product.properties if needs_properties else ()):
+                value = (item.value or "").strip()
+                for key in (item.name, item.property_code):
+                    normalized_key = normalize_export_property_key(key)
+                    if normalized_key and value:
+                        properties.setdefault(normalized_key, value)
+            prices = {item.price_type: item.price_value for item in product.prices} if needs_prices else {}
+            stocks = {item.warehouse: item.quantity for item in product.stocks} if needs_stocks else {}
+            main_values = {
+                "code": product.code,
+                "article": product.article or "",
+                "photo": "" if image_content or not photo_url else "Открыть фото",
+                "name": product.name,
+                "section": product.section or "",
+                "product_type": product_type_names.get(product.product_type, product.product_type or ""),
+                "manufacturer": product.manufacturer or "",
+                "manager": product.manager or properties.get("менеджер", ""),
+                "marking_code": properties.get("кодмаркировки", "") or properties.get("markingcode", ""),
+                "material": product.material or "",
+                "certificate": product.certificate or "",
+                "barcodes": ", ".join(item.value for item in product.barcodes) if needs_barcodes else "",
+                "quantity": product.quantity,
+            }
+            row = []
+            for column in selected_columns:
+                if column in main_values:
+                    row.append(main_values[column])
+                elif column.startswith("price:"):
+                    row.append(prices.get(column.removeprefix("price:"), 0))
+                else:
+                    row.append(stocks.get(column.removeprefix("stock:"), 0))
+            worksheet.append(row)
+            if photo_column and photo_url and not image_content:
+                photo_cell = worksheet.cell(row=worksheet.max_row, column=photo_column)
+                photo_cell.hyperlink = photo_url
+                photo_cell.style = "Hyperlink"
             if image_content:
-                try:
-                    image = ExcelImage(BytesIO(image_content))
-                    image.width = 100
-                    image.height = 100
-                    # Ячейка шириной 16 символов занимает около 117 px, а высотой 82,5 pt — 110 px.
-                    # Небольшие смещения помещают фотографию по центру, а не у верхней левой границы.
-                    image.anchor = OneCellAnchor(
-                        _from=AnchorMarker(
-                            col=photo_column - 1,
-                            row=worksheet.max_row - 1,
-                            colOff=pixels_to_EMU(8),
-                            rowOff=pixels_to_EMU(5),
-                        ),
-                        ext=XDRPositiveSize2D(
-                            cx=pixels_to_EMU(image.width),
-                            cy=pixels_to_EMU(image.height),
-                        ),
-                    )
-                    worksheet.add_image(image)
-                    worksheet.row_dimensions[worksheet.max_row].height = 82.5
-                except (OSError, ValueError):
-                    # Повреждённое или неподдерживаемое изображение не должно прерывать весь экспорт.
-                    pass
+                if embedded_photo_count < MAX_EMBEDDED_EXPORT_IMAGES:
+                    try:
+                        image = ExcelImage(BytesIO(image_content))
+                        image.width = 100
+                        image.height = 100
+                        # Ячейка шириной 16 символов занимает около 117 px, а высотой 82,5 pt — 110 px.
+                        # Небольшие смещения помещают фотографию по центру, а не у верхней левой границы.
+                        image.anchor = OneCellAnchor(
+                            _from=AnchorMarker(
+                                col=photo_column - 1,
+                                row=worksheet.max_row - 1,
+                                colOff=pixels_to_EMU(8),
+                                rowOff=pixels_to_EMU(5),
+                            ),
+                            ext=XDRPositiveSize2D(
+                                cx=pixels_to_EMU(image.width),
+                                cy=pixels_to_EMU(image.height),
+                            ),
+                        )
+                        worksheet.add_image(image)
+                        worksheet.row_dimensions[worksheet.max_row].height = 82.5
+                        embedded_photo_count += 1
+                    except (OSError, ValueError):
+                        # Повреждённое или неподдерживаемое изображение не должно прерывать весь экспорт.
+                        pass
 
     for column_index, column in enumerate(selected_columns, start=1):
         column_letter = get_column_letter(column_index)
@@ -795,14 +1241,14 @@ def build_export_workbook(
             continue
         if column in EXPORT_FIXED_WIDTHS:
             width = EXPORT_FIXED_WIDTHS[column]
-        elif column in EXPORT_VALUE_WIDTH_COLUMNS:
+        elif column in EXPORT_VALUE_WIDTH_COLUMNS and apply_formatting:
             value_lengths = (len(str(cell.value or "")) for cell in worksheet[column_letter][1:])
             width = max(len(headers[column_index - 1]), *value_lengths) + 2
         else:
             width = len(headers[column_index - 1]) + 2
         worksheet.column_dimensions[column_letter].width = width
 
-        if column in EXPORT_FIXED_WIDTHS:
+        if column in EXPORT_FIXED_WIDTHS and apply_formatting:
             for cell in worksheet[column_letter]:
                 alignment = copy(cell.alignment)
                 alignment.wrap_text = True
@@ -810,9 +1256,10 @@ def build_export_workbook(
 
     # Вертикальное выравнивание применяется ко всей таблице, включая заголовки,
     # обычные значения и ячейки с переносом строк.
-    for row in worksheet.iter_rows():
-        for cell in row:
-            alignment = copy(cell.alignment)
-            alignment.vertical = "center"
-            cell.alignment = alignment
+    if apply_formatting:
+        for row in worksheet.iter_rows():
+            for cell in row:
+                alignment = copy(cell.alignment)
+                alignment.vertical = "center"
+                cell.alignment = alignment
     return workbook

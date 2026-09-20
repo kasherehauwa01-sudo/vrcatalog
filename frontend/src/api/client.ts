@@ -220,4 +220,22 @@ export const api = {
   exportUrl(kind: "csv" | "xlsx", params: URLSearchParams) {
     return `${API}/export.${kind}?${params}`;
   },
+  async startExcelExport(params: URLSearchParams): Promise<{ job_id: string; status: string }> {
+    return request<{ job_id: string; status: string }>(`${API}/exports/xlsx?${params}`, { method: "POST" });
+  },
+  async excelExportStatus(jobId: string): Promise<{ status: "processing" | "ready" | "error"; error?: string; size?: number; filename?: string; media_type?: string; processed: number; total?: number; progress: number }> {
+    return request<{ status: "processing" | "ready" | "error"; error?: string; size?: number; filename?: string; media_type?: string; processed: number; total?: number; progress: number }>(`${API}/exports/xlsx/${jobId}`);
+  },
+  async excelExportChunk(jobId: string, offset: number): Promise<{ content: ArrayBuffer; nextOffset: number; size: number }> {
+    const response = await fetch(`${API}/exports/xlsx/${jobId}/chunk?offset=${offset}`);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.detail ?? `Ошибка скачивания: ${response.status}`);
+    }
+    return {
+      content: await response.arrayBuffer(),
+      nextOffset: Number(response.headers.get("X-Next-Offset")),
+      size: Number(response.headers.get("X-File-Size")),
+    };
+  },
 };

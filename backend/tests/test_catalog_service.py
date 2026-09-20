@@ -1,12 +1,17 @@
 import unittest
+import tempfile
 from base64 import b64decode
 from datetime import datetime, timedelta
 from io import BytesIO
+from pathlib import Path
+from unittest.mock import patch
 
+from openpyxl import load_workbook
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
+from app.api import routes as catalog_routes
 from app.models.catalog import (
     Barcode,
     Price,
@@ -18,7 +23,7 @@ from app.models.catalog import (
     Stock,
     WarehouseSetting,
 )
-from app.api.routes import build_export_workbook, download_export_images, normalize_image_url
+from app.api.routes import build_export_workbook, download_export_images, normalize_image_url, write_export_workbook_streaming
 from app.services.catalog import catalog_product_query, list_filters, paginated_products
 from app.services.logging import add_log
 from app.schemas.catalog import ProductDetailOut
@@ -286,6 +291,189 @@ class CatalogProductQueryTests(unittest.TestCase):
     def test_excel_export_rejects_unknown_columns(self):
         with self.assertRaisesRegex(Exception, "Неизвестные колонки экспорта"):
             build_export_workbook(self.db, {}, ["unknown"])
+
+    def test_excel_export_can_build_fixed_size_parts(self):
+        first_part = build_export_workbook(
+            self.db,
+            {"in_stock_only": False},
+            ["code", "name"],
+            offset=0,
+            limit=2,
+        )
+        second_part = build_export_workbook(
+            self.db,
+            {"in_stock_only": False},
+            ["code", "name"],
+            offset=2,
+            limit=2,
+        )
+
+        self.assertEqual(first_part.active.max_row, 3)
+        self.assertEqual(second_part.active.max_row, 2)
+        exported_codes = [
+            *(row[1] for row in list(first_part.active.values)[1:]),
+            *(row[1] for row in list(second_part.active.values)[1:]),
+        ]
+        self.assertEqual(exported_codes, [product.code for product in self.products])
+
+    def test_streaming_excel_export_handles_one_thousand_products(self):
+        extra_products = [
+            Product(
+                code=f"BULK-{index:04d}",
+                name=f"Товар {index}",
+                article=f"ARTICLE-{index:04d}",
+                section="Большой экспорт",
+                quantity=index,
+                search_text=f"bulk {index}",
+            )
+            for index in range(997)
+        ]
+        self.db.add_all(extra_products)
+        self.db.commit()
+
+        with tempfile.NamedTemporaryFile(suffix=".xlsx") as output:
+            write_export_workbook_streaming(
+                self.db,
+                {"in_stock_only": False},
+                ["code", "article", "name", "quantity"],
+                output.name,
+                "test-large-export",
+                1000,
+            )
+            workbook = load_workbook(output.name, read_only=False)
+            rows = list(workbook.active.values)
+            worksheet = workbook.active
+
+        self.assertEqual(len(rows), 1001)
+        self.assertEqual(rows[0], ("Артикул", "Наименование", "Код", "Остаток"))
+        self.assertEqual({row[2] for row in rows[1:]}, {product.code for product in [*self.products, *extra_products]})
+        self.assertEqual(worksheet.freeze_panes, "A2")
+        self.assertEqual(worksheet.auto_filter.ref, "A1:D1001")
+        self.assertTrue(worksheet["A1"].font.bold)
+        self.assertEqual(worksheet["A1"].alignment.horizontal, "center")
+        self.assertTrue(worksheet["A1"].alignment.wrap_text)
+        self.assertEqual(worksheet.row_dimensions[1].height, 32)
+        self.assertAlmostEqual(worksheet.column_dimensions["A"].width, 20, delta=1)
+        self.assertAlmostEqual(worksheet.column_dimensions["B"].width, 55, delta=1)
+        self.assertAlmostEqual(worksheet.column_dimensions["C"].width, 16, delta=1)
+        self.assertAlmostEqual(worksheet.column_dimensions["D"].width, 14, delta=1)
+        self.assertEqual(worksheet["D2"].number_format, "# ##0")
+        self.assertNotEqual(worksheet["A2"].fill.fgColor.rgb, worksheet["A3"].fill.fgColor.rgb)
+        workbook.close()
+
+    def test_streaming_excel_export_handles_photos_in_several_batches(self):
+        products = [
+            Product(
+                code=f"PHOTO-{index:04d}",
+                name=f"Товар с фото {index}",
+                section="Фото-пакет",
+                search_text=f"photo {index}",
+                images=[ProductImage(image_order=1, image_url=f"https://example.test/{index}.png")],
+            )
+            for index in range(250)
+        ]
+        self.db.add_all(products)
+        self.db.commit()
+        png = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "thumbnail.png"
+            image_path.write_bytes(png)
+            output_path = Path(directory) / "products.xlsx"
+            with (
+                patch("app.api.routes.export_image_cache_path", return_value=image_path),
+                patch("app.api.routes.download_export_images", return_value={}),
+            ):
+                write_export_workbook_streaming(
+                    self.db,
+                    {"section": "Фото-пакет", "page": 51, "page_size": 5, "limit": 5, "offset": 250},
+                    ["photo", "code", "name"],
+                    str(output_path),
+                    "test-photo-export",
+                    250,
+                )
+            workbook = load_workbook(output_path, read_only=False)
+            worksheet = workbook.active
+
+        self.assertEqual(worksheet.max_row, 251)
+        self.assertEqual(len(worksheet._images), 250)
+        self.assertLessEqual(worksheet._images[0].width, 70)
+        self.assertLessEqual(worksheet._images[0].height, 70)
+        self.assertEqual(worksheet.row_dimensions[2].height, 60)
+        workbook.close()
+
+    def test_streaming_export_uses_the_same_filters_and_ignores_pagination(self):
+        scenarios = [
+            ({"section": "Мебель"}, {"CHAIR-1", "TABLE-3"}),
+            ({"properties": {"Коллекция": ["Лето"]}}, {"CHAIR-1"}),
+            ({"search": "стул", "section": "Мебель"}, {"CHAIR-1"}),
+            ({"page": 2, "page_size": 1}, {"CHAIR-1", "PAN-2", "TABLE-3"}),
+        ]
+        for index, (params, expected_codes) in enumerate(scenarios):
+            with self.subTest(params=params), tempfile.NamedTemporaryFile(suffix=".xlsx") as output:
+                write_export_workbook_streaming(
+                    self.db,
+                    params,
+                    ["code", "name"],
+                    output.name,
+                    f"test-filter-{index}",
+                    len(expected_codes),
+                )
+                workbook = load_workbook(output.name, read_only=True)
+                rows = list(workbook.active.values)
+                workbook.close()
+            self.assertEqual({row[1] for row in rows[1:]}, expected_codes)
+
+    def test_streaming_export_counts_products_not_batches(self):
+        expected_progress = {1: 100, 5: 100, 100: 100, 101: 100, 250: 100, 466: 100}
+        for count, final_progress in expected_progress.items():
+            section = f"Счётчик-{count}"
+            products = [
+                Product(code=f"COUNT-{count}-{index}", name=f"Товар {index}", section=section, search_text=f"count {count} {index}")
+                for index in range(count)
+            ]
+            self.db.add_all(products)
+            self.db.commit()
+            job_id = f"test-counter-{count}"
+            with tempfile.NamedTemporaryFile(suffix=".xlsx") as output:
+                with catalog_routes.export_jobs_lock:
+                    catalog_routes.export_jobs[job_id] = {"processed": 0, "progress": 0}
+                processed = write_export_workbook_streaming(
+                    self.db,
+                    {"section": section, "page_size": 5, "limit": 5},
+                    ["code", "name"],
+                    output.name,
+                    job_id,
+                    count,
+                )
+                workbook = load_workbook(output.name, read_only=True)
+                row_count = sum(1 for _ in workbook.active.rows) - 1
+                workbook.close()
+            with catalog_routes.export_jobs_lock:
+                job = catalog_routes.export_jobs.pop(job_id)
+            self.assertEqual(processed, count)
+            self.assertEqual(row_count, count)
+            self.assertEqual(job["processed"], count)
+            self.assertEqual(job["progress"], final_progress)
+
+        job_id = "test-counter-ready"
+        with catalog_routes.export_jobs_lock:
+            catalog_routes.export_jobs[job_id] = {
+                "status": "processing", "created_at": 0, "path": None, "error": None,
+                "processed": 0, "total": None, "progress": 0,
+            }
+        with patch.object(catalog_routes, "SessionLocal", side_effect=lambda: Session(self.engine)):
+            catalog_routes.create_xlsx_export(job_id, {"section": "Счётчик-466"}, ["code", "name"])
+        with catalog_routes.export_jobs_lock:
+            job = catalog_routes.export_jobs.pop(job_id)
+        try:
+            self.assertEqual(job["status"], "ready")
+            self.assertEqual(job["processed"], 466)
+            self.assertEqual(job["total"], 466)
+            self.assertEqual(job["progress"], 100)
+        finally:
+            if job.get("path"):
+                Path(job["path"]).unlink(missing_ok=True)
 
     def test_excel_export_embeds_first_photo_at_one_hundred_pixels(self):
         self.products[0].images = [
