@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import tempfile
 import time
@@ -31,6 +32,7 @@ from reportlab.lib.utils import ImageReader
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import SessionLocal, get_db
+from app.core.config import settings
 from app.importer.xml_importer import XMLCatalogImporter
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
 from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
@@ -54,6 +56,7 @@ EXPORT_DOWNLOAD_CHUNK_SIZE = 2 * 1024 * 1024
 MAX_EMBEDDED_EXPORT_IMAGES = 100
 EXPORT_ROWS_PER_FILE = 50
 EXPORT_XLSX_DEADLINE_SECONDS = 60
+PDF_IMAGE_BATCH_SIZE = 200
 
 @router.get("/health")
 def health():
@@ -640,7 +643,14 @@ def create_export_pdf(
 
     def draw_batch(batch: list[Product], current_y: float) -> float:
         image_urls = [product.images[0].image_url for product in batch if product.images]
-        downloaded_images = download_export_images(image_urls, image_loader)
+        # Для PDF используем больше потоков и крупный пакет: это заметно быстрее
+        # последовательных маленьких групп, при этом память ограничена одним пакетом.
+        downloaded_images = download_export_images(
+            image_urls,
+            image_loader,
+            max_workers=64,
+            timeout=30,
+        )
         for product in batch:
             if current_y < 56:
                 document.showPage()
@@ -676,7 +686,7 @@ def create_export_pdf(
 
     for product in products:
         product_batch.append(product)
-        if len(product_batch) == 20:
+        if len(product_batch) == PDF_IMAGE_BATCH_SIZE:
             y = draw_batch(product_batch, y)
             product_batch.clear()
     if product_batch:
@@ -685,13 +695,21 @@ def create_export_pdf(
 
 
 def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> None:
-    """Формирует один XLSX или ZIP с небольшими XLSX вне HTTP-запроса."""
+    """Формирует XLSX, ZIP или быстрый PDF вне HTTP-запроса."""
     path: str | None = None
     try:
         with SessionLocal() as db:
             deadline = time.monotonic() + EXPORT_XLSX_DEADLINE_SECONDS
             product_count = product_query(db, params).order_by(None).with_entities(Product.id).distinct().count()
-            if product_count <= EXPORT_ROWS_PER_FILE:
+            # Для большой выгрузки с фото сразу создаём PDF. Попытка сначала
+            # собрать Excel только тратила минуту и повторно скачивала изображения.
+            if product_count > EXPORT_ROWS_PER_FILE and columns and "photo" in columns:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as output:
+                    path = output.name
+                create_export_pdf(db, params, path)
+                filename = "products.pdf"
+                media_type = "application/pdf"
+            elif product_count <= EXPORT_ROWS_PER_FILE:
                 workbook = build_export_workbook(db, params, columns)
                 if time.monotonic() < deadline:
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
@@ -887,9 +905,13 @@ def normalize_image_url(url: str) -> str:
 
 
 def download_export_image(url: str) -> BytesIO | None:
-    """Загружает изображение для Excel с ограничением времени и объёма ответа."""
+    """Возвращает миниатюру из кэша либо загружает и сохраняет её."""
     try:
         normalized_url = normalize_image_url(url)
+        cache_dir = Path(settings.upload_dir) / "export-image-cache"
+        cache_path = cache_dir / f"{hashlib.sha256(normalized_url.encode()).hexdigest()}.jpg"
+        if cache_path.exists():
+            return BytesIO(cache_path.read_bytes())
         request = Request(normalized_url, headers={
             "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
             "Referer": "https://volgorost.ru/",
@@ -907,6 +929,10 @@ def download_export_image(url: str) -> BytesIO | None:
             # память при создании книги и итоговый размер выгрузки.
             image.convert("RGB").save(prepared, format="JPEG", quality=70, optimize=True)
             prepared.seek(0)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            temporary_cache_path = cache_path.with_suffix(".tmp")
+            temporary_cache_path.write_bytes(prepared.getvalue())
+            temporary_cache_path.replace(cache_path)
             return prepared
     except (OSError, ValueError, UnidentifiedImageError):
         return None
@@ -915,14 +941,17 @@ def download_export_image(url: str) -> BytesIO | None:
 def download_export_images(
     urls: list[str],
     image_loader: Callable[[str], BytesIO | None],
+    *,
+    max_workers: int = 24,
+    timeout: float = 15,
 ) -> dict[str, bytes]:
-    """Параллельно загружает уникальные фото, не задерживая экспорт дольше 15 секунд."""
+    """Параллельно загружает уникальные фото с заданными лимитами."""
     unique_urls = list(dict.fromkeys(urls))
     if not unique_urls:
         return {}
-    executor = ThreadPoolExecutor(max_workers=min(24, len(unique_urls)))
+    executor = ThreadPoolExecutor(max_workers=min(max_workers, len(unique_urls)))
     futures = {executor.submit(image_loader, url): url for url in unique_urls}
-    completed, pending = wait(futures, timeout=15)
+    completed, pending = wait(futures, timeout=timeout)
     images: dict[str, bytes] = {}
     for future in completed:
         try:
