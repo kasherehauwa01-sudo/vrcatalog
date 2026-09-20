@@ -35,7 +35,7 @@ from app.importer.xml_importer import XMLCatalogImporter
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
 from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
-from app.services.catalog import decorate, list_filters, meta, product_query, paginated_products
+from app.services.catalog import catalog_product_query, decorate, list_filters, meta, product_query, paginated_products
 from app.services.logging import add_log
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
@@ -611,22 +611,31 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
     started_at = time.monotonic()
     try:
         with SessionLocal() as db:
-            product_count = product_query(db, params, eager_load=False).order_by(None).with_entities(Product.id).distinct().count()
+            product_count = catalog_product_query(db, params, eager_load=False).order_by(None).with_entities(Product.id).distinct().count()
             has_photos = bool(columns and "photo" in columns)
-            logger.info("Экспорт %s: товаров=%s, фото=%s, RSS=%s МБ", job_id, product_count, has_photos, current_rss_mb())
+            safe_params = {key: value for key, value in params.items() if value not in (None, "", [], {}, False, "all")}
+            with export_jobs_lock:
+                export_jobs[job_id].update(total=product_count, processed=0, progress=0)
+            logger.info("Экспорт %s: начало, товаров=%s, фильтры=%s, фото=%s, RSS=%s МБ", job_id, product_count, safe_params, has_photos, current_rss_mb())
             with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
                 path = output.name
             if product_count > EXPORT_ROWS_PER_FILE:
-                write_export_workbook_streaming(db, params, columns, path, job_id)
+                processed = write_export_workbook_streaming(db, params, columns, path, job_id, product_count)
             else:
                 workbook = build_export_workbook(db, params, columns)
                 workbook.save(path)
                 workbook.close()
                 del workbook
+                processed = product_count
             filename = "products.xlsx"
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             gc.collect()
-            logger.info("Экспорт %s готов за %.1f сек., RSS=%s МБ", job_id, time.monotonic() - started_at, current_rss_mb())
+            if processed != product_count:
+                logger.error("Экспорт %s: количество не совпало, обработано=%s, ожидалось=%s", job_id, processed, product_count)
+                raise RuntimeError(f"Количество строк экспорта изменилось: обработано {processed}, ожидалось {product_count}")
+            with export_jobs_lock:
+                export_jobs[job_id].update(processed=processed, progress=100)
+            logger.info("Экспорт %s завершён: обработано=%s, ожидалось=%s, время=%.1f сек., RSS=%s МБ", job_id, processed, product_count, time.monotonic() - started_at, current_rss_mb())
         with export_jobs_lock:
             export_jobs[job_id].update(status="ready", path=path, filename=filename, media_type=media_type)
     except Exception as exc:
@@ -637,14 +646,58 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
 
 
 @router.post("/exports/xlsx")
-def start_xlsx_export(search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):
+def start_xlsx_export(
+    search: Annotated[str | None, Query(max_length=255)] = None,
+    id: Annotated[int | None, Query(ge=1)] = None,
+    name: Annotated[str | None, Query(max_length=512)] = None,
+    code: Annotated[str | None, Query(max_length=2000)] = None,
+    article: Annotated[str | None, Query(max_length=2000)] = None,
+    barcode: Annotated[str | None, Query(max_length=2000)] = None,
+    section: Annotated[str | None, Query(max_length=2000)] = None,
+    manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
+    brand: Annotated[str | None, Query(max_length=2000)] = None,
+    manager: Annotated[str | None, Query(max_length=2000)] = None,
+    country: Annotated[str | None, Query(max_length=2000)] = None,
+    material: Annotated[str | None, Query(max_length=2000)] = None,
+    color: Annotated[str | None, Query(max_length=2000)] = None,
+    product_type: Annotated[str | None, Query(alias="productType", max_length=2000)] = None,
+    warehouse: Annotated[str | None, Query(max_length=2000)] = None,
+    availability: Literal["all", "in_stock", "out_of_stock"] = "all",
+    in_stock_only: Annotated[bool, Query(alias="inStockOnly")] = True,
+    exclude_yyy: Annotated[bool, Query(alias="excludeYyy")] = True,
+    only_new: Annotated[bool, Query(alias="onlyNew")] = False,
+    quantity_from: Annotated[float | None, Query(alias="quantityFrom")] = None,
+    quantity_to: Annotated[float | None, Query(alias="quantityTo")] = None,
+    price_from: Annotated[float | None, Query(alias="priceFrom", ge=0)] = None,
+    price_to: Annotated[float | None, Query(alias="priceTo", ge=0)] = None,
+    property: Annotated[list[str] | None, Query()] = None,
+    column: Annotated[list[str] | None, Query()] = None,
+):
     """Запускает длительное формирование Excel и сразу возвращает идентификатор задания."""
-    params = locals()
-    columns = params.pop("column")
+    if quantity_from is not None and quantity_to is not None and quantity_from > quantity_to:
+        raise HTTPException(422, "Минимальное количество не может быть больше максимального")
+    if price_from is not None and price_to is not None and price_from > price_to:
+        raise HTTPException(422, "Минимальная цена не может быть больше максимальной")
+    properties: dict[str, list[str]] = {}
+    for item in property or []:
+        property_name, separator, value = item.partition(":")
+        if not separator or not property_name.strip() or not value.strip():
+            raise HTTPException(422, "Свойство должно иметь формат «Название:Значение»")
+        properties.setdefault(property_name.strip(), []).append(value.strip())
+    params = {
+        "search": search, "id": id, "name": name, "code": code, "article": article,
+        "barcode": barcode, "section": section, "manufacturer": manufacturer, "brand": brand,
+        "manager": manager, "country": country, "material": material, "color": color,
+        "product_type": product_type, "warehouse": warehouse, "availability": availability,
+        "in_stock_only": in_stock_only, "exclude_yyy": exclude_yyy, "only_new": only_new,
+        "quantity_from": quantity_from, "quantity_to": quantity_to,
+        "price_from": price_from, "price_to": price_to, "properties": properties,
+    }
+    columns = column
     cleanup_export_jobs()
     job_id = uuid.uuid4().hex
     with export_jobs_lock:
-        export_jobs[job_id] = {"status": "processing", "created_at": time.monotonic(), "path": None, "error": None}
+        export_jobs[job_id] = {"status": "processing", "created_at": time.monotonic(), "path": None, "error": None, "processed": 0, "total": None, "progress": 0}
     export_executor.submit(create_xlsx_export, job_id, params, columns)
     return {"job_id": job_id, "status": "processing"}
 
@@ -664,6 +717,9 @@ def xlsx_export_status(job_id: str):
             "size": size,
             "filename": job.get("filename"),
             "media_type": job.get("media_type"),
+            "processed": job.get("processed", 0),
+            "total": job.get("total"),
+            "progress": job.get("progress", 0),
         }
 
 
@@ -849,7 +905,8 @@ def write_export_workbook_streaming(
     columns: list[str] | None,
     path: str,
     job_id: str,
-) -> None:
+    total: int,
+) -> int:
     """Пишет большой XLSX на диск пакетами, не удерживая строки каталога в памяти."""
     selected_columns = columns or LEGACY_EXPORT_COLUMNS
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
@@ -893,7 +950,7 @@ def write_export_workbook_streaming(
     batch_number = 0
     try:
         while True:
-            query = product_query(db, params, eager_load=False).filter(Product.id > last_id).distinct().order_by(Product.id).limit(EXPORT_PRODUCT_BATCH_SIZE)
+            query = catalog_product_query(db, params, eager_load=False).filter(Product.id > last_id).distinct().order_by(Product.id).limit(EXPORT_PRODUCT_BATCH_SIZE)
             if relation_options:
                 query = query.options(*relation_options)
             products = query.all()
@@ -941,8 +998,16 @@ def write_export_workbook_streaming(
                             worksheet.write_url(row_index, photo_column, photo_url, string="Открыть фото")
                     except ValueError:
                         worksheet.write(row_index, photo_column, "Фото недоступно")
-                row_index += 1
+            row_index += 1
             last_id = products[-1].id
+            processed = row_index - 1
+            with export_jobs_lock:
+                job = export_jobs.get(job_id)
+                if job:
+                    job.update(
+                        processed=processed,
+                        progress=round(processed * 100 / total) if total else 100,
+                    )
             del products
             db.expire_all()
             gc.collect()
@@ -950,6 +1015,7 @@ def write_export_workbook_streaming(
         workbook.close()
         del worksheet, workbook
         gc.collect()
+    return row_index - 1
 
 
 def build_export_workbook(
@@ -1003,7 +1069,7 @@ def build_export_workbook(
         relation_options.append(selectinload(Product.properties))
     if needs_barcodes:
         relation_options.append(selectinload(Product.barcodes))
-    products_query = product_query(db, params, eager_load=False).distinct().order_by(Product.id)
+    products_query = catalog_product_query(db, params, eager_load=False).distinct().order_by(Product.id)
     if relation_options:
         products_query = products_query.options(*relation_options)
     if offset:

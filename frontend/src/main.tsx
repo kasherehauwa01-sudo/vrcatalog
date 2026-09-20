@@ -608,7 +608,7 @@ function App() {
   };
   const downloadExcel = async () => {
     const exportParams = new URLSearchParams(params);
-    exportParams.delete("column");
+    ["column", "page", "pageSize", "sort", "order"].forEach((key) => exportParams.delete(key));
     exportColumns.forEach((column) => exportParams.append("column", column));
     setExporting(true);
     setExportError(null);
@@ -620,6 +620,9 @@ function App() {
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
         if (attempt === 59) setExportMessage("Большой Excel продолжает формироваться пакетами…");
         const result = await api.excelExportStatus(jobId);
+        if (result.total) {
+          setExportMessage(`Обработано ${result.processed} из ${result.total} товаров`);
+        }
         if (result.status === "ready") {
           const chunks: BlobPart[] = [];
           let offset = 0;

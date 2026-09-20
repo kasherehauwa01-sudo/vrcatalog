@@ -337,6 +337,7 @@ class CatalogProductQueryTests(unittest.TestCase):
                 ["code", "article", "name", "quantity"],
                 output.name,
                 "test-large-export",
+                1000,
             )
             workbook = load_workbook(output.name, read_only=True)
             rows = list(workbook.active.values)
@@ -374,6 +375,7 @@ class CatalogProductQueryTests(unittest.TestCase):
                     ["photo", "code", "name"],
                     str(output_path),
                     "test-photo-export",
+                    253,
                 )
             workbook = load_workbook(output_path, read_only=False)
             worksheet = workbook.active
@@ -381,6 +383,28 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual(worksheet.max_row, 254)
         self.assertEqual(len(worksheet._images), 250)
         workbook.close()
+
+    def test_streaming_export_uses_the_same_filters_and_ignores_pagination(self):
+        scenarios = [
+            ({"section": "Мебель"}, {"CHAIR-1", "TABLE-3"}),
+            ({"properties": {"Коллекция": ["Лето"]}}, {"CHAIR-1"}),
+            ({"search": "стул", "section": "Мебель"}, {"CHAIR-1"}),
+            ({"page": 2, "page_size": 1}, {"CHAIR-1", "PAN-2", "TABLE-3"}),
+        ]
+        for index, (params, expected_codes) in enumerate(scenarios):
+            with self.subTest(params=params), tempfile.NamedTemporaryFile(suffix=".xlsx") as output:
+                write_export_workbook_streaming(
+                    self.db,
+                    params,
+                    ["code", "name"],
+                    output.name,
+                    f"test-filter-{index}",
+                    len(expected_codes),
+                )
+                workbook = load_workbook(output.name, read_only=True)
+                rows = list(workbook.active.values)
+                workbook.close()
+            self.assertEqual({row[1] for row in rows[1:]}, expected_codes)
 
     def test_excel_export_embeds_first_photo_at_one_hundred_pixels(self):
         self.products[0].images = [
