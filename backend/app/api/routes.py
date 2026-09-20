@@ -1,17 +1,20 @@
 import csv
 import json
 import tempfile
+import time
+import uuid
 from copy import copy
 from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO, BytesIO
 from pathlib import Path
+from threading import Lock
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-from typing import Annotated, Callable, Literal
+from typing import Annotated, Any, Callable, Literal
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
@@ -21,7 +24,7 @@ from openpyxl.utils.units import pixels_to_EMU
 from PIL import Image as PillowImage, UnidentifiedImageError
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.importer.xml_importer import XMLCatalogImporter
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
 from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
@@ -32,6 +35,11 @@ from app.services.xml_auto_import import get_auto_import_state, get_xml_server_s
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
 
 router = APIRouter()
+
+export_executor = ThreadPoolExecutor(max_workers=2)
+export_jobs: dict[str, dict[str, Any]] = {}
+export_jobs_lock = Lock()
+EXPORT_JOB_TTL_SECONDS = 60 * 60
 
 @router.get("/health")
 def health():
@@ -568,6 +576,73 @@ def export_csv(db: Session = Depends(get_db), search: str | None = None):
     output = StringIO(); writer = csv.writer(output); writer.writerow(["Код", "Артикул", "Название", "Раздел", "Остаток"])
     for p in product_query(db, {"search": search}).all(): writer.writerow([p.code, p.article, p.name, p.section, p.quantity])
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=products.csv"})
+
+
+def cleanup_export_jobs() -> None:
+    """Удаляет устаревшие задания и временные файлы экспорта."""
+    cutoff = time.monotonic() - EXPORT_JOB_TTL_SECONDS
+    with export_jobs_lock:
+        expired_ids = [job_id for job_id, job in export_jobs.items() if job["created_at"] < cutoff]
+        expired_jobs = [export_jobs.pop(job_id) for job_id in expired_ids]
+    for job in expired_jobs:
+        if job.get("path"):
+            Path(job["path"]).unlink(missing_ok=True)
+
+
+def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> None:
+    """Формирует файл вне HTTP-запроса, чтобы внешний nginx не прервал операцию по тайм-ауту."""
+    path: str | None = None
+    try:
+        with SessionLocal() as db:
+            workbook = build_export_workbook(db, params, columns)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
+            path = output.name
+        workbook.save(path)
+        with export_jobs_lock:
+            export_jobs[job_id].update(status="ready", path=path)
+    except Exception as exc:
+        if path:
+            Path(path).unlink(missing_ok=True)
+        with export_jobs_lock:
+            export_jobs[job_id].update(status="error", error=str(exc) or "Не удалось сформировать Excel")
+
+
+@router.post("/exports/xlsx")
+def start_xlsx_export(search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):
+    """Запускает длительное формирование Excel и сразу возвращает идентификатор задания."""
+    params = locals()
+    columns = params.pop("column")
+    cleanup_export_jobs()
+    job_id = uuid.uuid4().hex
+    with export_jobs_lock:
+        export_jobs[job_id] = {"status": "processing", "created_at": time.monotonic(), "path": None, "error": None}
+    export_executor.submit(create_xlsx_export, job_id, params, columns)
+    return {"job_id": job_id, "status": "processing"}
+
+
+@router.get("/exports/xlsx/{job_id}")
+def xlsx_export_status(job_id: str):
+    """Возвращает состояние фонового экспорта."""
+    cleanup_export_jobs()
+    with export_jobs_lock:
+        job = export_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "Задание экспорта не найдено или устарело")
+        return {"status": job["status"], "error": job["error"]}
+
+
+@router.get("/exports/xlsx/{job_id}/download")
+def download_xlsx_export(job_id: str):
+    """Отдаёт уже сформированный файл без длительного ожидания в прокси."""
+    with export_jobs_lock:
+        job = export_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "Задание экспорта не найдено или устарело")
+        if job["status"] != "ready" or not job["path"]:
+            raise HTTPException(409, "Файл Excel ещё не готов")
+        path = job["path"]
+    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename="products.xlsx")
+
 
 @router.get("/export.xlsx")
 def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):

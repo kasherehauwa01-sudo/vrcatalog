@@ -220,4 +220,13 @@ export const api = {
   exportUrl(kind: "csv" | "xlsx", params: URLSearchParams) {
     return `${API}/export.${kind}?${params}`;
   },
+  async startExcelExport(params: URLSearchParams): Promise<{ job_id: string; status: string }> {
+    return request<{ job_id: string; status: string }>(`${API}/exports/xlsx?${params}`, { method: "POST" });
+  },
+  async excelExportStatus(jobId: string): Promise<{ status: "processing" | "ready" | "error"; error?: string }> {
+    return request<{ status: "processing" | "ready" | "error"; error?: string }>(`${API}/exports/xlsx/${jobId}`);
+  },
+  excelExportDownloadUrl(jobId: string) {
+    return `${API}/exports/xlsx/${jobId}/download`;
+  },
 };

@@ -267,6 +267,8 @@ function App() {
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportColumns, setExportColumns] = useState<string[]>(defaultExportColumns);
   const [exportWarehouses, setExportWarehouses] = useState<Warehouse[]>([]);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 100, totalItems: 0, totalPages: 0 });
@@ -591,6 +593,7 @@ function App() {
   };
   const openExportDialog = async () => {
     setExportColumns(defaultExportColumns);
+    setExportError(null);
     setExportWarehouses(await api.warehouses());
     setExportDialogOpen(true);
   };
@@ -599,12 +602,30 @@ function App() {
       current.includes(column) ? current.filter((item) => item !== column) : [...current, column],
     );
   };
-  const downloadExcel = () => {
+  const downloadExcel = async () => {
     const exportParams = new URLSearchParams(params);
     exportParams.delete("column");
     exportColumns.forEach((column) => exportParams.append("column", column));
-    window.location.href = api.exportUrl("xlsx", exportParams);
-    setExportDialogOpen(false);
+    setExporting(true);
+    setExportError(null);
+    try {
+      const { job_id: jobId } = await api.startExcelExport(exportParams);
+      for (let attempt = 0; attempt < 900; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        const result = await api.excelExportStatus(jobId);
+        if (result.status === "ready") {
+          window.location.href = api.excelExportDownloadUrl(jobId);
+          setExportDialogOpen(false);
+          return;
+        }
+        if (result.status === "error") throw new Error(result.error || "Не удалось сформировать Excel");
+      }
+      throw new Error("Формирование Excel заняло слишком много времени. Попробуйте уменьшить выборку.");
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "Не удалось сформировать Excel");
+    } finally {
+      setExporting(false);
+    }
   };
   const openLogs = async () => {
     setSettingsTab("logs");
@@ -917,9 +938,16 @@ function App() {
             </DialogActions>
           </Dialog>
 
-          <Dialog open={exportDialogOpen} onClose={() => setExportDialogOpen(false)} maxWidth="sm" fullWidth>
+          <Dialog open={exportDialogOpen} onClose={() => !exporting && setExportDialogOpen(false)} maxWidth="sm" fullWidth>
             <DialogTitle>Выберите колонки для Excel</DialogTitle>
             <DialogContent>
+              {exporting && (
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="body2" sx={{ mb: 1 }}>Формируем Excel. Не закрывайте это окно…</Typography>
+                  <LinearProgress />
+                </Box>
+              )}
+              {exportError && <Typography color="error" sx={{ mb: 2 }}>{exportError}</Typography>}
               <Typography variant="h6" sx={{ mt: 1 }}>Основные</Typography>
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" } }}>
                 {exportMainColumns.map(([key, label]) => (
@@ -948,8 +976,10 @@ function App() {
               </Box>
             </DialogContent>
             <DialogActions>
-              <Button onClick={() => setExportDialogOpen(false)}>Отмена</Button>
-              <Button variant="contained" disabled={!exportColumns.length} onClick={downloadExcel}>Скачать Excel</Button>
+              <Button disabled={exporting} onClick={() => setExportDialogOpen(false)}>Отмена</Button>
+              <Button variant="contained" disabled={!exportColumns.length || exporting} onClick={downloadExcel}>
+                {exporting ? "Формирование…" : "Скачать Excel"}
+              </Button>
             </DialogActions>
           </Dialog>
 
