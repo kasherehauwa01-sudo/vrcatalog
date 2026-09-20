@@ -695,16 +695,23 @@ def create_export_pdf(
 
 
 def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> None:
-    """Формирует XLSX, ZIP или быстрый PDF вне HTTP-запроса."""
+    """Формирует XLSX или резервный PDF вне HTTP-запроса."""
     path: str | None = None
     try:
         with SessionLocal() as db:
             deadline = time.monotonic() + EXPORT_XLSX_DEADLINE_SECONDS
-            product_count = product_query(db, params).order_by(None).with_entities(Product.id).distinct().count()
-            # В большой выгрузке Excel сам загружает фото по URL через IMAGE().
-            # Это избавляет backend от скачивания и встраивания тысяч файлов.
-            if product_count > EXPORT_ROWS_PER_FILE and columns and "photo" in columns:
-                workbook = build_export_workbook(db, params, columns, embed_photos=False)
+            product_count = product_query(db, params, eager_load=False).order_by(None).with_entities(Product.id).distinct().count()
+            # Большую выборку собираем одной книгой без дорогостоящего форматирования.
+            # Предыдущее разбиение по 50 строк создавало сотни XLSX и было основной
+            # причиной задержки даже тогда, когда колонка «Фото» не была выбрана.
+            if product_count > EXPORT_ROWS_PER_FILE:
+                workbook = build_export_workbook(
+                    db,
+                    params,
+                    columns,
+                    embed_photos=not (columns and "photo" in columns),
+                    apply_formatting=False,
+                )
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
                     path = output.name
                 workbook.save(path)
@@ -730,44 +737,6 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
                     create_export_pdf(db, params, path)
                     filename = "products.pdf"
                     media_type = "application/pdf"
-            else:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as output:
-                    path = output.name
-                excel_timed_out = False
-                with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
-                    for part_number, offset in enumerate(range(0, product_count, EXPORT_ROWS_PER_FILE), start=1):
-                        if time.monotonic() >= deadline:
-                            excel_timed_out = True
-                            break
-                        workbook = build_export_workbook(
-                            db,
-                            params,
-                            columns,
-                            offset=offset,
-                            limit=EXPORT_ROWS_PER_FILE,
-                        )
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as part:
-                            part_path = Path(part.name)
-                        try:
-                            workbook.save(part_path)
-                            workbook.close()
-                            del workbook
-                            archive.write(part_path, arcname=f"products_{part_number:03d}.xlsx")
-                        finally:
-                            part_path.unlink(missing_ok=True)
-                        if time.monotonic() >= deadline:
-                            excel_timed_out = True
-                            break
-                if excel_timed_out:
-                    Path(path).unlink(missing_ok=True)
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as output:
-                        path = output.name
-                    create_export_pdf(db, params, path)
-                    filename = "products.pdf"
-                    media_type = "application/pdf"
-                else:
-                    filename = "products.zip"
-                    media_type = "application/zip"
         with export_jobs_lock:
             export_jobs[job_id].update(status="ready", path=path, filename=filename, media_type=media_type)
     except Exception as exc:
@@ -977,6 +946,7 @@ def build_export_workbook(
     offset: int = 0,
     limit: int | None = None,
     embed_photos: bool = True,
+    apply_formatting: bool = True,
 ) -> Workbook:
     selected_columns = columns or LEGACY_EXPORT_COLUMNS
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
@@ -1005,13 +975,24 @@ def build_export_workbook(
         else:
             headers.append(warehouse_names[column.removeprefix("stock:")])
 
-    products_query = product_query(db, params).distinct().order_by(Product.id).options(
-            selectinload(Product.images),
-            selectinload(Product.prices),
-            selectinload(Product.stocks),
-            selectinload(Product.properties),
-            selectinload(Product.barcodes),
-        )
+    needs_prices = any(column.startswith("price:") for column in selected_columns)
+    needs_stocks = any(column.startswith("stock:") for column in selected_columns)
+    needs_properties = any(column in {"manager", "marking_code"} for column in selected_columns)
+    needs_barcodes = "barcodes" in selected_columns
+    relation_options = []
+    if "photo" in selected_columns:
+        relation_options.append(selectinload(Product.images))
+    if needs_prices:
+        relation_options.append(selectinload(Product.prices))
+    if needs_stocks:
+        relation_options.append(selectinload(Product.stocks))
+    if needs_properties:
+        relation_options.append(selectinload(Product.properties))
+    if needs_barcodes:
+        relation_options.append(selectinload(Product.barcodes))
+    products_query = product_query(db, params, eager_load=False).distinct().order_by(Product.id)
+    if relation_options:
+        products_query = products_query.options(*relation_options)
     if offset:
         products_query = products_query.offset(offset)
     if limit is not None:
@@ -1040,14 +1021,14 @@ def build_export_workbook(
             photo_url = product.images[0].image_url if photo_column and product.images else ""
             image_content = downloaded_images.get(photo_url)
             properties: dict[str, str] = {}
-            for item in product.properties:
+            for item in (product.properties if needs_properties else ()):
                 value = (item.value or "").strip()
                 for key in (item.name, item.property_code):
                     normalized_key = normalize_export_property_key(key)
                     if normalized_key and value:
                         properties.setdefault(normalized_key, value)
-            prices = {item.price_type: item.price_value for item in product.prices}
-            stocks = {item.warehouse: item.quantity for item in product.stocks}
+            prices = {item.price_type: item.price_value for item in product.prices} if needs_prices else {}
+            stocks = {item.warehouse: item.quantity for item in product.stocks} if needs_stocks else {}
             main_values = {
                 "code": product.code,
                 "article": product.article or "",
@@ -1068,7 +1049,7 @@ def build_export_workbook(
                 "marking_code": properties.get("кодмаркировки", "") or properties.get("markingcode", ""),
                 "material": product.material or "",
                 "certificate": product.certificate or "",
-                "barcodes": ", ".join(item.value for item in product.barcodes),
+                "barcodes": ", ".join(item.value for item in product.barcodes) if needs_barcodes else "",
                 "quantity": product.quantity,
             }
             row = []
@@ -1119,14 +1100,14 @@ def build_export_workbook(
             continue
         if column in EXPORT_FIXED_WIDTHS:
             width = EXPORT_FIXED_WIDTHS[column]
-        elif column in EXPORT_VALUE_WIDTH_COLUMNS:
+        elif column in EXPORT_VALUE_WIDTH_COLUMNS and apply_formatting:
             value_lengths = (len(str(cell.value or "")) for cell in worksheet[column_letter][1:])
             width = max(len(headers[column_index - 1]), *value_lengths) + 2
         else:
             width = len(headers[column_index - 1]) + 2
         worksheet.column_dimensions[column_letter].width = width
 
-        if column in EXPORT_FIXED_WIDTHS:
+        if column in EXPORT_FIXED_WIDTHS and apply_formatting:
             for cell in worksheet[column_letter]:
                 alignment = copy(cell.alignment)
                 alignment.wrap_text = True
@@ -1134,9 +1115,10 @@ def build_export_workbook(
 
     # Вертикальное выравнивание применяется ко всей таблице, включая заголовки,
     # обычные значения и ячейки с переносом строк.
-    for row in worksheet.iter_rows():
-        for cell in row:
-            alignment = copy(cell.alignment)
-            alignment.vertical = "center"
-            cell.alignment = alignment
+    if apply_formatting:
+        for row in worksheet.iter_rows():
+            for cell in row:
+                alignment = copy(cell.alignment)
+                alignment.vertical = "center"
+                cell.alignment = alignment
     return workbook
