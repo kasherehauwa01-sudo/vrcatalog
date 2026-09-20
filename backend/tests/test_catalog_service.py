@@ -342,6 +342,26 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual(worksheet["A2"].value, None)
         workbook.save(BytesIO())
 
+    def test_excel_export_can_leave_photo_loading_to_excel(self):
+        self.products[0].images = [
+            ProductImage(image_order=1, image_url='https://example.test/photo"1.jpg'),
+        ]
+        requested_urls = []
+
+        workbook = build_export_workbook(
+            self.db,
+            {"code": "CHAIR-1", "in_stock_only": False},
+            ["code", "photo", "name"],
+            image_loader=lambda url: requested_urls.append(url),
+            embed_photos=False,
+        )
+        worksheet = workbook.active
+
+        self.assertEqual(requested_urls, [])
+        self.assertEqual(worksheet["A2"].value, '=IMAGE("https://example.test/photo""1.jpg")')
+        self.assertEqual(worksheet.row_dimensions[2].height, 82.5)
+        self.assertEqual(worksheet._images, [])
+
     def test_excel_export_encodes_cyrillic_image_path(self):
         self.assertEqual(
             normalize_image_url("https://volgorost.ru/images/Новая папка/Фото 1.jpg"),
