@@ -962,6 +962,7 @@ def write_export_workbook_streaming(
         worksheet.set_column(column_index, column_index, 16 if selected_columns[column_index] == "photo" else max(12, len(header) + 2))
     photo_column = selected_columns.index("photo") if needs_photos else None
     row_index = 1
+    processed = 0
     last_id = 0
     batch_number = 0
     if filtered_ids is None:
@@ -989,7 +990,7 @@ def write_export_workbook_streaming(
             batch_number += 1
             logger.info(
                 "Экспорт %s: пакет=%s, min_id=%s, max_id=%s, batch_size=%s, processed=%s, total=%s, RSS=%s МБ",
-                job_id, batch_number, batch_ids[0], batch_ids[-1], len(batch_ids), row_index - 1, total, current_rss_mb(),
+                job_id, batch_number, batch_ids[0], batch_ids[-1], len(batch_ids), processed, total, current_rss_mb(),
             )
             if needs_photos:
                 download_export_images(
@@ -1031,9 +1032,9 @@ def write_export_workbook_streaming(
                             worksheet.write_url(row_index, photo_column, photo_url, string="Открыть фото")
                     except ValueError:
                         worksheet.write(row_index, photo_column, "Фото недоступно")
-            row_index += 1
+                row_index += 1
             last_id = batch_ids[-1]
-            processed = row_index - 1
+            processed += len(products)
             with export_jobs_lock:
                 job = export_jobs.get(job_id)
                 if job:
@@ -1048,7 +1049,7 @@ def write_export_workbook_streaming(
         workbook.close()
         del worksheet, workbook
         gc.collect()
-    return row_index - 1
+    return processed
 
 
 def build_export_workbook(

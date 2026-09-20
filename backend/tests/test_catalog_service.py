@@ -11,6 +11,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
+from app.api import routes as catalog_routes
 from app.models.catalog import (
     Barcode,
     Price,
@@ -406,6 +407,57 @@ class CatalogProductQueryTests(unittest.TestCase):
                 rows = list(workbook.active.values)
                 workbook.close()
             self.assertEqual({row[1] for row in rows[1:]}, expected_codes)
+
+    def test_streaming_export_counts_products_not_batches(self):
+        expected_progress = {1: 100, 5: 100, 100: 100, 101: 100, 250: 100, 466: 100}
+        for count, final_progress in expected_progress.items():
+            section = f"Счётчик-{count}"
+            products = [
+                Product(code=f"COUNT-{count}-{index}", name=f"Товар {index}", section=section, search_text=f"count {count} {index}")
+                for index in range(count)
+            ]
+            self.db.add_all(products)
+            self.db.commit()
+            job_id = f"test-counter-{count}"
+            with tempfile.NamedTemporaryFile(suffix=".xlsx") as output:
+                with catalog_routes.export_jobs_lock:
+                    catalog_routes.export_jobs[job_id] = {"processed": 0, "progress": 0}
+                processed = write_export_workbook_streaming(
+                    self.db,
+                    {"section": section, "page_size": 5, "limit": 5},
+                    ["code", "name"],
+                    output.name,
+                    job_id,
+                    count,
+                )
+                workbook = load_workbook(output.name, read_only=True)
+                row_count = sum(1 for _ in workbook.active.rows) - 1
+                workbook.close()
+            with catalog_routes.export_jobs_lock:
+                job = catalog_routes.export_jobs.pop(job_id)
+            self.assertEqual(processed, count)
+            self.assertEqual(row_count, count)
+            self.assertEqual(job["processed"], count)
+            self.assertEqual(job["progress"], final_progress)
+
+        job_id = "test-counter-ready"
+        with catalog_routes.export_jobs_lock:
+            catalog_routes.export_jobs[job_id] = {
+                "status": "processing", "created_at": 0, "path": None, "error": None,
+                "processed": 0, "total": None, "progress": 0,
+            }
+        with patch.object(catalog_routes, "SessionLocal", side_effect=lambda: Session(self.engine)):
+            catalog_routes.create_xlsx_export(job_id, {"section": "Счётчик-466"}, ["code", "name"])
+        with catalog_routes.export_jobs_lock:
+            job = catalog_routes.export_jobs.pop(job_id)
+        try:
+            self.assertEqual(job["status"], "ready")
+            self.assertEqual(job["processed"], 466)
+            self.assertEqual(job["total"], 466)
+            self.assertEqual(job["progress"], 100)
+        finally:
+            if job.get("path"):
+                Path(job["path"]).unlink(missing_ok=True)
 
     def test_excel_export_embeds_first_photo_at_one_hundred_pixels(self):
         self.products[0].images = [
