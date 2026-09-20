@@ -340,13 +340,26 @@ class CatalogProductQueryTests(unittest.TestCase):
                 "test-large-export",
                 1000,
             )
-            workbook = load_workbook(output.name, read_only=True)
+            workbook = load_workbook(output.name, read_only=False)
             rows = list(workbook.active.values)
-            workbook.close()
+            worksheet = workbook.active
 
         self.assertEqual(len(rows), 1001)
         self.assertEqual(rows[0], ("Артикул", "Наименование", "Код", "Остаток"))
         self.assertEqual({row[2] for row in rows[1:]}, {product.code for product in [*self.products, *extra_products]})
+        self.assertEqual(worksheet.freeze_panes, "A2")
+        self.assertEqual(worksheet.auto_filter.ref, "A1:D1001")
+        self.assertTrue(worksheet["A1"].font.bold)
+        self.assertEqual(worksheet["A1"].alignment.horizontal, "center")
+        self.assertTrue(worksheet["A1"].alignment.wrap_text)
+        self.assertEqual(worksheet.row_dimensions[1].height, 32)
+        self.assertAlmostEqual(worksheet.column_dimensions["A"].width, 20, delta=1)
+        self.assertAlmostEqual(worksheet.column_dimensions["B"].width, 55, delta=1)
+        self.assertAlmostEqual(worksheet.column_dimensions["C"].width, 16, delta=1)
+        self.assertAlmostEqual(worksheet.column_dimensions["D"].width, 14, delta=1)
+        self.assertEqual(worksheet["D2"].number_format, "# ##0")
+        self.assertNotEqual(worksheet["A2"].fill.fgColor.rgb, worksheet["A3"].fill.fgColor.rgb)
+        workbook.close()
 
     def test_streaming_excel_export_handles_photos_in_several_batches(self):
         products = [
@@ -384,6 +397,9 @@ class CatalogProductQueryTests(unittest.TestCase):
 
         self.assertEqual(worksheet.max_row, 251)
         self.assertEqual(len(worksheet._images), 250)
+        self.assertLessEqual(worksheet._images[0].width, 70)
+        self.assertLessEqual(worksheet._images[0].height, 70)
+        self.assertEqual(worksheet.row_dimensions[2].height, 60)
         workbook.close()
 
     def test_streaming_export_uses_the_same_filters_and_ignores_pagination(self):

@@ -53,7 +53,6 @@ EXPORT_DOWNLOAD_CHUNK_SIZE = 2 * 1024 * 1024
 # openpyxl хранит каждую картинку в памяти до сохранения книги. Ограничение
 # защищает backend от OOM на больших каталогах; остальные фото остаются ссылками.
 MAX_EMBEDDED_EXPORT_IMAGES = 10_000
-EXPORT_ROWS_PER_FILE = 50
 EXPORT_PRODUCT_BATCH_SIZE = 100
 
 logger = logging.getLogger(__name__)
@@ -634,14 +633,7 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
             logger.info("Экспорт %s: начало, товаров=%s, фильтры=%s, фото=%s, RSS=%s МБ", job_id, product_count, safe_params, has_photos, current_rss_mb())
             with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
                 path = output.name
-            if product_count > EXPORT_ROWS_PER_FILE:
-                processed = write_export_workbook_streaming(db, params, columns, path, job_id, product_count, filtered_ids)
-            else:
-                workbook = build_export_workbook(db, params, columns)
-                workbook.save(path)
-                workbook.close()
-                del workbook
-                processed = product_count
+            processed = write_export_workbook_streaming(db, params, columns, path, job_id, product_count, filtered_ids)
             filename = "products.xlsx"
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             gc.collect()
@@ -957,9 +949,31 @@ def write_export_workbook_streaming(
 
     workbook = xlsxwriter.Workbook(path, {"constant_memory": True})
     worksheet = workbook.add_worksheet("Товары")
+    border = 1
+    header_format = workbook.add_format({
+        "bold": True, "bg_color": "#E7E9EC", "border": border,
+        "align": "center", "valign": "vcenter", "text_wrap": True,
+    })
+    text_format = workbook.add_format({"border": border, "valign": "vcenter", "text_wrap": True})
+    text_alt_format = workbook.add_format({"border": border, "valign": "vcenter", "text_wrap": True, "bg_color": "#F7F7F7"})
+    center_format = workbook.add_format({"border": border, "align": "center", "valign": "vcenter", "text_wrap": True})
+    center_alt_format = workbook.add_format({"border": border, "align": "center", "valign": "vcenter", "text_wrap": True, "bg_color": "#F7F7F7"})
+    price_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0.00"})
+    price_alt_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0.00", "bg_color": "#F7F7F7"})
+    number_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0"})
+    number_alt_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0", "bg_color": "#F7F7F7"})
+    column_widths = {
+        "photo": 14, "code": 16, "article": 20, "name": 55, "section": 30,
+        "product_type": 25, "manufacturer": 24, "manager": 20, "marking_code": 20,
+        "material": 22, "certificate": 22, "barcodes": 22, "quantity": 14,
+    }
     for column_index, header in enumerate(headers):
-        worksheet.write(0, column_index, header)
-        worksheet.set_column(column_index, column_index, 16 if selected_columns[column_index] == "photo" else max(12, len(header) + 2))
+        column = selected_columns[column_index]
+        width = 16 if column.startswith("price:") else 14 if column.startswith("stock:") else column_widths.get(column, 24)
+        worksheet.write(0, column_index, header, header_format)
+        worksheet.set_column(column_index, column_index, width)
+    worksheet.set_row(0, 32)
+    worksheet.freeze_panes(1, 0)
     photo_column = selected_columns.index("photo") if needs_photos else None
     row_index = 1
     processed = 0
@@ -1020,18 +1034,39 @@ def write_export_workbook_streaming(
                 }
                 for column_index, column in enumerate(selected_columns):
                     value = values.get(column, prices.get(column.removeprefix("price:"), 0) if column.startswith("price:") else stocks.get(column.removeprefix("stock:"), 0))
-                    worksheet.write(row_index, column_index, value)
+                    alternate = row_index % 2 == 0
+                    if column.startswith("price:"):
+                        cell_format = price_alt_format if alternate else price_format
+                    elif column == "quantity" or column.startswith("stock:"):
+                        cell_format = number_alt_format if alternate else number_format
+                    elif column in {"photo", "code", "article"}:
+                        cell_format = center_alt_format if alternate else center_format
+                    else:
+                        cell_format = text_alt_format if alternate else text_format
+                    worksheet.write(row_index, column_index, value, cell_format)
                 if needs_photos and product.images:
                     photo_url = product.images[0].image_url
                     try:
                         cache_path = export_image_cache_path(photo_url)
                         if cache_path.exists():
-                            worksheet.set_row(row_index, 82.5)
-                            worksheet.insert_image(row_index, photo_column, str(cache_path), {"x_offset": 8, "y_offset": 5, "object_position": 1})
+                            with PillowImage.open(cache_path) as thumbnail:
+                                image_width, image_height = thumbnail.size
+                            scale = min(1, 70 / max(image_width, image_height))
+                            displayed_width = image_width * scale
+                            displayed_height = image_height * scale
+                            worksheet.set_row(row_index, 60)
+                            worksheet.insert_image(row_index, photo_column, str(cache_path), {
+                                "x_scale": scale, "y_scale": scale,
+                                "x_offset": max(2, round((98 - displayed_width) / 2)),
+                                "y_offset": max(2, round((80 - displayed_height) / 2)),
+                                "object_position": 1,
+                            })
                         else:
-                            worksheet.write_url(row_index, photo_column, photo_url, string="Открыть фото")
-                    except ValueError:
-                        worksheet.write(row_index, photo_column, "Фото недоступно")
+                            photo_format = center_alt_format if row_index % 2 == 0 else center_format
+                            worksheet.write_url(row_index, photo_column, photo_url, photo_format, "Открыть фото")
+                    except (OSError, ValueError, UnidentifiedImageError):
+                        photo_format = center_alt_format if row_index % 2 == 0 else center_format
+                        worksheet.write(row_index, photo_column, "Фото недоступно", photo_format)
                 row_index += 1
             last_id = batch_ids[-1]
             processed += len(products)
@@ -1046,6 +1081,8 @@ def write_export_workbook_streaming(
             db.expire_all()
             gc.collect()
     finally:
+        if row_index > 1 and selected_columns:
+            worksheet.autofilter(0, 0, row_index - 1, len(selected_columns) - 1)
         workbook.close()
         del worksheet, workbook
         gc.collect()
