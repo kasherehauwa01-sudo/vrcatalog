@@ -243,10 +243,10 @@ class CatalogProductQueryTests(unittest.TestCase):
 
         self.assertEqual(
             rows[0],
-            ("Наименование", "Раздел", "Код", "Менеджер", "Штрихкоды", "ЦенаРозничная", "Основной"),
+            ("Код", "Наименование", "Раздел", "Менеджер", "Штрихкоды", "ЦенаРозничная", "Основной"),
         )
-        chair_row = next(row for row in rows[1:] if row[2] == "CHAIR-1")
-        self.assertEqual(chair_row, ("Стул Альфа", "Мебель", "CHAIR-1", "Иванова", "460000000001", 1500, 0))
+        chair_row = next(row for row in rows[1:] if row[0] == "CHAIR-1")
+        self.assertEqual(chair_row, ("CHAIR-1", "Стул Альфа", "Мебель", "Иванова", "460000000001", 1500, 0))
 
     def test_excel_export_orders_main_columns_and_formats_their_widths(self):
         self.products[0].certificate = "CERTIFICATE-12345"
@@ -264,13 +264,13 @@ class CatalogProductQueryTests(unittest.TestCase):
 
         self.assertEqual(
             tuple(cell.value for cell in worksheet[1]),
-            ("Фото", "Артикул", "Наименование", "Раздел", "Код", "Сертификат", "Штрихкоды", "Материал", "Менеджер", "Производитель", "Код маркировки", "Остаток"),
+            ("Фото", "Код", "Артикул", "Наименование", "Раздел", "Сертификат", "Штрихкоды", "Материал", "Менеджер", "Производитель", "Код маркировки", "Остаток"),
         )
         self.assertEqual(worksheet.column_dimensions["A"].width, 16)
-        self.assertEqual(worksheet.column_dimensions["B"].width, len("Артикул") + 2)
-        self.assertEqual(worksheet.column_dimensions["C"].width, 50)
-        self.assertEqual(worksheet.column_dimensions["D"].width, 12)
-        self.assertEqual(worksheet.column_dimensions["E"].width, len("CHAIR-1") + 2)
+        self.assertEqual(worksheet.column_dimensions["B"].width, len("CHAIR-1") + 2)
+        self.assertEqual(worksheet.column_dimensions["C"].width, len("Артикул") + 2)
+        self.assertEqual(worksheet.column_dimensions["D"].width, 50)
+        self.assertEqual(worksheet.column_dimensions["E"].width, 12)
         self.assertEqual(worksheet.column_dimensions["F"].width, len("CERTIFICATE-12345") + 2)
         self.assertEqual(worksheet.column_dimensions["G"].width, 17)
         self.assertEqual(worksheet.column_dimensions["H"].width, 12)
@@ -278,7 +278,7 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual(worksheet.column_dimensions["J"].width, 20)
         self.assertEqual(worksheet.column_dimensions["K"].width, len("Код маркировки") + 2)
         self.assertEqual(worksheet.column_dimensions["L"].width, len("Остаток") + 2)
-        self.assertTrue(worksheet["C2"].alignment.wrap_text)
+        self.assertTrue(worksheet["D2"].alignment.wrap_text)
         self.assertTrue(worksheet["G2"].alignment.wrap_text)
         self.assertTrue(worksheet["J2"].alignment.wrap_text)
         self.assertEqual(worksheet["K2"].value, "MARK-001")
@@ -311,8 +311,8 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual(first_part.active.max_row, 3)
         self.assertEqual(second_part.active.max_row, 2)
         exported_codes = [
-            *(row[1] for row in list(first_part.active.values)[1:]),
-            *(row[1] for row in list(second_part.active.values)[1:]),
+            *(row[0] for row in list(first_part.active.values)[1:]),
+            *(row[0] for row in list(second_part.active.values)[1:]),
         ]
         self.assertEqual(exported_codes, [product.code for product in self.products])
 
@@ -345,17 +345,17 @@ class CatalogProductQueryTests(unittest.TestCase):
             worksheet = workbook.active
 
         self.assertEqual(len(rows), 1001)
-        self.assertEqual(rows[0], ("Артикул", "Наименование", "Код", "Остаток"))
-        self.assertEqual({row[2] for row in rows[1:]}, {product.code for product in [*self.products, *extra_products]})
+        self.assertEqual(rows[0], ("Код", "Артикул", "Наименование", "Остаток"))
+        self.assertEqual({row[0] for row in rows[1:]}, {product.code for product in [*self.products, *extra_products]})
         self.assertEqual(worksheet.freeze_panes, "A2")
         self.assertEqual(worksheet.auto_filter.ref, "A1:D1001")
         self.assertTrue(worksheet["A1"].font.bold)
         self.assertEqual(worksheet["A1"].alignment.horizontal, "center")
         self.assertTrue(worksheet["A1"].alignment.wrap_text)
         self.assertEqual(worksheet.row_dimensions[1].height, 32)
-        self.assertAlmostEqual(worksheet.column_dimensions["A"].width, 20, delta=1)
-        self.assertAlmostEqual(worksheet.column_dimensions["B"].width, 55, delta=1)
-        self.assertAlmostEqual(worksheet.column_dimensions["C"].width, 16, delta=1)
+        self.assertAlmostEqual(worksheet.column_dimensions["A"].width, 16, delta=1)
+        self.assertAlmostEqual(worksheet.column_dimensions["B"].width, 20, delta=1)
+        self.assertAlmostEqual(worksheet.column_dimensions["C"].width, 55, delta=1)
         self.assertAlmostEqual(worksheet.column_dimensions["D"].width, 14, delta=1)
         self.assertEqual(worksheet["D2"].number_format, "# ##0")
         self.assertNotEqual(worksheet["A2"].fill.fgColor.rgb, worksheet["A3"].fill.fgColor.rgb)
@@ -422,7 +422,7 @@ class CatalogProductQueryTests(unittest.TestCase):
                 workbook = load_workbook(output.name, read_only=True)
                 rows = list(workbook.active.values)
                 workbook.close()
-            self.assertEqual({row[1] for row in rows[1:]}, expected_codes)
+            self.assertEqual({row[0] for row in rows[1:]}, expected_codes)
 
     def test_streaming_export_counts_products_not_batches(self):
         expected_progress = {1: 100, 5: 100, 100: 100, 101: 100, 250: 100, 466: 100}

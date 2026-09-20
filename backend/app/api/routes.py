@@ -798,7 +798,7 @@ EXPORT_MAIN_COLUMNS = {
     "barcodes": "Штрихкоды",
 }
 LEGACY_EXPORT_COLUMNS = ["code", "article", "name", "section", "quantity"]
-EXPORT_LEADING_COLUMNS = ("photo", "article", "name", "section", "code")
+EXPORT_LEADING_COLUMNS = ("photo", "code", "article", "name", "section")
 EXPORT_FIXED_WIDTHS = {
     "name": 50,
     "section": 12,
