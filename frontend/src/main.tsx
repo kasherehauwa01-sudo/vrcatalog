@@ -270,6 +270,7 @@ function App() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState<number | null>(null);
+  const [exportMessage, setExportMessage] = useState("Формируем Excel. Не закрывайте это окно…");
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 100, totalItems: 0, totalPages: 0 });
@@ -596,6 +597,7 @@ function App() {
     setExportColumns(defaultExportColumns);
     setExportError(null);
     setExportProgress(null);
+    setExportMessage("Формируем Excel. Не закрывайте это окно…");
     setExportWarehouses(await api.warehouses());
     setExportDialogOpen(true);
   };
@@ -611,10 +613,12 @@ function App() {
     setExporting(true);
     setExportError(null);
     setExportProgress(null);
+    setExportMessage("Формируем Excel. Не закрывайте это окно…");
     try {
       const { job_id: jobId } = await api.startExcelExport(exportParams);
       for (let attempt = 0; attempt < 900; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        if (attempt === 59) setExportMessage("Excel не успел сформироваться. Готовим облегчённый PDF…");
         const result = await api.excelExportStatus(jobId);
         if (result.status === "ready") {
           const chunks: BlobPart[] = [];
@@ -964,7 +968,7 @@ function App() {
               {exporting && (
                 <Box sx={{ mb: 2 }}>
                   <Typography variant="body2" sx={{ mb: 1 }}>
-                    {exportProgress === null ? "Формируем Excel. Не закрывайте это окно…" : `Скачиваем Excel: ${exportProgress}%`}
+                    {exportProgress === null ? exportMessage : `Скачиваем файл: ${exportProgress}%`}
                   </Typography>
                   <LinearProgress variant={exportProgress === null ? "indeterminate" : "determinate"} value={exportProgress ?? 0} />
                 </Box>

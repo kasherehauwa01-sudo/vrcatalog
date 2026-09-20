@@ -23,6 +23,10 @@ from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.units import pixels_to_EMU
 from PIL import Image as PillowImage, UnidentifiedImageError
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import SessionLocal, get_db
@@ -48,6 +52,7 @@ EXPORT_DOWNLOAD_CHUNK_SIZE = 2 * 1024 * 1024
 # защищает backend от OOM на больших каталогах; остальные фото остаются ссылками.
 MAX_EMBEDDED_EXPORT_IMAGES = 100
 EXPORT_ROWS_PER_FILE = 50
+EXPORT_XLSX_DEADLINE_SECONDS = 60
 
 @router.get("/health")
 def health():
@@ -597,26 +602,86 @@ def cleanup_export_jobs() -> None:
             Path(job["path"]).unlink(missing_ok=True)
 
 
+def create_export_pdf(db: Session, params: dict, path: str) -> None:
+    """Создаёт облегчённый PDF без фотографий, если Excel не успел сформироваться."""
+    font_name = "Helvetica"
+    font_path = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+    if font_path.exists():
+        font_name = "VRCatalogDejaVu"
+        if font_name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(font_name, font_path))
+
+    page_width, page_height = landscape(A4)
+    document = canvas.Canvas(path, pagesize=(page_width, page_height))
+    columns = (("Код", 28, 125), ("Артикул", 18, 120), ("Наименование", 48, 365), ("Раздел", 30, 190))
+    row_height = 16
+    top = page_height - 34
+    y = top
+
+    def draw_header() -> float:
+        document.setFont(font_name, 12)
+        document.drawString(24, page_height - 22, "Каталог товаров — резервный PDF")
+        document.setFont(font_name, 8)
+        x = 24
+        for title, _, width in columns:
+            document.drawString(x, page_height - 42, title)
+            x += width
+        document.line(24, page_height - 46, page_width - 24, page_height - 46)
+        return page_height - 60
+
+    y = draw_header()
+    products = product_query(db, params).distinct().order_by(Product.id).enable_eagerloads(False).yield_per(500)
+    for product in products:
+        if y < 28:
+            document.showPage()
+            y = draw_header()
+        values = (product.code or "", product.article or "", product.name or "", product.section or "")
+        document.setFont(font_name, 7)
+        x = 24
+        for value, (_, max_chars, width) in zip(values, columns):
+            text_value = str(value).replace("\n", " ")
+            if len(text_value) > max_chars:
+                text_value = f"{text_value[:max_chars - 1]}…"
+            document.drawString(x, y, text_value)
+            x += width
+        y -= row_height
+    document.save()
+
+
 def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> None:
     """Формирует один XLSX или ZIP с небольшими XLSX вне HTTP-запроса."""
     path: str | None = None
     try:
         with SessionLocal() as db:
+            deadline = time.monotonic() + EXPORT_XLSX_DEADLINE_SECONDS
             product_count = product_query(db, params).order_by(None).with_entities(Product.id).distinct().count()
             if product_count <= EXPORT_ROWS_PER_FILE:
                 workbook = build_export_workbook(db, params, columns)
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
-                    path = output.name
-                workbook.save(path)
-                workbook.close()
-                del workbook
-                filename = "products.xlsx"
-                media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                if time.monotonic() < deadline:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
+                        path = output.name
+                    workbook.save(path)
+                    workbook.close()
+                    del workbook
+                    filename = "products.xlsx"
+                    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                else:
+                    workbook.close()
+                    del workbook
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as output:
+                        path = output.name
+                    create_export_pdf(db, params, path)
+                    filename = "products.pdf"
+                    media_type = "application/pdf"
             else:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as output:
                     path = output.name
+                excel_timed_out = False
                 with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
                     for part_number, offset in enumerate(range(0, product_count, EXPORT_ROWS_PER_FILE), start=1):
+                        if time.monotonic() >= deadline:
+                            excel_timed_out = True
+                            break
                         workbook = build_export_workbook(
                             db,
                             params,
@@ -633,8 +698,19 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
                             archive.write(part_path, arcname=f"products_{part_number:03d}.xlsx")
                         finally:
                             part_path.unlink(missing_ok=True)
-                filename = "products.zip"
-                media_type = "application/zip"
+                        if time.monotonic() >= deadline:
+                            excel_timed_out = True
+                            break
+                if excel_timed_out:
+                    Path(path).unlink(missing_ok=True)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as output:
+                        path = output.name
+                    create_export_pdf(db, params, path)
+                    filename = "products.pdf"
+                    media_type = "application/pdf"
+                else:
+                    filename = "products.zip"
+                    media_type = "application/zip"
         with export_jobs_lock:
             export_jobs[job_id].update(status="ready", path=path, filename=filename, media_type=media_type)
     except Exception as exc:
