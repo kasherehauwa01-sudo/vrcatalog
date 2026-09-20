@@ -43,6 +43,9 @@ export_jobs: dict[str, dict[str, Any]] = {}
 export_jobs_lock = Lock()
 EXPORT_JOB_TTL_SECONDS = 60 * 60
 EXPORT_DOWNLOAD_CHUNK_SIZE = 2 * 1024 * 1024
+# openpyxl хранит каждую картинку в памяти до сохранения книги. Ограничение
+# защищает backend от OOM на больших каталогах; остальные фото остаются ссылками.
+MAX_EMBEDDED_EXPORT_IMAGES = 100
 
 @router.get("/health")
 def health():
@@ -835,13 +838,18 @@ def build_export_workbook(
     # Фото загружаются небольшими пакетами. Раньше все изображения каталога
     # одновременно хранились в памяти, из-за чего backend мог быть завершён OOM-killer.
     batch_size = 100 if photo_column else max(1, len(products))
+    embedded_photo_count = 0
     for batch_start in range(0, len(products), batch_size):
         product_batch = products[batch_start:batch_start + batch_size]
+        remaining_photo_slots = max(0, MAX_EMBEDDED_EXPORT_IMAGES - embedded_photo_count)
+        photo_products = [product for product in product_batch if product.images][:remaining_photo_slots]
         downloaded_images = download_export_images(
-            [product.images[0].image_url for product in product_batch if product.images],
+            [product.images[0].image_url for product in photo_products],
             image_loader,
         ) if photo_column else {}
         for product in product_batch:
+            photo_url = product.images[0].image_url if photo_column and product.images else ""
+            image_content = downloaded_images.get(photo_url)
             properties: dict[str, str] = {}
             for item in product.properties:
                 value = (item.value or "").strip()
@@ -854,7 +862,9 @@ def build_export_workbook(
             main_values = {
                 "code": product.code,
                 "article": product.article or "",
-                "photo": "",
+                # Если лимит встроенных изображений исчерпан, в Excel остаётся
+                # исходная ссылка: данные не теряются, а книга не переполняет память.
+                "photo": "" if image_content or not photo_url else "Открыть фото",
                 "name": product.name,
                 "section": product.section or "",
                 "product_type": product_type_names.get(product.product_type, product.product_type or ""),
@@ -875,9 +885,12 @@ def build_export_workbook(
                 else:
                     row.append(stocks.get(column.removeprefix("stock:"), 0))
             worksheet.append(row)
-            if photo_column and product.images:
-                image_content = downloaded_images.get(product.images[0].image_url)
-                if image_content:
+            if photo_column and photo_url and not image_content:
+                photo_cell = worksheet.cell(row=worksheet.max_row, column=photo_column)
+                photo_cell.hyperlink = photo_url
+                photo_cell.style = "Hyperlink"
+            if image_content:
+                if embedded_photo_count < MAX_EMBEDDED_EXPORT_IMAGES:
                     try:
                         image = ExcelImage(BytesIO(image_content))
                         image.width = 100
@@ -898,6 +911,7 @@ def build_export_workbook(
                         )
                         worksheet.add_image(image)
                         worksheet.row_dimensions[worksheet.max_row].height = 82.5
+                        embedded_photo_count += 1
                     except (OSError, ValueError):
                         # Повреждённое или неподдерживаемое изображение не должно прерывать весь экспорт.
                         pass
