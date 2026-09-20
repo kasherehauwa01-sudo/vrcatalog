@@ -36,7 +36,9 @@ from app.services.monthly_promotion import check_connection as check_mail_connec
 
 router = APIRouter()
 
-export_executor = ThreadPoolExecutor(max_workers=2)
+# Одновременная генерация нескольких файлов с фотографиями может исчерпать
+# память контейнера и привести к 502 от nginx, поэтому задания выполняются по одному.
+export_executor = ThreadPoolExecutor(max_workers=1)
 export_jobs: dict[str, dict[str, Any]] = {}
 export_jobs_lock = Lock()
 EXPORT_JOB_TTL_SECONDS = 60 * 60
@@ -745,7 +747,9 @@ def download_export_image(url: str) -> BytesIO | None:
         with PillowImage.open(source) as image:
             image.thumbnail((100, 100))
             prepared = BytesIO()
-            image.convert("RGBA" if image.mode == "RGBA" else "RGB").save(prepared, format="PNG")
+            # JPEG значительно компактнее PNG для фотографий товаров. Это уменьшает
+            # память при создании книги и итоговый размер выгрузки.
+            image.convert("RGB").save(prepared, format="JPEG", quality=70, optimize=True)
             prepared.seek(0)
             return prepared
     except (OSError, ValueError, UnidentifiedImageError):
@@ -825,72 +829,78 @@ def build_export_workbook(
     worksheet = workbook.active
     worksheet.append(headers)
     photo_column = selected_columns.index("photo") + 1 if "photo" in selected_columns else None
-    downloaded_images = download_export_images(
-        [product.images[0].image_url for product in products if product.images],
-        image_loader,
-    ) if photo_column else {}
     if photo_column:
         worksheet.column_dimensions[get_column_letter(photo_column)].width = 16
-    for product in products:
-        properties: dict[str, str] = {}
-        for item in product.properties:
-            value = (item.value or "").strip()
-            for key in (item.name, item.property_code):
-                normalized_key = normalize_export_property_key(key)
-                if normalized_key and value:
-                    properties.setdefault(normalized_key, value)
-        prices = {item.price_type: item.price_value for item in product.prices}
-        stocks = {item.warehouse: item.quantity for item in product.stocks}
-        main_values = {
-            "code": product.code,
-            "article": product.article or "",
-            "photo": "",
-            "name": product.name,
-            "section": product.section or "",
-            "product_type": product_type_names.get(product.product_type, product.product_type or ""),
-            "manufacturer": product.manufacturer or "",
-            "manager": product.manager or properties.get("менеджер", ""),
-            "marking_code": properties.get("кодмаркировки", "") or properties.get("markingcode", ""),
-            "material": product.material or "",
-            "certificate": product.certificate or "",
-            "barcodes": ", ".join(item.value for item in product.barcodes),
-            "quantity": product.quantity,
-        }
-        row = []
-        for column in selected_columns:
-            if column in main_values:
-                row.append(main_values[column])
-            elif column.startswith("price:"):
-                row.append(prices.get(column.removeprefix("price:"), 0))
-            else:
-                row.append(stocks.get(column.removeprefix("stock:"), 0))
-        worksheet.append(row)
-        if photo_column and product.images:
-            image_content = downloaded_images.get(product.images[0].image_url)
-            if image_content:
-                try:
-                    image = ExcelImage(BytesIO(image_content))
-                    image.width = 100
-                    image.height = 100
-                    # Ячейка шириной 16 символов занимает около 117 px, а высотой 82,5 pt — 110 px.
-                    # Небольшие смещения помещают фотографию по центру, а не у верхней левой границы.
-                    image.anchor = OneCellAnchor(
-                        _from=AnchorMarker(
-                            col=photo_column - 1,
-                            row=worksheet.max_row - 1,
-                            colOff=pixels_to_EMU(8),
-                            rowOff=pixels_to_EMU(5),
-                        ),
-                        ext=XDRPositiveSize2D(
-                            cx=pixels_to_EMU(image.width),
-                            cy=pixels_to_EMU(image.height),
-                        ),
-                    )
-                    worksheet.add_image(image)
-                    worksheet.row_dimensions[worksheet.max_row].height = 82.5
-                except (OSError, ValueError):
-                    # Повреждённое или неподдерживаемое изображение не должно прерывать весь экспорт.
-                    pass
+
+    # Фото загружаются небольшими пакетами. Раньше все изображения каталога
+    # одновременно хранились в памяти, из-за чего backend мог быть завершён OOM-killer.
+    batch_size = 100 if photo_column else max(1, len(products))
+    for batch_start in range(0, len(products), batch_size):
+        product_batch = products[batch_start:batch_start + batch_size]
+        downloaded_images = download_export_images(
+            [product.images[0].image_url for product in product_batch if product.images],
+            image_loader,
+        ) if photo_column else {}
+        for product in product_batch:
+            properties: dict[str, str] = {}
+            for item in product.properties:
+                value = (item.value or "").strip()
+                for key in (item.name, item.property_code):
+                    normalized_key = normalize_export_property_key(key)
+                    if normalized_key and value:
+                        properties.setdefault(normalized_key, value)
+            prices = {item.price_type: item.price_value for item in product.prices}
+            stocks = {item.warehouse: item.quantity for item in product.stocks}
+            main_values = {
+                "code": product.code,
+                "article": product.article or "",
+                "photo": "",
+                "name": product.name,
+                "section": product.section or "",
+                "product_type": product_type_names.get(product.product_type, product.product_type or ""),
+                "manufacturer": product.manufacturer or "",
+                "manager": product.manager or properties.get("менеджер", ""),
+                "marking_code": properties.get("кодмаркировки", "") or properties.get("markingcode", ""),
+                "material": product.material or "",
+                "certificate": product.certificate or "",
+                "barcodes": ", ".join(item.value for item in product.barcodes),
+                "quantity": product.quantity,
+            }
+            row = []
+            for column in selected_columns:
+                if column in main_values:
+                    row.append(main_values[column])
+                elif column.startswith("price:"):
+                    row.append(prices.get(column.removeprefix("price:"), 0))
+                else:
+                    row.append(stocks.get(column.removeprefix("stock:"), 0))
+            worksheet.append(row)
+            if photo_column and product.images:
+                image_content = downloaded_images.get(product.images[0].image_url)
+                if image_content:
+                    try:
+                        image = ExcelImage(BytesIO(image_content))
+                        image.width = 100
+                        image.height = 100
+                        # Ячейка шириной 16 символов занимает около 117 px, а высотой 82,5 pt — 110 px.
+                        # Небольшие смещения помещают фотографию по центру, а не у верхней левой границы.
+                        image.anchor = OneCellAnchor(
+                            _from=AnchorMarker(
+                                col=photo_column - 1,
+                                row=worksheet.max_row - 1,
+                                colOff=pixels_to_EMU(8),
+                                rowOff=pixels_to_EMU(5),
+                            ),
+                            ext=XDRPositiveSize2D(
+                                cx=pixels_to_EMU(image.width),
+                                cy=pixels_to_EMU(image.height),
+                            ),
+                        )
+                        worksheet.add_image(image)
+                        worksheet.row_dimensions[worksheet.max_row].height = 82.5
+                    except (OSError, ValueError):
+                        # Повреждённое или неподдерживаемое изображение не должно прерывать весь экспорт.
+                        pass
 
     for column_index, column in enumerate(selected_columns, start=1):
         column_letter = get_column_letter(column_index)
