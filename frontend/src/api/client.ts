@@ -223,8 +223,8 @@ export const api = {
   async startExcelExport(params: URLSearchParams): Promise<{ job_id: string; status: string }> {
     return request<{ job_id: string; status: string }>(`${API}/exports/xlsx?${params}`, { method: "POST" });
   },
-  async excelExportStatus(jobId: string): Promise<{ status: "processing" | "ready" | "error"; error?: string; size?: number }> {
-    return request<{ status: "processing" | "ready" | "error"; error?: string; size?: number }>(`${API}/exports/xlsx/${jobId}`);
+  async excelExportStatus(jobId: string): Promise<{ status: "processing" | "ready" | "error"; error?: string; size?: number; filename?: string; media_type?: string }> {
+    return request<{ status: "processing" | "ready" | "error"; error?: string; size?: number; filename?: string; media_type?: string }>(`${API}/exports/xlsx/${jobId}`);
   },
   async excelExportChunk(jobId: string, offset: number): Promise<{ content: ArrayBuffer; nextOffset: number; size: number }> {
     const response = await fetch(`${API}/exports/xlsx/${jobId}/chunk?offset=${offset}`);

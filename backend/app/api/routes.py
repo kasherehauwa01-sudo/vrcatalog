@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import Lock
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from typing import Annotated, Any, Callable, Literal
 
@@ -46,6 +47,7 @@ EXPORT_DOWNLOAD_CHUNK_SIZE = 2 * 1024 * 1024
 # openpyxl хранит каждую картинку в памяти до сохранения книги. Ограничение
 # защищает backend от OOM на больших каталогах; остальные фото остаются ссылками.
 MAX_EMBEDDED_EXPORT_IMAGES = 100
+EXPORT_ROWS_PER_FILE = 50
 
 @router.get("/health")
 def health():
@@ -596,16 +598,45 @@ def cleanup_export_jobs() -> None:
 
 
 def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> None:
-    """Формирует файл вне HTTP-запроса, чтобы внешний nginx не прервал операцию по тайм-ауту."""
+    """Формирует один XLSX или ZIP с небольшими XLSX вне HTTP-запроса."""
     path: str | None = None
     try:
         with SessionLocal() as db:
-            workbook = build_export_workbook(db, params, columns)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
-            path = output.name
-        workbook.save(path)
+            product_count = product_query(db, params).order_by(None).with_entities(Product.id).distinct().count()
+            if product_count <= EXPORT_ROWS_PER_FILE:
+                workbook = build_export_workbook(db, params, columns)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
+                    path = output.name
+                workbook.save(path)
+                workbook.close()
+                del workbook
+                filename = "products.xlsx"
+                media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            else:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as output:
+                    path = output.name
+                with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
+                    for part_number, offset in enumerate(range(0, product_count, EXPORT_ROWS_PER_FILE), start=1):
+                        workbook = build_export_workbook(
+                            db,
+                            params,
+                            columns,
+                            offset=offset,
+                            limit=EXPORT_ROWS_PER_FILE,
+                        )
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as part:
+                            part_path = Path(part.name)
+                        try:
+                            workbook.save(part_path)
+                            workbook.close()
+                            del workbook
+                            archive.write(part_path, arcname=f"products_{part_number:03d}.xlsx")
+                        finally:
+                            part_path.unlink(missing_ok=True)
+                filename = "products.zip"
+                media_type = "application/zip"
         with export_jobs_lock:
-            export_jobs[job_id].update(status="ready", path=path)
+            export_jobs[job_id].update(status="ready", path=path, filename=filename, media_type=media_type)
     except Exception as exc:
         if path:
             Path(path).unlink(missing_ok=True)
@@ -635,7 +666,13 @@ def xlsx_export_status(job_id: str):
         if not job:
             raise HTTPException(404, "Задание экспорта не найдено или устарело")
         size = Path(job["path"]).stat().st_size if job["status"] == "ready" and job["path"] else None
-        return {"status": job["status"], "error": job["error"], "size": size}
+        return {
+            "status": job["status"],
+            "error": job["error"],
+            "size": size,
+            "filename": job.get("filename"),
+            "media_type": job.get("media_type"),
+        }
 
 
 @router.get("/exports/xlsx/{job_id}/download")
@@ -648,7 +685,11 @@ def download_xlsx_export(job_id: str):
         if job["status"] != "ready" or not job["path"]:
             raise HTTPException(409, "Файл Excel ещё не готов")
         path = job["path"]
-    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename="products.xlsx")
+    return FileResponse(
+        path,
+        media_type=job.get("media_type") or "application/octet-stream",
+        filename=job.get("filename") or "products.xlsx",
+    )
 
 
 @router.get("/exports/xlsx/{job_id}/chunk")
@@ -789,6 +830,8 @@ def build_export_workbook(
     params: dict,
     columns: list[str] | None,
     image_loader: Callable[[str], BytesIO | None] = download_export_image,
+    offset: int = 0,
+    limit: int | None = None,
 ) -> Workbook:
     selected_columns = columns or LEGACY_EXPORT_COLUMNS
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
@@ -817,17 +860,18 @@ def build_export_workbook(
         else:
             headers.append(warehouse_names[column.removeprefix("stock:")])
 
-    products = (
-        product_query(db, params)
-        .options(
+    products_query = product_query(db, params).distinct().order_by(Product.id).options(
             selectinload(Product.images),
             selectinload(Product.prices),
             selectinload(Product.stocks),
             selectinload(Product.properties),
             selectinload(Product.barcodes),
         )
-        .all()
-    )
+    if offset:
+        products_query = products_query.offset(offset)
+    if limit is not None:
+        products_query = products_query.limit(limit)
+    products = products_query.all()
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.append(headers)

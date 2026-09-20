@@ -287,6 +287,30 @@ class CatalogProductQueryTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "Неизвестные колонки экспорта"):
             build_export_workbook(self.db, {}, ["unknown"])
 
+    def test_excel_export_can_build_fixed_size_parts(self):
+        first_part = build_export_workbook(
+            self.db,
+            {"in_stock_only": False},
+            ["code", "name"],
+            offset=0,
+            limit=2,
+        )
+        second_part = build_export_workbook(
+            self.db,
+            {"in_stock_only": False},
+            ["code", "name"],
+            offset=2,
+            limit=2,
+        )
+
+        self.assertEqual(first_part.active.max_row, 3)
+        self.assertEqual(second_part.active.max_row, 2)
+        exported_codes = [
+            *(row[1] for row in list(first_part.active.values)[1:]),
+            *(row[1] for row in list(second_part.active.values)[1:]),
+        ]
+        self.assertEqual(exported_codes, [product.code for product in self.products])
+
     def test_excel_export_embeds_first_photo_at_one_hundred_pixels(self):
         self.products[0].images = [
             ProductImage(image_order=1, image_url="https://example.test/first.png"),

@@ -627,10 +627,10 @@ function App() {
             size = chunk.size;
             setExportProgress(size ? Math.min(100, Math.round((offset / size) * 100)) : null);
           } while (offset < size);
-          const url = URL.createObjectURL(new Blob(chunks, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+          const url = URL.createObjectURL(new Blob(chunks, { type: result.media_type || "application/octet-stream" }));
           const link = document.createElement("a");
           link.href = url;
-          link.download = "products.xlsx";
+          link.download = result.filename || "products.xlsx";
           document.body.appendChild(link);
           link.click();
           link.remove();
