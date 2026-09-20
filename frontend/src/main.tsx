@@ -269,6 +269,7 @@ function App() {
   const [exportWarehouses, setExportWarehouses] = useState<Warehouse[]>([]);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [exportProgress, setExportProgress] = useState<number | null>(null);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 100, totalItems: 0, totalPages: 0 });
@@ -594,6 +595,7 @@ function App() {
   const openExportDialog = async () => {
     setExportColumns(defaultExportColumns);
     setExportError(null);
+    setExportProgress(null);
     setExportWarehouses(await api.warehouses());
     setExportDialogOpen(true);
   };
@@ -608,13 +610,31 @@ function App() {
     exportColumns.forEach((column) => exportParams.append("column", column));
     setExporting(true);
     setExportError(null);
+    setExportProgress(null);
     try {
       const { job_id: jobId } = await api.startExcelExport(exportParams);
       for (let attempt = 0; attempt < 900; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
         const result = await api.excelExportStatus(jobId);
         if (result.status === "ready") {
-          window.location.href = api.excelExportDownloadUrl(jobId);
+          const chunks: BlobPart[] = [];
+          let offset = 0;
+          let size = result.size || 0;
+          do {
+            const chunk = await api.excelExportChunk(jobId, offset);
+            chunks.push(chunk.content);
+            offset = chunk.nextOffset;
+            size = chunk.size;
+            setExportProgress(size ? Math.min(100, Math.round((offset / size) * 100)) : null);
+          } while (offset < size);
+          const url = URL.createObjectURL(new Blob(chunks, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = "products.xlsx";
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          window.setTimeout(() => URL.revokeObjectURL(url), 1000);
           setExportDialogOpen(false);
           return;
         }
@@ -943,8 +963,10 @@ function App() {
             <DialogContent>
               {exporting && (
                 <Box sx={{ mb: 2 }}>
-                  <Typography variant="body2" sx={{ mb: 1 }}>Формируем Excel. Не закрывайте это окно…</Typography>
-                  <LinearProgress />
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    {exportProgress === null ? "Формируем Excel. Не закрывайте это окно…" : `Скачиваем Excel: ${exportProgress}%`}
+                  </Typography>
+                  <LinearProgress variant={exportProgress === null ? "indeterminate" : "determinate"} value={exportProgress ?? 0} />
                 </Box>
               )}
               {exportError && <Typography color="error" sx={{ mb: 2 }}>{exportError}</Typography>}

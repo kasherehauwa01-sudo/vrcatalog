@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 from typing import Annotated, Any, Callable, Literal
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
@@ -40,6 +40,7 @@ export_executor = ThreadPoolExecutor(max_workers=2)
 export_jobs: dict[str, dict[str, Any]] = {}
 export_jobs_lock = Lock()
 EXPORT_JOB_TTL_SECONDS = 60 * 60
+EXPORT_DOWNLOAD_CHUNK_SIZE = 2 * 1024 * 1024
 
 @router.get("/health")
 def health():
@@ -628,7 +629,8 @@ def xlsx_export_status(job_id: str):
         job = export_jobs.get(job_id)
         if not job:
             raise HTTPException(404, "Задание экспорта не найдено или устарело")
-        return {"status": job["status"], "error": job["error"]}
+        size = Path(job["path"]).stat().st_size if job["status"] == "ready" and job["path"] else None
+        return {"status": job["status"], "error": job["error"], "size": size}
 
 
 @router.get("/exports/xlsx/{job_id}/download")
@@ -642,6 +644,32 @@ def download_xlsx_export(job_id: str):
             raise HTTPException(409, "Файл Excel ещё не готов")
         path = job["path"]
     return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename="products.xlsx")
+
+
+@router.get("/exports/xlsx/{job_id}/chunk")
+def download_xlsx_export_chunk(job_id: str, offset: Annotated[int, Query(ge=0)] = 0):
+    """Отдаёт небольшой фрагмент файла, чтобы внешний прокси не ожидал всю выгрузку целиком."""
+    with export_jobs_lock:
+        job = export_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "Задание экспорта не найдено или устарело")
+        if job["status"] != "ready" or not job["path"]:
+            raise HTTPException(409, "Файл Excel ещё не готов")
+        path = Path(job["path"])
+    file_size = path.stat().st_size
+    if offset >= file_size:
+        raise HTTPException(416, "Смещение находится за пределами файла")
+    with path.open("rb") as source:
+        source.seek(offset)
+        content = source.read(EXPORT_DOWNLOAD_CHUNK_SIZE)
+    return Response(
+        content,
+        media_type="application/octet-stream",
+        headers={
+            "X-File-Size": str(file_size),
+            "X-Next-Offset": str(offset + len(content)),
+        },
+    )
 
 
 @router.get("/export.xlsx")

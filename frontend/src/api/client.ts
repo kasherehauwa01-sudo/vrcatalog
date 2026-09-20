@@ -223,10 +223,19 @@ export const api = {
   async startExcelExport(params: URLSearchParams): Promise<{ job_id: string; status: string }> {
     return request<{ job_id: string; status: string }>(`${API}/exports/xlsx?${params}`, { method: "POST" });
   },
-  async excelExportStatus(jobId: string): Promise<{ status: "processing" | "ready" | "error"; error?: string }> {
-    return request<{ status: "processing" | "ready" | "error"; error?: string }>(`${API}/exports/xlsx/${jobId}`);
+  async excelExportStatus(jobId: string): Promise<{ status: "processing" | "ready" | "error"; error?: string; size?: number }> {
+    return request<{ status: "processing" | "ready" | "error"; error?: string; size?: number }>(`${API}/exports/xlsx/${jobId}`);
   },
-  excelExportDownloadUrl(jobId: string) {
-    return `${API}/exports/xlsx/${jobId}/download`;
+  async excelExportChunk(jobId: string, offset: number): Promise<{ content: ArrayBuffer; nextOffset: number; size: number }> {
+    const response = await fetch(`${API}/exports/xlsx/${jobId}/chunk?offset=${offset}`);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.detail ?? `Ошибка скачивания: ${response.status}`);
+    }
+    return {
+      content: await response.arrayBuffer(),
+      nextOffset: Number(response.headers.get("X-Next-Offset")),
+      size: Number(response.headers.get("X-File-Size")),
+    };
   },
 };
