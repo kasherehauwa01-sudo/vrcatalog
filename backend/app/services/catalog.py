@@ -203,8 +203,10 @@ def paginated_products(db: Session, params):
         "totalPages": ceil(total / page_size) if total else 0,
     }
 
-def product_query(db: Session, params):
-    q = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.images))
+def product_query(db: Session, params, eager_load: bool = True):
+    q = db.query(Product)
+    if eager_load:
+        q = q.options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.images))
     if search := params.get("search"):
         term = f"%{search.lower()}%"
         q = q.filter(func.lower(Product.search_text).like(term))
