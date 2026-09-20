@@ -53,7 +53,7 @@ EXPORT_JOB_TTL_SECONDS = 60 * 60
 EXPORT_DOWNLOAD_CHUNK_SIZE = 2 * 1024 * 1024
 # openpyxl хранит каждую картинку в памяти до сохранения книги. Ограничение
 # защищает backend от OOM на больших каталогах; остальные фото остаются ссылками.
-MAX_EMBEDDED_EXPORT_IMAGES = 100
+MAX_EMBEDDED_EXPORT_IMAGES = 10_000
 EXPORT_ROWS_PER_FILE = 50
 EXPORT_XLSX_DEADLINE_SECONDS = 60
 PDF_IMAGE_BATCH_SIZE = 200
@@ -709,7 +709,6 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
                     db,
                     params,
                     columns,
-                    embed_photos=not (columns and "photo" in columns),
                     apply_formatting=False,
                 )
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
@@ -945,7 +944,6 @@ def build_export_workbook(
     image_loader: Callable[[str], BytesIO | None] = download_export_image,
     offset: int = 0,
     limit: int | None = None,
-    embed_photos: bool = True,
     apply_formatting: bool = True,
 ) -> Workbook:
     selected_columns = columns or LEGACY_EXPORT_COLUMNS
@@ -1007,7 +1005,7 @@ def build_export_workbook(
 
     # Фото загружаются небольшими пакетами. Раньше все изображения каталога
     # одновременно хранились в памяти, из-за чего backend мог быть завершён OOM-killer.
-    batch_size = 100 if photo_column else max(1, len(products))
+    batch_size = 200 if photo_column and not apply_formatting else 100 if photo_column else max(1, len(products))
     embedded_photo_count = 0
     for batch_start in range(0, len(products), batch_size):
         product_batch = products[batch_start:batch_start + batch_size]
@@ -1016,7 +1014,9 @@ def build_export_workbook(
         downloaded_images = download_export_images(
             [product.images[0].image_url for product in photo_products],
             image_loader,
-        ) if photo_column and embed_photos else {}
+            max_workers=64 if not apply_formatting else 24,
+            timeout=30 if not apply_formatting else 15,
+        ) if photo_column else {}
         for product in product_batch:
             photo_url = product.images[0].image_url if photo_column and product.images else ""
             image_content = downloaded_images.get(photo_url)
@@ -1032,15 +1032,7 @@ def build_export_workbook(
             main_values = {
                 "code": product.code,
                 "article": product.article or "",
-                # В быстром режиме IMAGE() загружает фото при открытии книги;
-                # в обычном режиме после лимита остаётся ссылка на оригинал.
-                "photo": (
-                    ""
-                    if image_content or not photo_url
-                    else f'=IMAGE("{photo_url.replace(chr(34), chr(34) * 2)}")'
-                    if not embed_photos
-                    else "Открыть фото"
-                ),
+                "photo": "" if image_content or not photo_url else "Открыть фото",
                 "name": product.name,
                 "section": product.section or "",
                 "product_type": product_type_names.get(product.product_type, product.product_type or ""),
@@ -1061,9 +1053,7 @@ def build_export_workbook(
                 else:
                     row.append(stocks.get(column.removeprefix("stock:"), 0))
             worksheet.append(row)
-            if photo_column and photo_url and not embed_photos:
-                worksheet.row_dimensions[worksheet.max_row].height = 82.5
-            if photo_column and photo_url and not image_content and embed_photos:
+            if photo_column and photo_url and not image_content:
                 photo_cell = worksheet.cell(row=worksheet.max_row, column=photo_column)
                 photo_cell.hyperlink = photo_url
                 photo_cell.style = "Hyperlink"

@@ -986,7 +986,7 @@ function App() {
               </Box>
               {exportColumns.includes("photo") && (
                 <Typography variant="caption" color="text.secondary">
-                  Для больших выгрузок фотографии загружаются Excel по ссылкам — файл формируется значительно быстрее.
+                  Фотографии встраиваются в файл как сжатые миниатюры; повторные выгрузки используют серверный кэш.
                 </Typography>
               )}
               <Divider sx={{ my: 2 }} />
