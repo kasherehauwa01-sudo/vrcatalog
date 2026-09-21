@@ -2,6 +2,7 @@ import csv
 import hashlib
 import json
 import logging
+import secrets
 import tempfile
 import time
 import uuid
@@ -17,8 +18,8 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from typing import Annotated, Any, Callable, Literal
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
@@ -89,11 +90,55 @@ def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
     path.unlink(missing_ok=True)
     return meta(db)
 
-@router.get("/products", response_model=list[ProductListOut])
-def products(db: Session = Depends(get_db), limit: int = 60, offset: int = 0, search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False):
-    params = locals(); params.pop("db"); params.pop("limit"); params.pop("offset")
+@router.get("/products", response_model=list[ProductListOut], response_model_exclude_none=True)
+def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le=10000)] = 60, offset: Annotated[int, Query(ge=0)] = 0, search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False, property: str | None = None, property_value: str | None = None, authorization: Annotated[str | None, Header()] = None, x_internal_token: Annotated[str | None, Header()] = None):
+    if (property is None) != (property_value is None):
+        raise HTTPException(422, "Параметры property и property_value должны передаваться вместе")
+    if property is not None:
+        configured_token = settings.internal_api_token
+        if not configured_token:
+            raise HTTPException(401, "Межсервисный API не настроен")
+        if authorization and not authorization.lower().startswith("bearer "):
+            raise HTTPException(403, "Недостаточно прав для доступа")
+        bearer_token = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
+        provided_token = bearer_token or x_internal_token
+        if not authorization and not x_internal_token:
+            raise HTTPException(401, "Требуется Bearer token")
+        if not provided_token:
+            raise HTTPException(403, "Недостаточно прав для доступа")
+        if not secrets.compare_digest(provided_token, configured_token):
+            raise HTTPException(403, "Недостаточно прав для доступа")
+    params = {
+        "search": search, "section": section, "manufacturer": manufacturer,
+        "brand": brand, "manager": manager, "country": country,
+        "material": material, "color": color, "in_stock": in_stock,
+        "price_min": price_min, "price_max": price_max,
+        "stock_min": stock_min, "stock_max": stock_max,
+        "warehouse": warehouse, "product_type": product_type,
+        "only_new": only_new, "property": property,
+        "property_value": property_value,
+    }
     type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
-    return [decorate(p, type_names) for p in product_query(db, params).offset(offset).limit(limit).all()]
+    matched_products = product_query(db, params).offset(offset).limit(limit).all()
+    if property is not None:
+        normalized_name = property.strip().casefold()
+        normalized_value = property_value.strip().casefold()
+        return JSONResponse([
+            {
+                "id": product.id,
+                "article": product.article,
+                "code": product.code,
+                "name": product.name,
+                "properties": {
+                    item.name.strip(): (item.value or "").strip()
+                    for item in product.properties
+                    if item.name.strip().casefold() == normalized_name
+                    and (item.value or "").strip().casefold() == normalized_value
+                },
+            }
+            for product in matched_products
+        ])
+    return [decorate(p, type_names) for p in matched_products]
 
 
 @router.get("/products/count")

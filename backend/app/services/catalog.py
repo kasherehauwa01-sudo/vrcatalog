@@ -210,6 +210,17 @@ def product_query(db: Session, params, eager_load: bool = True):
     if search := params.get("search"):
         term = f"%{search.lower()}%"
         q = q.filter(func.lower(Product.search_text).like(term))
+    property_name = str(params.get("property") or "").strip().casefold()
+    property_value = str(params.get("property_value") or "").strip().casefold()
+    if property_name and property_value:
+        q = q.filter(
+            Product.properties.any(
+                and_(
+                    func.lower(func.trim(ProductProperty.name)) == property_name,
+                    func.lower(func.trim(ProductProperty.value)) == property_value,
+                )
+            )
+        )
     for field in FILTER_FIELDS:
         if value := params.get(field):
             values = _values(value)
