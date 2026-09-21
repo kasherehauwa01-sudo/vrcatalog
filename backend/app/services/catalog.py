@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import csv
 import re
 
-from sqlalchemy import String, and_, case, cast, func, or_, select
+from sqlalchemy import String, and_, case, cast, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.catalog import Barcode, ImportRun, Price, Product, ProductProperty, Stock, WarehouseSetting, ProductTypeSetting
@@ -35,6 +35,21 @@ SORT_FIELDS = {
     "article": Product.article,
     "code": Product.code,
     "quantity": Product.quantity,
+}
+INTEGRATION_FILTER_LABELS = {
+    "section": "Раздел",
+    "manufacturer": "Производитель",
+    "brand": "Бренд",
+    "manager": "Менеджер",
+    "country": "Страна",
+    "material": "Материал",
+    "color": "Цвет",
+}
+INTEGRATION_SORT_FIELDS = {
+    "id": Product.id,
+    "code": Product.code,
+    "article": Product.article,
+    "name": Product.name,
 }
 NEW_PRODUCT_PERIOD = timedelta(days=7)
 NEW_PRODUCT_TYPE_FILTER = "Новинка"
@@ -165,6 +180,189 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
     return q
 
 
+def integration_filter_definitions(db: Session, option_limit: int = 100):
+    """Возвращает стабильное описание только реально заполненных фильтров каталога."""
+    filters = []
+    for key, label in INTEGRATION_FILTER_LABELS.items():
+        column = getattr(Product, key)
+        values = [
+            value
+            for value, in db.query(column)
+            .filter(column.isnot(None), func.trim(column) != "")
+            .distinct()
+            .order_by(column)
+            .limit(option_limit + 1)
+            .all()
+        ]
+        if values:
+            filters.append({
+                "key": key,
+                "label": label,
+                "type": "multi_select",
+                "options": [{"value": value, "label": value} for value in values[:option_limit]],
+                "options_paginated": len(values) > option_limit,
+            })
+
+    distinct_property_values = (
+        db.query(
+            ProductProperty.name.label("name"),
+            ProductProperty.value.label("value"),
+        )
+        .filter(
+            func.trim(ProductProperty.name) != "",
+            ProductProperty.value.isnot(None),
+            func.trim(ProductProperty.value) != "",
+        )
+        .distinct()
+        .subquery()
+    )
+    ranked_property_values = (
+        db.query(
+            distinct_property_values.c.name,
+            distinct_property_values.c.value,
+            func.row_number().over(
+                partition_by=distinct_property_values.c.name,
+                order_by=distinct_property_values.c.value,
+            ).label("position"),
+        )
+        .subquery()
+    )
+    property_rows = (
+        db.query(
+            ranked_property_values.c.name,
+            ranked_property_values.c.value,
+            ranked_property_values.c.position,
+        )
+        .filter(ranked_property_values.c.position <= option_limit + 1)
+        .order_by(ranked_property_values.c.name, ranked_property_values.c.position)
+        .all()
+    )
+    grouped_properties = {}
+    for row in property_rows:
+        grouped_properties.setdefault(row.name, []).append(row.value)
+    for name, values in grouped_properties.items():
+        filters.append({
+            "key": f"property:{name}",
+            "label": name.strip(),
+            "type": "multi_select",
+            "options": [{"value": value, "label": value} for value in values[:option_limit]],
+            "options_paginated": len(values) > option_limit,
+        })
+    return filters
+
+
+def integration_filter_options(
+    db: Session,
+    filter_key: str,
+    search: str,
+    page: int,
+    page_size: int,
+):
+    """Постранично возвращает варианты одного реального фильтра."""
+    if filter_key in INTEGRATION_FILTER_LABELS:
+        column = getattr(Product, filter_key)
+        query = db.query(column.label("value")).filter(column.isnot(None), func.trim(column) != "")
+    elif filter_key.startswith("property:") and filter_key.removeprefix("property:").strip():
+        property_name = filter_key.removeprefix("property:")
+        exists = db.query(ProductProperty.id).filter(ProductProperty.name == property_name).first()
+        if not exists:
+            raise KeyError(filter_key)
+        column = ProductProperty.value
+        query = db.query(column.label("value")).filter(
+            ProductProperty.name == property_name,
+            column.isnot(None),
+            func.trim(column) != "",
+        )
+    else:
+        raise KeyError(filter_key)
+    if search.strip():
+        query = query.filter(column.ilike(f"%{search.strip()}%"))
+    total = query.distinct().count()
+    rows = query.distinct().order_by(column).offset((page - 1) * page_size).limit(page_size).all()
+    return [row.value for row in rows], total
+
+
+def integration_product_search(db: Session, request):
+    """Фильтрует товары в БД: OR внутри фильтра, AND между фильтрами."""
+    query = db.query(Product).options(selectinload(Product.properties))
+    search = request.search.strip()
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(or_(
+            Product.code.ilike(pattern),
+            Product.article.ilike(pattern),
+            Product.name.ilike(pattern),
+        ))
+
+    option_queries = []
+    for key, values in request.filters.items():
+        if key in INTEGRATION_FILTER_LABELS:
+            column = getattr(Product, key)
+            option_queries.append(select(literal(key).label("key"), column.label("value")).where(column.in_(values)))
+        elif key.startswith("property:") and key.removeprefix("property:").strip():
+            property_name = key.removeprefix("property:")
+            option_queries.append(
+                select(
+                    (literal("property:") + ProductProperty.name).label("key"),
+                    ProductProperty.value.label("value"),
+                ).where(
+                    ProductProperty.name == property_name,
+                    ProductProperty.value.in_(values),
+                )
+            )
+        else:
+            raise KeyError(key)
+    if option_queries:
+        available_options = {
+            (key, value)
+            for key, value in db.execute(union_all(*option_queries)).all()
+        }
+        requested_options = {
+            (key, value)
+            for key, values in request.filters.items()
+            for value in values
+        }
+        invalid_options = requested_options - available_options
+        if invalid_options:
+            key, value = sorted(invalid_options)[0]
+            raise ValueError(f"Недопустимое значение фильтра {key}: {value}")
+
+    for key, values in request.filters.items():
+        if key in INTEGRATION_FILTER_LABELS:
+            query = query.filter(getattr(Product, key).in_(values))
+        elif key.startswith("property:") and key.removeprefix("property:").strip():
+            property_name = key.removeprefix("property:")
+            query = query.filter(Product.properties.any(and_(
+                ProductProperty.name == property_name,
+                ProductProperty.value.in_(values),
+            )))
+        else:
+            raise KeyError(key)
+
+    excluded_conditions = []
+    for excluded in request.excluded:
+        identifiers = []
+        if excluded.code:
+            identifiers.append(Product.code == excluded.code)
+        if excluded.article:
+            identifiers.append(Product.article == excluded.article)
+        if identifiers:
+            excluded_conditions.append(and_(*identifiers))
+    if excluded_conditions:
+        query = query.filter(~or_(*excluded_conditions))
+
+    total = query.order_by(None).count()
+    sort_column = INTEGRATION_SORT_FIELDS[request.sort_by]
+    direction = sort_column.desc() if request.sort_dir == "desc" else sort_column.asc()
+    items = (
+        query.order_by(direction, Product.id.asc())
+        .offset((request.page - 1) * request.page_size)
+        .limit(request.page_size)
+        .all()
+    )
+    return items, total
+
+
 def paginated_products(db: Session, params):
     q = catalog_product_query(db, params)
     total = q.order_by(None).count()
@@ -203,11 +401,36 @@ def paginated_products(db: Session, params):
         "totalPages": ceil(total / page_size) if total else 0,
     }
 
-def product_query(db: Session, params):
-    q = db.query(Product).options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.images))
+def product_query(db: Session, params, eager_load: bool = True):
+    q = db.query(Product)
+    if eager_load:
+        q = q.options(selectinload(Product.prices), selectinload(Product.stocks), selectinload(Product.properties), selectinload(Product.images))
     if search := params.get("search"):
         term = f"%{search.lower()}%"
         q = q.filter(func.lower(Product.search_text).like(term))
+    property_name = str(params.get("property") or "").strip().casefold()
+    property_value = str(params.get("property_value") or "").strip().casefold()
+    if property_name and property_value:
+        normalized_name = func.lower(func.trim(ProductProperty.name))
+        normalized_value = func.lower(func.trim(ProductProperty.value))
+        property_conditions = [
+            normalized_name == property_name,
+            normalized_value == property_value,
+        ]
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            # Хэш-условия используют компактный expression index. Полные сравнения
+            # выше сохраняют точную семантику и защищают от теоретической коллизии MD5.
+            property_conditions.extend(
+                [
+                    func.md5(normalized_name) == func.md5(property_name),
+                    func.md5(normalized_value) == func.md5(property_value),
+                ]
+            )
+        q = q.filter(
+            Product.properties.any(
+                and_(*property_conditions)
+            )
+        )
     for field in FILTER_FIELDS:
         if value := params.get(field):
             values = _values(value)

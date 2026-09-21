@@ -125,6 +125,269 @@ class InternalProductApiTests(unittest.TestCase):
             )
             db.commit()
 
+    def test_products_filter_by_normalized_property_for_sales_journal(self):
+        with Session(self.engine) as db:
+            products = db.query(Product).order_by(Product.id).all()
+            products[0].properties.append(ProductProperty(name="HoReCa", value="HoReCa"))
+            products[1].properties.append(ProductProperty(name=" horeca ", value=" HORECA "))
+            products[2].properties.append(ProductProperty(name="HoReCa", value="Нет"))
+            db.commit()
+
+        response = self.client.get(
+            "/api/products",
+            params={"property": " HORECA ", "property_value": "horeca", "limit": 10000},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual({item["code"] for item in payload}, {"P-1", "P-2"})
+        self.assertTrue(all(item["article"] for item in payload))
+        self.assertTrue(all(next(iter(item["properties"])).strip().casefold() == "horeca" for item in payload))
+
+    def test_products_property_filter_returns_empty_list(self):
+        response = self.client.get(
+            "/api/products",
+            params={"property": "HoReCa", "property_value": "HoReCa"},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
+    def test_products_filter_supports_very_long_property_value(self):
+        long_value = "x" * 3501
+        with Session(self.engine) as db:
+            product = db.query(Product).filter(Product.code == "P-1").one()
+            product.properties.append(
+                ProductProperty(name="  Long property  ", value=f"  {long_value.upper()}  ")
+            )
+            db.commit()
+
+        response = self.client.get(
+            "/api/products",
+            params={"property": "LONG PROPERTY", "property_value": long_value},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["code"] for item in response.json()], ["P-1"])
+
+    def test_products_property_filter_authorization(self):
+        params = {"property": "HoReCa", "property_value": "HoReCa"}
+        self.assertEqual(self.client.get("/api/products", params=params).status_code, 401)
+        self.assertEqual(
+            self.client.get("/api/products", params=params, headers={"Authorization": "Bearer wrong"}).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.get("/api/products", params=params, headers={"X-Internal-Token": "test-internal-token"}).status_code,
+            200,
+        )
+
+    def test_products_property_filter_requires_both_parameters(self):
+        response = self.client.get("/api/products", params={"property": "HoReCa"})
+        self.assertEqual(response.status_code, 422)
+
+    def test_products_without_property_filter_remains_public(self):
+        response = self.client.get("/api/products", params={"limit": 2})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 2)
+
+    def test_products_property_filter_combines_with_search_and_pagination(self):
+        with Session(self.engine) as db:
+            products = db.query(Product).order_by(Product.id).all()
+            for product in products:
+                product.properties.append(ProductProperty(name="HoReCa", value="HoReCa"))
+            products[0].search_text = "нужный товар"
+            products[1].search_text = "нужный товар"
+            products[2].search_text = "другой товар"
+            db.commit()
+
+        response = self.client.get(
+            "/api/products",
+            params={"property": "HoReCa", "property_value": "HoReCa", "search": "нужный", "limit": 1, "offset": 1},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["code"] for item in response.json()], ["P-2"])
+
+    def test_products_property_filter_has_fixed_query_count(self):
+        with Session(self.engine) as db:
+            for product in db.query(Product).all():
+                product.properties.append(ProductProperty(name="HoReCa", value="HoReCa"))
+            db.commit()
+        statements = []
+
+        def record_statement(*args):
+            statements.append(args[2])
+
+        event.listen(self.engine, "before_cursor_execute", record_statement)
+        try:
+            response = self.client.get(
+                "/api/products",
+                params={"property": "HoReCa", "property_value": "HoReCa", "limit": 10000},
+                headers={"Authorization": "Bearer test-internal-token"},
+            )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", record_statement)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 7)
+        self.assertLessEqual(len(statements), 8)
+
+    def test_integration_filter_metadata_uses_real_catalog_values(self):
+        with Session(self.engine) as db:
+            products = db.query(Product).order_by(Product.id).all()
+            products[0].brand = "Regent"
+            products[1].brand = "Regent"
+            products[0].properties.append(ProductProperty(name="Диаметр", value="24 см"))
+            db.commit()
+
+        response = self.client.get(
+            "/api/integration/product-filters",
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        filters = {item["key"]: item for item in response.json()["filters"]}
+        self.assertEqual(filters["brand"]["label"], "Бренд")
+        self.assertEqual(filters["brand"]["type"], "multi_select")
+        self.assertEqual(filters["brand"]["options"], [{"value": "Regent", "label": "Regent"}])
+        self.assertEqual(filters["property:Диаметр"]["options"][0]["value"], "24 см")
+        options_response = self.client.get(
+            "/api/integration/product-filters/property%3A%D0%94%D0%B8%D0%B0%D0%BC%D0%B5%D1%82%D1%80/options",
+            params={"search": "24", "page": 1, "page_size": 1},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual(options_response.status_code, 200)
+        self.assertEqual(options_response.json()["items"], [{"value": "24 см", "label": "24 см"}])
+        self.assertEqual(options_response.json()["total"], 1)
+
+    def test_integration_search_combines_property_filters_with_or_and(self):
+        with Session(self.engine) as db:
+            products = db.query(Product).order_by(Product.id).all()
+            products[0].brand = "Regent"
+            products[0].properties.extend([
+                ProductProperty(name="Диаметр", value="24"),
+                ProductProperty(name="Материал корпуса", value="Сталь"),
+            ])
+            products[1].brand = "Rondell"
+            products[1].properties.extend([
+                ProductProperty(name="Диаметр", value="26"),
+                ProductProperty(name="Материал корпуса", value="Сталь"),
+            ])
+            products[2].brand = "Другой"
+            products[2].properties.append(ProductProperty(name="Диаметр", value="24"))
+            db.commit()
+
+        response = self.client.post(
+            "/api/integration/products/search",
+            headers={"Authorization": "Bearer test-internal-token"},
+            json={
+                "filters": {
+                    "brand": ["Regent", "Rondell"],
+                    "property:Диаметр": ["24", "26"],
+                    "property:Материал корпуса": ["Сталь"],
+                },
+                "page": 1,
+                "page_size": 50,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 2)
+        self.assertEqual({item["code"] for item in payload["items"]}, {"P-1", "P-2"})
+        self.assertTrue(all(isinstance(item["code"], str) for item in payload["items"]))
+
+    def test_integration_search_supports_search_pagination_sort_and_exclusions(self):
+        with Session(self.engine) as db:
+            products = db.query(Product).order_by(Product.id).all()
+            products[0].name = "сковорода Альфа"
+            products[0].code = "000123"
+            products[1].name = "сковорода Бета"
+            products[1].article = "ART-0002"
+            db.commit()
+
+        code_response = self.client.post(
+            "/api/integration/products/search",
+            headers={"Authorization": "Bearer test-internal-token"},
+            json={"search": "000123"},
+        )
+        article_response = self.client.post(
+            "/api/integration/products/search",
+            headers={"Authorization": "Bearer test-internal-token"},
+            json={"search": "art-0002"},
+        )
+        page_response = self.client.post(
+            "/api/integration/products/search",
+            headers={"Authorization": "Bearer test-internal-token"},
+            json={
+                "search": "СКОВОРОДА",
+                "page": 1,
+                "page_size": 1,
+                "sort_by": "name",
+                "sort_dir": "asc",
+                "excluded": [{"code": "000123"}],
+            },
+        )
+
+        self.assertEqual(code_response.json()["items"][0]["code"], "000123")
+        self.assertEqual(article_response.json()["items"][0]["article"], "ART-0002")
+        self.assertEqual(page_response.status_code, 200)
+        self.assertEqual(page_response.json()["total"], 1)
+        self.assertEqual(page_response.json()["items"][0]["code"], "P-2")
+        self.assertEqual(page_response.json()["pages"], 1)
+
+    def test_integration_api_validates_auth_filters_and_sorting(self):
+        endpoint = "/api/integration/products/search"
+        self.assertEqual(self.client.post(endpoint, json={}).status_code, 401)
+        self.assertEqual(
+            self.client.post(endpoint, json={}, headers={"Authorization": "Bearer wrong"}).status_code,
+            403,
+        )
+        unknown = self.client.post(
+            endpoint,
+            json={"filters": {"unknown": ["value"]}},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+        invalid_sort = self.client.post(
+            endpoint,
+            json={"sort_by": "drop table"},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual(unknown.status_code, 422)
+        self.assertEqual(unknown.json()["detail"], "Неизвестный фильтр: unknown")
+        self.assertEqual(invalid_sort.status_code, 422)
+        empty = self.client.post(
+            endpoint,
+            json={"search": "товар, которого нет"},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.json()["items"], [])
+        self.assertEqual(empty.json()["total"], 0)
+
+    def test_integration_search_query_count_does_not_depend_on_product_count(self):
+        statements = []
+
+        def record_statement(*args):
+            statements.append(args[2])
+
+        event.listen(self.engine, "before_cursor_execute", record_statement)
+        try:
+            response = self.client.post(
+                "/api/integration/products/search",
+                json={"page_size": 50},
+                headers={"Authorization": "Bearer test-internal-token"},
+            )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", record_statement)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["total"], 7)
+        self.assertLessEqual(len(statements), 3)
+
     @property
     def headers(self):
         return {"X-Internal-Token": "test-internal-token"}
