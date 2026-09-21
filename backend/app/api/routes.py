@@ -2,6 +2,7 @@ import csv
 import hashlib
 import json
 import logging
+from math import ceil
 import secrets
 import tempfile
 import time
@@ -35,9 +36,9 @@ from app.db.session import SessionLocal, get_db
 from app.core.config import settings
 from app.importer.xml_importer import XMLCatalogImporter
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
-from app.services.catalog import catalog_product_query, decorate, list_filters, meta, product_query, paginated_products
+from app.services.catalog import catalog_product_query, decorate, integration_filter_definitions, integration_filter_options, integration_product_search, list_filters, meta, product_query, paginated_products
 from app.services.logging import add_log
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
@@ -74,6 +75,90 @@ def filtered_product_ids_subquery(db: Session, params: dict):
 @router.get("/health")
 def health():
     return {"status": "ok"}
+
+
+def require_integration_token(authorization: str | None) -> None:
+    """Проверяет межсервисный Bearer token, не раскрывая его в логах и ответах."""
+    if not authorization:
+        raise HTTPException(401, "Требуется Bearer token")
+    scheme, separator, provided_token = authorization.partition(" ")
+    if not separator or scheme.casefold() != "bearer" or not provided_token.strip():
+        raise HTTPException(403, "Недостаточно прав для доступа")
+    if not settings.internal_api_token:
+        raise HTTPException(403, "Межсервисный API не настроен")
+    if not secrets.compare_digest(provided_token.strip(), settings.internal_api_token):
+        raise HTTPException(403, "Недостаточно прав для доступа")
+
+
+@router.get("/integration/product-filters", response_model=IntegrationFiltersResponse)
+def integration_product_filters(
+    db: Session = Depends(get_db),
+    authorization: Annotated[str | None, Header()] = None,
+):
+    require_integration_token(authorization)
+    return {"filters": integration_filter_definitions(db)}
+
+
+@router.get("/integration/product-filters/{filter_key}/options")
+def integration_product_filter_options(
+    filter_key: str,
+    search: Annotated[str, Query(max_length=255)] = "",
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
+    db: Session = Depends(get_db),
+    authorization: Annotated[str | None, Header()] = None,
+):
+    require_integration_token(authorization)
+    try:
+        values, total = integration_filter_options(db, filter_key, search, page, page_size)
+    except KeyError as exc:
+        raise HTTPException(422, f"Неизвестный фильтр: {filter_key}") from exc
+    return {
+        "items": [{"value": value, "label": value} for value in values],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": ceil(total / page_size) if total else 0,
+    }
+
+
+@router.post("/integration/products/search", response_model=IntegrationProductSearchResponse)
+def integration_products_search(
+    request: IntegrationProductSearchRequest,
+    db: Session = Depends(get_db),
+    authorization: Annotated[str | None, Header()] = None,
+):
+    require_integration_token(authorization)
+    try:
+        products, total = integration_product_search(db, request)
+    except KeyError as exc:
+        raise HTTPException(422, f"Неизвестный фильтр: {exc.args[0]}") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {
+        "items": [
+            {
+                "id": product.id,
+                "code": str(product.code),
+                "article": str(product.article) if product.article is not None else None,
+                "name": product.name,
+                "properties": [
+                    {
+                        "key": f"property:{item.name}",
+                        "label": item.name.strip(),
+                        "value": item.value or "",
+                        "display_value": item.value or "",
+                    }
+                    for item in product.properties
+                ],
+            }
+            for product in products
+        ],
+        "total": total,
+        "page": request.page,
+        "page_size": request.page_size,
+        "pages": ceil(total / request.page_size) if total else 0,
+    }
 
 @router.post("/import", response_model=MetaOut)
 def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
