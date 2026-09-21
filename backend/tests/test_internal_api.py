@@ -125,6 +125,116 @@ class InternalProductApiTests(unittest.TestCase):
             )
             db.commit()
 
+    def test_products_filter_by_normalized_property_for_sales_journal(self):
+        with Session(self.engine) as db:
+            products = db.query(Product).order_by(Product.id).all()
+            products[0].properties.append(ProductProperty(name="HoReCa", value="HoReCa"))
+            products[1].properties.append(ProductProperty(name=" horeca ", value=" HORECA "))
+            products[2].properties.append(ProductProperty(name="HoReCa", value="Нет"))
+            db.commit()
+
+        response = self.client.get(
+            "/api/products",
+            params={"property": " HORECA ", "property_value": "horeca", "limit": 10000},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual({item["code"] for item in payload}, {"P-1", "P-2"})
+        self.assertTrue(all(item["article"] for item in payload))
+        self.assertTrue(all(next(iter(item["properties"])).strip().casefold() == "horeca" for item in payload))
+
+    def test_products_property_filter_returns_empty_list(self):
+        response = self.client.get(
+            "/api/products",
+            params={"property": "HoReCa", "property_value": "HoReCa"},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
+    def test_products_filter_supports_very_long_property_value(self):
+        long_value = "x" * 3501
+        with Session(self.engine) as db:
+            product = db.query(Product).filter(Product.code == "P-1").one()
+            product.properties.append(
+                ProductProperty(name="  Long property  ", value=f"  {long_value.upper()}  ")
+            )
+            db.commit()
+
+        response = self.client.get(
+            "/api/products",
+            params={"property": "LONG PROPERTY", "property_value": long_value},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["code"] for item in response.json()], ["P-1"])
+
+    def test_products_property_filter_authorization(self):
+        params = {"property": "HoReCa", "property_value": "HoReCa"}
+        self.assertEqual(self.client.get("/api/products", params=params).status_code, 401)
+        self.assertEqual(
+            self.client.get("/api/products", params=params, headers={"Authorization": "Bearer wrong"}).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.get("/api/products", params=params, headers={"X-Internal-Token": "test-internal-token"}).status_code,
+            200,
+        )
+
+    def test_products_property_filter_requires_both_parameters(self):
+        response = self.client.get("/api/products", params={"property": "HoReCa"})
+        self.assertEqual(response.status_code, 422)
+
+    def test_products_without_property_filter_remains_public(self):
+        response = self.client.get("/api/products", params={"limit": 2})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 2)
+
+    def test_products_property_filter_combines_with_search_and_pagination(self):
+        with Session(self.engine) as db:
+            products = db.query(Product).order_by(Product.id).all()
+            for product in products:
+                product.properties.append(ProductProperty(name="HoReCa", value="HoReCa"))
+            products[0].search_text = "нужный товар"
+            products[1].search_text = "нужный товар"
+            products[2].search_text = "другой товар"
+            db.commit()
+
+        response = self.client.get(
+            "/api/products",
+            params={"property": "HoReCa", "property_value": "HoReCa", "search": "нужный", "limit": 1, "offset": 1},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["code"] for item in response.json()], ["P-2"])
+
+    def test_products_property_filter_has_fixed_query_count(self):
+        with Session(self.engine) as db:
+            for product in db.query(Product).all():
+                product.properties.append(ProductProperty(name="HoReCa", value="HoReCa"))
+            db.commit()
+        statements = []
+
+        def record_statement(*args):
+            statements.append(args[2])
+
+        event.listen(self.engine, "before_cursor_execute", record_statement)
+        try:
+            response = self.client.get(
+                "/api/products",
+                params={"property": "HoReCa", "property_value": "HoReCa", "limit": 10000},
+                headers={"Authorization": "Bearer test-internal-token"},
+            )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", record_statement)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 7)
+        self.assertLessEqual(len(statements), 8)
+
     @property
     def headers(self):
         return {"X-Internal-Token": "test-internal-token"}
