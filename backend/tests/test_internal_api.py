@@ -154,6 +154,24 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
 
+    def test_products_filter_supports_very_long_property_value(self):
+        long_value = "x" * 3501
+        with Session(self.engine) as db:
+            product = db.query(Product).filter(Product.code == "P-1").one()
+            product.properties.append(
+                ProductProperty(name="  Long property  ", value=f"  {long_value.upper()}  ")
+            )
+            db.commit()
+
+        response = self.client.get(
+            "/api/products",
+            params={"property": "LONG PROPERTY", "property_value": long_value},
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["code"] for item in response.json()], ["P-1"])
+
     def test_products_property_filter_authorization(self):
         params = {"property": "HoReCa", "property_value": "HoReCa"}
         self.assertEqual(self.client.get("/api/products", params=params).status_code, 401)

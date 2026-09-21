@@ -213,12 +213,24 @@ def product_query(db: Session, params, eager_load: bool = True):
     property_name = str(params.get("property") or "").strip().casefold()
     property_value = str(params.get("property_value") or "").strip().casefold()
     if property_name and property_value:
+        normalized_name = func.lower(func.trim(ProductProperty.name))
+        normalized_value = func.lower(func.trim(ProductProperty.value))
+        property_conditions = [
+            normalized_name == property_name,
+            normalized_value == property_value,
+        ]
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            # Хэш-условия используют компактный expression index. Полные сравнения
+            # выше сохраняют точную семантику и защищают от теоретической коллизии MD5.
+            property_conditions.extend(
+                [
+                    func.md5(normalized_name) == func.md5(property_name),
+                    func.md5(normalized_value) == func.md5(property_value),
+                ]
+            )
         q = q.filter(
             Product.properties.any(
-                and_(
-                    func.lower(func.trim(ProductProperty.name)) == property_name,
-                    func.lower(func.trim(ProductProperty.value)) == property_value,
-                )
+                and_(*property_conditions)
             )
         )
     for field in FILTER_FIELDS:

@@ -97,9 +97,9 @@ class ProductProperty(Base):
 
 Index(
     "ix_product_properties_normalized_name_value",
-    func.lower(func.trim(ProductProperty.name)),
-    func.lower(func.trim(ProductProperty.value)),
-)
+    func.md5(func.lower(func.trim(ProductProperty.name))),
+    func.md5(func.lower(func.trim(ProductProperty.value))),
+).ddl_if(dialect="postgresql")
 
 
 class Analog(Base):

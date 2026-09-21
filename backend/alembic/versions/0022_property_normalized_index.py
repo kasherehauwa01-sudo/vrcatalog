@@ -1,4 +1,4 @@
-"""add normalized product property lookup index"""
+"""add fixed-size normalized product property lookup index"""
 
 from alembic import op
 import sqlalchemy as sa
@@ -14,7 +14,10 @@ def upgrade():
     op.create_index(
         "ix_product_properties_normalized_name_value",
         "product_properties",
-        [sa.text("lower(trim(name))"), sa.text("lower(trim(value))")],
+        [
+            sa.text("md5(lower(trim(name)))"),
+            sa.text("md5(lower(trim(value)))"),
+        ],
     )
 
 
