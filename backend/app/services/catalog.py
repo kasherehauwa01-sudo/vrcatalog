@@ -284,7 +284,10 @@ def integration_filter_options(
 
 def integration_product_search(db: Session, request):
     """Фильтрует товары в БД: OR внутри фильтра, AND между фильтрами."""
-    query = db.query(Product).options(selectinload(Product.properties))
+    query = db.query(Product).options(
+        selectinload(Product.properties),
+        selectinload(Product.images),
+    )
     search = request.search.strip()
     if search:
         pattern = f"%{search}%"

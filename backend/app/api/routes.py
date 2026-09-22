@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import SessionLocal, get_db
 from app.core.config import settings
-from app.importer.xml_importer import XMLCatalogImporter
+from app.importer.xml_importer import XMLCatalogImporter, public_image_url
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
 from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
@@ -142,6 +142,7 @@ def integration_products_search(
                 "code": str(product.code),
                 "article": str(product.article) if product.article is not None else None,
                 "name": product.name,
+                "image_url": public_image_url(product.images[0].image_url) if product.images else None,
                 "properties": [
                     {
                         "key": f"property:{item.name}",

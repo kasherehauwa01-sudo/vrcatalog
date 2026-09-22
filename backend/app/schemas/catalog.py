@@ -150,6 +150,7 @@ class IntegrationProductOut(BaseModel):
     code: str
     article: str | None
     name: str
+    image_url: str | None
     properties: list[IntegrationProductPropertyOut]
 
 

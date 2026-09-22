@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import settings
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.catalog import Product, ProductProperty, ServiceLog, Stock, WarehouseSetting
+from app.models.catalog import Product, ProductImage, ProductProperty, ServiceLog, Stock, WarehouseSetting
 
 
 class InternalProductApiTests(unittest.TestCase):
@@ -43,6 +43,7 @@ class InternalProductApiTests(unittest.TestCase):
         with Session(self.engine) as db:
             db.query(ServiceLog).delete()
             db.query(Stock).delete()
+            db.query(ProductImage).delete()
             db.query(ProductProperty).delete()
             db.query(Product).delete()
             db.query(WarehouseSetting).delete()
@@ -300,6 +301,53 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertEqual({item["code"] for item in payload["items"]}, {"P-1", "P-2"})
         self.assertTrue(all(isinstance(item["code"], str) for item in payload["items"]))
 
+    def test_integration_search_returns_public_primary_image_url(self):
+        with Session(self.engine) as db:
+            products = db.query(Product).order_by(Product.id).all()
+            products[0].images.extend([
+                ProductImage(image_order=2, image_url="images/second.jpg"),
+                ProductImage(image_order=1, image_url="images/Папка/Первое фото.jpg"),
+            ])
+            products[0].properties.append(ProductProperty(name="HoReCa", value="HoReCa"))
+            products[1].images.append(
+                ProductImage(image_order=1, image_url="https://cdn.example.test/Фото товара.jpg")
+            )
+            db.commit()
+
+        response = self.client.post(
+            "/api/integration/products/search",
+            headers={"Authorization": "Bearer test-internal-token"},
+            json={"filters": {}, "page": 1, "page_size": 500},
+        )
+        self.assertEqual(response.status_code, 200)
+        items = {item["code"]: item for item in response.json()["items"]}
+        self.assertEqual(
+            items["P-1"]["image_url"],
+            "https://volgorost.ru/upload/import_images/images/"
+            "%D0%9F%D0%B0%D0%BF%D0%BA%D0%B0/%D0%9F%D0%B5%D1%80%D0%B2%D0%BE%D0%B5%20%D1%84%D0%BE%D1%82%D0%BE.jpg",
+        )
+        self.assertEqual(
+            items["P-2"]["image_url"],
+            "https://cdn.example.test/%D0%A4%D0%BE%D1%82%D0%BE%20%D1%82%D0%BE%D0%B2%D0%B0%D1%80%D0%B0.jpg",
+        )
+        self.assertIsNone(items["P-3"]["image_url"])
+        self.assertEqual(items["P-1"]["article"], "10001")
+        self.assertNotIn("token", items["P-1"]["image_url"].casefold())
+
+        horeca_response = self.client.post(
+            "/api/integration/products/search",
+            headers={"Authorization": "Bearer test-internal-token"},
+            json={
+                "filters": {"property:HoReCa": ["HoReCa"]},
+                "page": 1,
+                "page_size": 500,
+            },
+        )
+        self.assertEqual(horeca_response.status_code, 200)
+        self.assertEqual(horeca_response.json()["total"], 1)
+        self.assertEqual(horeca_response.json()["items"][0]["code"], "P-1")
+        self.assertTrue(horeca_response.json()["items"][0]["image_url"].startswith("https://"))
+
     def test_integration_search_supports_search_pagination_sort_and_exclusions(self):
         with Session(self.engine) as db:
             products = db.query(Product).order_by(Product.id).all()
@@ -386,7 +434,7 @@ class InternalProductApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["total"], 7)
-        self.assertLessEqual(len(statements), 3)
+        self.assertLessEqual(len(statements), 4)
 
     @property
     def headers(self):
