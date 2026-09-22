@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 
 PRODUCT_DATE_FORMAT = "%d.%m.%Y %H:%M"
@@ -83,6 +85,116 @@ class PaginationOut(BaseModel):
 class ProductPageOut(BaseModel):
     items: list[ProductListOut]
     pagination: PaginationOut
+
+
+class IntegrationFilterOption(BaseModel):
+    value: str
+    label: str
+
+
+class IntegrationFilter(BaseModel):
+    key: str
+    label: str
+    type: Literal["multi_select"] = "multi_select"
+    options: list[IntegrationFilterOption]
+    options_paginated: bool = False
+
+
+class IntegrationFiltersResponse(BaseModel):
+    filters: list[IntegrationFilter]
+
+
+class IntegrationExcludedProduct(BaseModel):
+    code: str | None = Field(default=None, max_length=128)
+    article: str | None = Field(default=None, max_length=255)
+
+    @field_validator("code", "article")
+    @classmethod
+    def normalize_identifier(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None and value.strip() else None
+
+
+class IntegrationProductSearchRequest(BaseModel):
+    search: str = Field(default="", max_length=255)
+    filters: dict[str, list[str]] = Field(default_factory=dict, max_length=20)
+    excluded: list[IntegrationExcludedProduct] = Field(default_factory=list, max_length=1000)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=50, ge=1, le=500)
+    sort_by: Literal["id", "code", "article", "name"] = "name"
+    sort_dir: Literal["asc", "desc"] = "asc"
+
+    @field_validator("filters")
+    @classmethod
+    def validate_filters(cls, filters: dict[str, list[str]]) -> dict[str, list[str]]:
+        normalized = {}
+        for key, values in filters.items():
+            clean_key = key.strip()
+            clean_values = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+            if not clean_key or not clean_values:
+                raise ValueError("Ключ и значения фильтра не должны быть пустыми")
+            if len(clean_values) > 50:
+                raise ValueError("Допускается не более 50 значений одного фильтра")
+            normalized[clean_key] = clean_values
+        return normalized
+
+
+class IntegrationProductPropertyOut(BaseModel):
+    key: str
+    label: str
+    value: str
+    display_value: str
+
+
+class IntegrationProductOut(BaseModel):
+    id: int
+    code: str
+    article: str | None
+    name: str
+    image_url: str | None
+    properties: list[IntegrationProductPropertyOut]
+
+
+class IntegrationProductSearchResponse(BaseModel):
+    items: list[IntegrationProductOut]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class IntegrationBatchProductIn(BaseModel):
+    code: str | None = Field(default=None, max_length=128)
+    article: str | None = Field(default=None, max_length=255)
+
+    @field_validator("code", "article", mode="before")
+    @classmethod
+    def normalize_identifier(cls, value):
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def require_identifier(self):
+        if not self.code and not self.article:
+            raise ValueError("Укажите code или article")
+        return self
+
+
+class IntegrationBatchProductsRequest(BaseModel):
+    products: list[IntegrationBatchProductIn] = Field(min_length=1, max_length=5000)
+
+
+class IntegrationBatchProductOut(BaseModel):
+    code: str
+    article: str | None
+    name: str
+    horeca: bool
+    image_url: str | None
+
+
+class IntegrationBatchProductsResponse(BaseModel):
+    items: list[IntegrationBatchProductOut]
 
 
 class ProductTypeUpdateIn(BaseModel):
