@@ -128,6 +128,8 @@ curl \
 * `GET /api/integration/product-filters/{filter_key}/options` — поиск и пагинация
   вариантов (`search`, `page`, `page_size`, максимум 100);
 * `POST /api/integration/products/search` — серверный поиск и подсчёт товаров.
+* `POST /api/integration/products/batch-info` — пакетное получение названия,
+  признака HoReCa и основной фотографии по `code`/`article` (до 5000 позиций).
 
 Все маршруты требуют `Authorization: Bearer <INTERNAL_API_TOKEN>`. Отсутствующий
 заголовок даёт 401, неверный токен — 403. Токен сравнивается в постоянное время и
@@ -220,6 +222,34 @@ Bearer-авторизации; сам endpoint поиска остаётся з�
 `page`; это не передаёт тысячи идентификаторов через URL и не требует TTL-хранилища.
 После публикации API в Sales Journal необходимо настроить базовый URL CatalogVR и
 `VRCATALOG_API_TOKEN`, загрузить метаданные, а затем выполнять POST-поиск страницами.
+
+Пакетный запрос Sales Journal использует тот же Bearer token:
+
+```json
+{
+  "products": [
+    {"code": "ЕК-3610", "article": "ART-1"},
+    {"code": "747761", "article": null}
+  ]
+}
+```
+
+Сопоставление выполняется без учёта регистра и окружающих пробелов: сначала по
+`code`, а если он не найден — по `article`. Неизвестные товары пропускаются.
+Дубликаты входных идентификаторов не создают дополнительные SQL-запросы или
+дубли результата. Пример ответа:
+
+```json
+{
+  "items": [{
+    "code": "ЕК-3610",
+    "article": "ART-1",
+    "name": "Название товара",
+    "horeca": true,
+    "image_url": "https://volgorost.ru/upload/import_images/images/photo.jpg"
+  }]
+}
+```
 
 ## Внутреннее API товаров, менеджеров и складских остатков
 

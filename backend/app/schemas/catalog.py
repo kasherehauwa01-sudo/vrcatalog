@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 
 PRODUCT_DATE_FORMAT = "%d.%m.%Y %H:%M"
@@ -160,6 +160,41 @@ class IntegrationProductSearchResponse(BaseModel):
     page: int
     page_size: int
     pages: int
+
+
+class IntegrationBatchProductIn(BaseModel):
+    code: str | None = Field(default=None, max_length=128)
+    article: str | None = Field(default=None, max_length=255)
+
+    @field_validator("code", "article", mode="before")
+    @classmethod
+    def normalize_identifier(cls, value):
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def require_identifier(self):
+        if not self.code and not self.article:
+            raise ValueError("Укажите code или article")
+        return self
+
+
+class IntegrationBatchProductsRequest(BaseModel):
+    products: list[IntegrationBatchProductIn] = Field(min_length=1, max_length=5000)
+
+
+class IntegrationBatchProductOut(BaseModel):
+    code: str
+    article: str | None
+    name: str
+    horeca: bool
+    image_url: str | None
+
+
+class IntegrationBatchProductsResponse(BaseModel):
+    items: list[IntegrationBatchProductOut]
 
 
 class ProductTypeUpdateIn(BaseModel):

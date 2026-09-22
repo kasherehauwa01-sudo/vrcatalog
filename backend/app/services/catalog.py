@@ -6,7 +6,7 @@ import re
 from sqlalchemy import String, and_, case, cast, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.catalog import Barcode, ImportRun, Price, Product, ProductProperty, Stock, WarehouseSetting, ProductTypeSetting
+from app.models.catalog import Barcode, ImportRun, Price, Product, ProductImage, ProductProperty, Stock, WarehouseSetting, ProductTypeSetting
 
 FILTER_FIELDS = ["section", "manufacturer", "brand", "manager", "country", "material", "color"]
 WAREHOUSE_ORDER = [
@@ -51,6 +51,7 @@ INTEGRATION_SORT_FIELDS = {
     "article": Product.article,
     "name": Product.name,
 }
+INTEGRATION_BATCH_SIZE = 500
 NEW_PRODUCT_PERIOD = timedelta(days=7)
 NEW_PRODUCT_TYPE_FILTER = "Новинка"
 EXCLUDED_YYY_SECTION = "яяявывод/разукомплектация НЕ ВЫГРУЖАТЬ НА САЙТ"
@@ -364,6 +365,80 @@ def integration_product_search(db: Session, request):
         .all()
     )
     return items, total
+
+
+def integration_batch_product_info(db: Session, requested_products):
+    """Пакетно сопоставляет товары по code, затем по article, без N+1 запросов."""
+    codes = {item.code.casefold() for item in requested_products if item.code}
+    articles = {item.article.casefold() for item in requested_products if item.article}
+    normalized_code = func.lower(func.trim(Product.code))
+    normalized_article = func.lower(func.trim(Product.article))
+    candidates_by_id = {}
+    lookup_values = [("code", list(codes)), ("article", list(articles))]
+    for field, values in lookup_values:
+        expression = normalized_code if field == "code" else normalized_article
+        for start in range(0, len(values), INTEGRATION_BATCH_SIZE):
+            chunk = values[start:start + INTEGRATION_BATCH_SIZE]
+            for product in db.query(Product).filter(expression.in_(chunk)).order_by(Product.id).all():
+                candidates_by_id[product.id] = product
+
+    by_code = {}
+    by_article = {}
+    for product in sorted(candidates_by_id.values(), key=lambda item: item.id):
+        by_code.setdefault(product.code.strip().casefold(), product)
+        if product.article and product.article.strip():
+            by_article.setdefault(product.article.strip().casefold(), product)
+
+    matched_products = []
+    seen_product_ids = set()
+    for requested in requested_products:
+        product = by_code.get(requested.code.casefold()) if requested.code else None
+        if product is None and requested.article:
+            product = by_article.get(requested.article.casefold())
+        if product is not None and product.id not in seen_product_ids:
+            seen_product_ids.add(product.id)
+            matched_products.append(product)
+
+    product_ids = [product.id for product in matched_products]
+    horeca_product_ids = set()
+    first_images = {}
+    normalized_property_name = func.lower(func.trim(ProductProperty.name))
+    normalized_property_value = func.lower(func.trim(ProductProperty.value))
+    for start in range(0, len(product_ids), INTEGRATION_BATCH_SIZE):
+        chunk = product_ids[start:start + INTEGRATION_BATCH_SIZE]
+        horeca_product_ids.update(
+            product_id
+            for product_id, in db.query(ProductProperty.product_id)
+            .filter(
+                ProductProperty.product_id.in_(chunk),
+                normalized_property_name == "horeca",
+                normalized_property_value == "horeca",
+            )
+            .distinct()
+            .all()
+        )
+        first_orders = (
+            db.query(
+                ProductImage.product_id.label("product_id"),
+                func.min(ProductImage.image_order).label("image_order"),
+            )
+            .filter(ProductImage.product_id.in_(chunk))
+            .group_by(ProductImage.product_id)
+            .subquery()
+        )
+        image_rows = (
+            db.query(ProductImage)
+            .join(
+                first_orders,
+                and_(
+                    ProductImage.product_id == first_orders.c.product_id,
+                    ProductImage.image_order == first_orders.c.image_order,
+                ),
+            )
+            .all()
+        )
+        first_images.update({image.product_id: image.image_url for image in image_rows})
+    return matched_products, horeca_product_ids, first_images
 
 
 def paginated_products(db: Session, params):

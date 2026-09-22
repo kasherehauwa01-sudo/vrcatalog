@@ -436,6 +436,91 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertEqual(response.json()["total"], 7)
         self.assertLessEqual(len(statements), 4)
 
+    def test_integration_batch_info_requires_authorization(self):
+        response = self.client.post(
+            "/api/integration/products/batch-info",
+            json={"products": [{"code": "P-1"}]},
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_integration_batch_info_matches_by_priority_and_returns_metadata(self):
+        with Session(self.engine) as db:
+            products = db.query(Product).order_by(Product.id).all()
+            products[0].properties.append(ProductProperty(name=" horeca ", value=" HORECA "))
+            products[0].images.extend([
+                ProductImage(image_order=2, image_url="images/second.jpg"),
+                ProductImage(image_order=1, image_url="images/first.jpg"),
+            ])
+            db.commit()
+
+        response = self.client.post(
+            "/api/integration/products/batch-info",
+            headers={"Authorization": "Bearer test-internal-token"},
+            json={
+                "products": [
+                    {"code": " p-1 ", "article": "10002"},
+                    {"code": "missing", "article": " 10002 "},
+                    {"code": "P-3", "article": None},
+                    {"code": "not-found", "article": "also-missing"},
+                    {"code": "P-1", "article": None},
+                ]
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        items = response.json()["items"]
+        self.assertEqual([item["code"] for item in items], ["P-1", "P-2", "P-3"])
+        self.assertTrue(items[0]["horeca"])
+        self.assertFalse(items[1]["horeca"])
+        self.assertEqual(
+            items[0]["image_url"],
+            "https://volgorost.ru/upload/import_images/images/first.jpg",
+        )
+        self.assertIsNone(items[1]["image_url"])
+        self.assertEqual(items[0]["article"], "10001")
+        self.assertEqual(items[0]["name"], "Товар А")
+
+    def test_integration_batch_info_validates_size_and_empty_identifiers(self):
+        headers = {"Authorization": "Bearer test-internal-token"}
+        empty_identifiers = self.client.post(
+            "/api/integration/products/batch-info",
+            headers=headers,
+            json={"products": [{"code": "   ", "article": ""}]},
+        )
+        too_many = self.client.post(
+            "/api/integration/products/batch-info",
+            headers=headers,
+            json={"products": [{"code": f"P-{index}"} for index in range(5001)]},
+        )
+        self.assertEqual(empty_identifiers.status_code, 422)
+        self.assertEqual(too_many.status_code, 422)
+
+    def test_integration_batch_info_uses_bounded_query_count(self):
+        statements = []
+
+        def record_statement(*args):
+            statements.append(args[2])
+
+        event.listen(self.engine, "before_cursor_execute", record_statement)
+        try:
+            response = self.client.post(
+                "/api/integration/products/batch-info",
+                headers={"Authorization": "Bearer test-internal-token"},
+                json={
+                    "products": [
+                        {"code": "P-1", "article": "10001"},
+                        {"code": "P-2", "article": "10002"},
+                        {"code": "P-3", "article": "00123"},
+                    ]
+                },
+            )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", record_statement)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["items"]), 3)
+        self.assertLessEqual(len(statements), 4)
+
     @property
     def headers(self):
         return {"X-Internal-Token": "test-internal-token"}

@@ -36,9 +36,9 @@ from app.db.session import SessionLocal, get_db
 from app.core.config import settings
 from app.importer.xml_importer import XMLCatalogImporter, public_image_url
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
-from app.services.catalog import catalog_product_query, decorate, integration_filter_definitions, integration_filter_options, integration_product_search, list_filters, meta, product_query, paginated_products
+from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_search, list_filters, meta, product_query, paginated_products
 from app.services.logging import add_log
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
@@ -159,6 +159,31 @@ def integration_products_search(
         "page": request.page,
         "page_size": request.page_size,
         "pages": ceil(total / request.page_size) if total else 0,
+    }
+
+
+@router.post("/integration/products/batch-info", response_model=IntegrationBatchProductsResponse)
+def integration_products_batch_info(
+    request: IntegrationBatchProductsRequest,
+    db: Session = Depends(get_db),
+    authorization: Annotated[str | None, Header()] = None,
+):
+    require_integration_token(authorization)
+    products, horeca_product_ids, first_images = integration_batch_product_info(
+        db,
+        request.products,
+    )
+    return {
+        "items": [
+            {
+                "code": str(product.code),
+                "article": str(product.article) if product.article is not None else None,
+                "name": product.name,
+                "horeca": product.id in horeca_product_ids,
+                "image_url": public_image_url(first_images.get(product.id)),
+            }
+            for product in products
+        ]
     }
 
 @router.post("/import", response_model=MetaOut)
