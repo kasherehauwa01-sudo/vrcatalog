@@ -3,6 +3,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
@@ -15,6 +16,28 @@ from app.models.catalog import Analog, Barcode, ImportRun, Price, Product, Produ
 IMAGE_BASE_URL = "https://volgorost.ru/upload/import_images/images/"
 
 logger = logging.getLogger(__name__)
+
+
+def public_image_url(raw_path: str | None) -> str | None:
+    """Возвращает абсолютный публичный URL изображения без изменения его владельца."""
+    value = (raw_path or "").strip()
+    if not value:
+        return None
+    parts = urlsplit(value)
+    if parts.scheme in {"http", "https"} and parts.netloc:
+        return urlunsplit((
+            parts.scheme,
+            parts.netloc.encode("idna").decode("ascii"),
+            quote(parts.path, safe="/%:@"),
+            quote(parts.query, safe="=&%:@/?"),
+            "",
+        ))
+    normalized_path = value.lstrip("/")
+    if normalized_path.lower().startswith("images/"):
+        normalized_path = normalized_path[len("images/"):]
+    return f"{IMAGE_BASE_URL}{quote(normalized_path, safe='/%:@')}"
+
+
 PRODUCT_FIELD_TAGS = {
     "code": ("Код", "code"),
     "name": ("Название", "name"),
@@ -453,10 +476,7 @@ class XMLCatalogImporter:
 
     def _image_url(self, raw_path: str) -> str:
         """Превращает путь изображения из XML в полный внешний URL."""
-        normalized_path = raw_path.strip().lstrip("/")
-        if normalized_path.lower().startswith("images/"):
-            normalized_path = normalized_path[len("images/"):]
-        return f"{IMAGE_BASE_URL}{normalized_path}"
+        return public_image_url(raw_path) or ""
 
     def _parse_images(self, item: ET.Element) -> list[ProductImage]:
         """Сохраняет все изображения товара из XML с исходным порядком."""

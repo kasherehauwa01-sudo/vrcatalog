@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -93,6 +93,13 @@ class ProductProperty(Base):
     name: Mapped[str] = mapped_column(String(255), index=True)
     value: Mapped[str | None] = mapped_column(Text)
     product: Mapped[Product] = relationship(back_populates="properties")
+
+
+Index(
+    "ix_product_properties_normalized_name_value",
+    func.md5(func.lower(func.trim(ProductProperty.name))),
+    func.md5(func.lower(func.trim(ProductProperty.value))),
+).ddl_if(dialect="postgresql")
 
 
 class Analog(Base):

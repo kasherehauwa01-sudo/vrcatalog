@@ -76,6 +76,151 @@ VITE_BASE_PATH=/vr/catalog/
 
 `INTERNAL_API_TOKEN` используется только backend-to-backend запросами. Сгенерировать токен можно командой `openssl rand -hex 32`; его нельзя добавлять в frontend или передавать в URL.
 
+## API товаров по свойству для Sales Journal
+
+Существующий endpoint списка товаров поддерживает защищённую межсервисную фильтрацию:
+
+```text
+GET /api/products?property=HoReCa&property_value=HoReCa&limit=10000&offset=0
+```
+
+При использовании `property` оба параметра (`property` и `property_value`) обязательны.
+Название и значение очищаются от пробелов по краям, приводятся к нижнему регистру
+и сравниваются в PostgreSQL целиком, без частичного поиска. Обычный `GET /api/products`
+без этих параметров остаётся публичным и сохраняет прежний контракт.
+
+Для межсервисного запроса используется `INTERNAL_API_TOKEN`. Sales Journal может
+передать его стандартным Bearer-заголовком; прежний `X-Internal-Token` также поддерживается:
+
+```bash
+curl \
+  -H "Authorization: Bearer $INTERNAL_API_TOKEN" \
+  "https://kvasmix.ru/vr/catalog/api/products?property=HoReCa&property_value=HoReCa&limit=10000"
+```
+
+Ответ — совместимый с Sales Journal корневой массив. В каждом товаре присутствуют
+`id`, `article`, `code`, `name` и однозначный объект `properties`:
+
+```json
+[
+  {
+    "id": 123,
+    "article": "A-001",
+    "code": "000123",
+    "name": "Название товара",
+    "properties": {"HoReCa": "HoReCa"}
+  }
+]
+```
+
+`limit` допускает значения от 1 до 10000, `offset` — неотрицательное число.
+Если результатов больше 10000, клиент последовательно увеличивает `offset` до получения
+пустого массива. При отсутствии совпадений возвращаются HTTP 200 и `[]`. Отсутствующий
+токен возвращает HTTP 401, неверный — HTTP 403, а передача только одного параметра
+свойства — HTTP 422. Фильтрация выполняется SQL `EXISTS`; связанные свойства загружаются
+одним дополнительным пакетным запросом, без N+1.
+
+## Интеграция с Sales Journal
+
+Для интерактивного подбора товаров предусмотрено отдельное read-only API:
+
+* `GET /api/integration/product-filters` — реальные фильтры и первые 100 вариантов;
+* `GET /api/integration/product-filters/{filter_key}/options` — поиск и пагинация
+  вариантов (`search`, `page`, `page_size`, максимум 100);
+* `POST /api/integration/products/search` — серверный поиск и подсчёт товаров.
+
+Все маршруты требуют `Authorization: Bearer <INTERNAL_API_TOKEN>`. Отсутствующий
+заголовок даёт 401, неверный токен — 403. Токен сравнивается в постоянное время и
+не записывается в журналы. В CatalogVR задаётся `INTERNAL_API_TOKEN`; на стороне
+Sales Journal тот же секрет можно хранить как `VRCATALOG_API_TOKEN`. Других
+переменных окружения CatalogVR для интеграции не требуется.
+
+Метаданные строятся из существующих полей `Product` (`section`, `manufacturer`,
+`brand`, `manager`, `country`, `material`, `color`) и строк `ProductProperty`.
+Свойства имеют стабильный для текущего источника ключ `property:<точное имя>`.
+Тип всех существующих списочных фильтров — `multi_select`; варианты сортируются,
+дубликаты удаляются. Если вариантов больше 100, `options_paginated` равен `true`
+и Sales Journal должен загрузить их через endpoint `/options`.
+
+Пример получения фильтров:
+
+```bash
+curl -H "Authorization: Bearer $VRCATALOG_API_TOKEN" \
+  "https://example.ru/vr/catalog/api/integration/product-filters"
+```
+
+```json
+{
+  "filters": [{
+    "key": "brand",
+    "label": "Бренд",
+    "type": "multi_select",
+    "options": [{"value": "Regent", "label": "Regent"}],
+    "options_paginated": false
+  }]
+}
+```
+
+Пример поиска:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $VRCATALOG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"search":"сковорода","filters":{"brand":["Regent"],"property:Диаметр":["24"]},"excluded":[{"code":"000777"}],"page":1,"page_size":50,"sort_by":"name","sort_dir":"asc"}' \
+  "https://example.ru/vr/catalog/api/integration/products/search"
+```
+
+```json
+{
+  "items": [{
+    "id": 123,
+    "code": "000123",
+    "article": "93-AL-24",
+    "name": "Сковорода 24 см",
+    "image_url": "https://volgorost.ru/upload/import_images/images/products/photo.jpg",
+    "properties": [{
+      "key": "property:Диаметр",
+      "label": "Диаметр",
+      "value": "24",
+      "display_value": "24"
+    }]
+  }],
+  "total": 1,
+  "page": 1,
+  "page_size": 50,
+  "pages": 1
+}
+```
+
+`page` начинается с 1, `page_size` — от 1 до 500. Поиск выполняется по `code`,
+`article` и `name` без учёта регистра. Допустимая сортировка: `id`, `code`,
+`article`, `name`; направление — `asc` или `desc`. Значения одного фильтра
+объединяются через **OR**, разные фильтры — через **AND**. Неизвестный фильтр,
+сортировка или некорректное тело дают 422. Пустая выборка возвращает 200,
+`items: []` и `total: 0`.
+
+Главный идентификатор для связи с `SaleItem` — строковый `code`, потому что он
+обязателен и уникален в CatalogVR. `article` возвращается дополнительным ключом.
+Оба значения передаются строками без числового преобразования, поэтому ведущие
+нули сохраняются. Исключения передаются в JSON-массиве `excluded` (до 1000), а не
+в URL.
+
+`image_url` имеет тип `string | null`. Для товара с несколькими изображениями
+возвращается первое изображение по `image_order`; при отсутствии изображений —
+`null`. Уже сохранённые абсолютные HTTP(S)-адреса не получают повторный hostname.
+Относительные пути преобразуются в публичный URL хранилища изображений
+`https://volgorost.ru/upload/import_images/images/`. Пробелы, кириллица и домены
+IDN безопасно кодируются. URL не содержит API token и открывается браузером без
+Bearer-авторизации; сам endpoint поиска остаётся защищённым.
+
+`selection_id` намеренно не хранится: в проекте нет общего Redis, а локальная
+память процесса небезопасна при нескольких экземплярах backend. Для больших
+наборов backend Sales Journal повторяет одно и то же тело POST-запроса, увеличивая
+`page`; это не передаёт тысячи идентификаторов через URL и не требует TTL-хранилища.
+После публикации API в Sales Journal необходимо настроить базовый URL CatalogVR и
+`VRCATALOG_API_TOKEN`, загрузить метаданные, а затем выполнять POST-поиск страницами.
+
 ## Внутреннее API товаров, менеджеров и складских остатков
 
 Каталог является источником названия товара, ответственного менеджера и актуальных остатков по складам для других сервисов. Оба endpoint требуют заголовок `X-Internal-Token`, скрыты из OpenAPI/Swagger и возвращают HTTP 401 при отсутствующем или неверном токене.
