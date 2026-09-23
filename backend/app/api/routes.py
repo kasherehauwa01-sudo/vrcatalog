@@ -40,6 +40,7 @@ from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSetting
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
 from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_search, list_filters, meta, product_query, paginated_products
 from app.services.logging import add_log
+from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
 
@@ -790,6 +791,9 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
                 path = output.name
             processed = write_export_workbook_streaming(db, params, columns, path, job_id, product_count, filtered_ids)
+            if has_photos:
+                # Одно обслуживание после задания вместо обхода каталога для каждой фотографии.
+                maintain_export_image_cache_safely(job_id)
             filename = "products.xlsx"
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             gc.collect()
