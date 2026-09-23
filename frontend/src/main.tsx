@@ -182,6 +182,12 @@ const filterFieldLabels: Partial<Record<keyof FilterFields, string>> = {
 };
 const updateScriptPath = "/var/www/html/vr/vrcatalog/deploy/timeweb/update_vrcatalog.sh";
 const clientsUrl = "https://kvasmix.ru/vr/clients/";
+type AnalyticsPeriod = "week" | "month" | "quarter" | "year" | "custom";
+
+const dateInputValue = (date: Date) => {
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
+};
 const formatMoscowDate = (value: string) =>
   new Date(value).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
 const getLogStage = (log: ServiceLog) =>
@@ -253,7 +259,14 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [detail, setDetail] = useState<ProductDetail | null>(null);
-  const [tab, setTab] = useState<"catalog" | "settings">("catalog");
+  const [tab, setTab] = useState<"catalog" | "analytics" | "settings">("catalog");
+  const [analyticsPeriod, setAnalyticsPeriod] = useState<AnalyticsPeriod>("custom");
+  const [analyticsDateFrom, setAnalyticsDateFrom] = useState(() => {
+    const date = new Date();
+    date.setMonth(date.getMonth() - 1);
+    return dateInputValue(date);
+  });
+  const [analyticsDateTo, setAnalyticsDateTo] = useState(() => dateInputValue(new Date()));
   const [settingsPasswordOpen, setSettingsPasswordOpen] = useState(false);
   const [settingsPassword, setSettingsPassword] = useState("");
   const [settingsPasswordError, setSettingsPasswordError] = useState(false);
@@ -312,6 +325,18 @@ function App() {
   const [allAnalogsLoading, setAllAnalogsLoading] = useState(false);
   const [analogReason, setAnalogReason] = useState<DynamicAnalog | null>(null);
   const [queryVersion, setQueryVersion] = useState(0);
+  const selectAnalyticsPeriod = (period: AnalyticsPeriod) => {
+    setAnalyticsPeriod(period);
+    if (period === "custom") return;
+    const end = new Date();
+    const start = new Date(end);
+    if (period === "week") start.setDate(start.getDate() - 7);
+    if (period === "month") start.setMonth(start.getMonth() - 1);
+    if (period === "quarter") start.setMonth(start.getMonth() - 3);
+    if (period === "year") start.setFullYear(start.getFullYear() - 1);
+    setAnalyticsDateFrom(dateInputValue(start));
+    setAnalyticsDateTo(dateInputValue(end));
+  };
   const params = useMemo(() => new URLSearchParams(window.location.search), [queryVersion]);
   const replaceCatalogParams = (next: URLSearchParams) => {
     const query = next.toString();
@@ -870,6 +895,7 @@ function App() {
               variant="scrollable"
             >
               <Tab value="catalog" label="Каталог" />
+              <Tab value="analytics" label="Товарная аналитика" />
               <Tab value="clients" label="Контрагенты" />
               <Tab value="settings" label="Настройки" />
             </Tabs>
@@ -1016,6 +1042,52 @@ function App() {
               </Button>
             </DialogActions>
           </Dialog>
+
+          {tab === "analytics" && (
+            <Card>
+              <CardContent>
+                <Typography variant="h5" fontWeight={800} sx={{ mb: 2 }}>
+                  Товарная аналитика
+                </Typography>
+                <Stack direction="row" gap={1} flexWrap="wrap" aria-label="Период товарной аналитики">
+                  {([
+                    ["week", "Неделя"],
+                    ["month", "Месяц"],
+                    ["quarter", "Квартал"],
+                    ["year", "Год"],
+                    ["custom", "Произвольный период"],
+                  ] as const).map(([value, label]) => (
+                    <Chip
+                      key={value}
+                      clickable
+                      label={label}
+                      color={analyticsPeriod === value ? "primary" : "default"}
+                      variant={analyticsPeriod === value ? "filled" : "outlined"}
+                      onClick={() => selectAnalyticsPeriod(value)}
+                    />
+                  ))}
+                </Stack>
+                {analyticsPeriod === "custom" && (
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mt: 2 }}>
+                    <TextField
+                      label="Дата начала"
+                      type="date"
+                      value={analyticsDateFrom}
+                      onChange={(event) => setAnalyticsDateFrom(event.target.value)}
+                      InputLabelProps={{ shrink: true }}
+                    />
+                    <TextField
+                      label="Дата окончания"
+                      type="date"
+                      value={analyticsDateTo}
+                      onChange={(event) => setAnalyticsDateTo(event.target.value)}
+                      InputLabelProps={{ shrink: true }}
+                    />
+                  </Stack>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {tab === "catalog" && (
             <Paper

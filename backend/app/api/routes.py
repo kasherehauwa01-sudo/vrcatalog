@@ -38,8 +38,9 @@ from app.importer.xml_importer import XMLCatalogImporter, public_image_url
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
 from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
-from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_search, list_filters, meta, product_query, paginated_products
+from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
+from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
 
@@ -168,19 +169,62 @@ def integration_products_batch_info(
     db: Session = Depends(get_db),
     authorization: Annotated[str | None, Header()] = None,
 ):
-    require_integration_token(authorization)
-    products, horeca_product_ids, first_images = integration_batch_product_info(
+    try:
+        require_integration_token(authorization)
+    except HTTPException as exc:
+        # Для batch-контракта Sales Journal любая ошибка Bearer-а является 401.
+        raise HTTPException(401, exc.detail) from exc
+    products, details_by_product_id = integration_batch_product_info(
         db,
         request.products,
     )
+    property_aliases = {
+        "brand": {"бренд", "brand"},
+        "manufacturer": {"производитель", "manufacturer"},
+        "category": {"категория", "category"},
+        "material": {"материал", "material"},
+    }
+
+    def normalized_value(product, field: str):
+        direct_fields = {
+            "brand": product.brand,
+            "manufacturer": product.manufacturer,
+            "category": product.section,
+            "material": product.material,
+        }
+        direct_value = (direct_fields[field] or "").strip()
+        if direct_value:
+            return direct_value
+        return next((
+            item["value"]
+            for item in details_by_product_id[product.id]["properties"]
+            if item["name"].casefold() in property_aliases[field]
+        ), None)
+
     return {
         "items": [
             {
                 "code": str(product.code),
                 "article": str(product.article) if product.article is not None else None,
                 "name": product.name,
-                "horeca": product.id in horeca_product_ids,
-                "image_url": public_image_url(first_images.get(product.id)),
+                "horeca": any(
+                    item["name"].casefold() == "horeca" and item["value"].casefold() == "horeca"
+                    for item in details_by_product_id[product.id]["properties"]
+                ),
+                "image_url": public_image_url(details_by_product_id[product.id]["image_url"]),
+                "brand": normalized_value(product, "brand"),
+                "manufacturer": normalized_value(product, "manufacturer"),
+                "category": normalized_value(product, "category"),
+                "material": normalized_value(product, "material"),
+                "properties": [
+                    {
+                        **item,
+                        "value": product_type_name(item["value"]),
+                    } if item["name"].casefold() in {"вид товара", "видтовара"} else item
+                    for item in details_by_product_id[product.id]["properties"]
+                ],
+                "stocks": details_by_product_id[product.id]["stocks"],
+                "prices": details_by_product_id[product.id]["prices"],
             }
             for product in products
         ]
@@ -790,6 +834,9 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
                 path = output.name
             processed = write_export_workbook_streaming(db, params, columns, path, job_id, product_count, filtered_ids)
+            if has_photos:
+                # Одно обслуживание после задания вместо обхода каталога для каждой фотографии.
+                maintain_export_image_cache_safely(job_id)
             filename = "products.xlsx"
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             gc.collect()
