@@ -54,6 +54,23 @@ INTEGRATION_SORT_FIELDS = {
 NEW_PRODUCT_PERIOD = timedelta(days=7)
 NEW_PRODUCT_TYPE_FILTER = "Новинка"
 EXCLUDED_YYY_SECTION = "яяявывод/разукомплектация НЕ ВЫГРУЖАТЬ НА САЙТ"
+DEFAULT_PRODUCT_TYPE_NAMES = {
+    "1": "Обычный",
+    "2": "Ограниченная скидка",
+    "3": "Надо продать",
+    "4": "Куплен по акции",
+    "5": "Прочие акции",
+    "6": "Дисконт",
+    "7": "Товар с деффектом",
+    "8": "Последний экземпляр",
+    "9": "Сетевой",
+    "10": "Акция месяца",
+    "11": "Разукомплектация",
+    "12": "Минимальная наценка",
+    "13": "Акция розница",
+    "14": "Первая цена",
+    "15": "9-19",
+}
 
 
 def new_product_cutoff() -> datetime:
@@ -647,6 +664,14 @@ def product_type_code(product: Product) -> str | None:
     return None
 
 
+def product_type_name(code: str | None, configured_names: dict[str, str] | None = None) -> str | None:
+    """Возвращает понятное название вида товара вместо служебного числового кода."""
+    normalized_code = (code or "").strip()
+    if not normalized_code:
+        return None
+    return (configured_names or {}).get(normalized_code, DEFAULT_PRODUCT_TYPE_NAMES.get(normalized_code, normalized_code))
+
+
 def product_display_name(product: Product) -> str:
     if product.name and product.name != product.code:
         return product.name
@@ -669,5 +694,5 @@ def decorate(product: Product, product_type_names: dict[str, str] | None = None)
     code = product_type_code(product)
     product.product_type = code
     if product_type_names is not None:
-        product.product_type_name = product_type_names.get(code, code) if code else None
+        product.product_type_name = product_type_name(code, product_type_names)
     return product

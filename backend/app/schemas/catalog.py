@@ -210,7 +210,6 @@ class IntegrationBatchProductOut(BaseModel):
     brand: str | None = None
     manufacturer: str | None = None
     category: str | None = None
-    subcategory: str | None = None
     material: str | None = None
     properties: list[IntegrationBatchProductProperty]
     stocks: list[IntegrationBatchProductStock]

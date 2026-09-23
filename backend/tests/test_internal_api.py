@@ -491,11 +491,12 @@ class InternalProductApiTests(unittest.TestCase):
             first.manufacturer = " Фабрика "
             first.section = " Посуда "
             first.material = None
-            first.product_type = None
+            first.product_type = "10"
             first.properties.extend([
                 ProductProperty(name=" Цвет ", value=" Белый "),
                 ProductProperty(name="Материал", value=" Фарфор "),
                 ProductProperty(name="Материал", value="Фарфор"),
+                ProductProperty(name="Вид товара", value="10"),
                 ProductProperty(name="Subcategory", value="Тарелки"),
                 ProductProperty(name=" ", value="не возвращать"),
                 ProductProperty(name="Пустое", value="   "),
@@ -526,12 +527,13 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertEqual(first_item["brand"], "Прямой бренд")
         self.assertEqual(first_item["manufacturer"], "Фабрика")
         self.assertEqual(first_item["category"], "Посуда")
-        self.assertEqual(first_item["subcategory"], "Тарелки")
+        self.assertNotIn("subcategory", first_item)
         self.assertEqual(first_item["material"], "Фарфор")
         self.assertEqual(
             first_item["properties"],
             [
                 {"name": "Subcategory", "value": "Тарелки"},
+                {"name": "Вид товара", "value": "Акция месяца"},
                 {"name": "Материал", "value": "Фарфор"},
                 {"name": "Цвет", "value": "Белый"},
             ],
@@ -554,6 +556,19 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertEqual(items["P-2"]["properties"], [{"name": "Brand", "value": "Другой бренд"}])
         self.assertEqual(items["P-2"]["stocks"], [{"warehouse": "Основной склад", "quantity": 99.0}])
         self.assertEqual(len(items["P-2"]["prices"]), 1)
+
+    def test_product_card_replaces_numeric_product_type_with_name(self):
+        with Session(self.engine) as db:
+            product = db.query(Product).filter(Product.code == "P-1").one()
+            product.product_type = "7"
+            product.properties.append(ProductProperty(name="Вид товара", value="7"))
+            product_id = product.id
+            db.commit()
+
+        response = self.client.get(f"/api/products/{product_id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["product_type_name"], "Товар с деффектом")
 
     def test_integration_batch_info_rejects_invalid_token(self):
         response = self.client.post(

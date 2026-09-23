@@ -24,7 +24,7 @@ from app.models.catalog import (
     WarehouseSetting,
 )
 from app.api.routes import build_export_workbook, download_export_images, normalize_image_url, write_export_workbook_streaming
-from app.services.catalog import catalog_product_query, list_filters, paginated_products
+from app.services.catalog import catalog_product_query, list_filters, paginated_products, product_type_name
 from app.services.logging import add_log
 from app.schemas.catalog import ProductDetailOut
 
@@ -568,6 +568,19 @@ class ServiceLoggingTests(unittest.TestCase):
         self.assertEqual(len(logs), 100)
         self.assertTrue(all(log.level == "error" for log in logs))
         self.assertEqual(logs[0].event, "error_5")
+
+
+class ProductTypeNameTests(unittest.TestCase):
+    def test_numeric_product_types_have_business_names(self):
+        expected_names = {
+            "1": "Обычный", "2": "Ограниченная скидка", "3": "Надо продать",
+            "4": "Куплен по акции", "5": "Прочие акции", "6": "Дисконт",
+            "7": "Товар с деффектом", "8": "Последний экземпляр", "9": "Сетевой",
+            "10": "Акция месяца", "11": "Разукомплектация", "12": "Минимальная наценка",
+            "13": "Акция розница", "14": "Первая цена", "15": "9-19",
+        }
+
+        self.assertEqual({code: product_type_name(code) for code in expected_names}, expected_names)
 
 
 class ProductDetailSchemaTests(unittest.TestCase):

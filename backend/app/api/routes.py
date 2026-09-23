@@ -38,7 +38,7 @@ from app.importer.xml_importer import XMLCatalogImporter, public_image_url
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
 from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
-from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_search, list_filters, meta, product_query, paginated_products
+from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
@@ -182,7 +182,6 @@ def integration_products_batch_info(
         "brand": {"бренд", "brand"},
         "manufacturer": {"производитель", "manufacturer"},
         "category": {"категория", "category"},
-        "subcategory": {"подкатегория", "subcategory"},
         "material": {"материал", "material"},
     }
 
@@ -191,7 +190,6 @@ def integration_products_batch_info(
             "brand": product.brand,
             "manufacturer": product.manufacturer,
             "category": product.section,
-            "subcategory": product.product_type,
             "material": product.material,
         }
         direct_value = (direct_fields[field] or "").strip()
@@ -217,9 +215,14 @@ def integration_products_batch_info(
                 "brand": normalized_value(product, "brand"),
                 "manufacturer": normalized_value(product, "manufacturer"),
                 "category": normalized_value(product, "category"),
-                "subcategory": normalized_value(product, "subcategory"),
                 "material": normalized_value(product, "material"),
-                "properties": details_by_product_id[product.id]["properties"],
+                "properties": [
+                    {
+                        **item,
+                        "value": product_type_name(item["value"]),
+                    } if item["name"].casefold() in {"вид товара", "видтовара"} else item
+                    for item in details_by_product_id[product.id]["properties"]
+                ],
                 "stocks": details_by_product_id[product.id]["stocks"],
                 "prices": details_by_product_id[product.id]["prices"],
             }
