@@ -1,5 +1,8 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+EXPORT_IMAGE_CACHE_MAX_MB = 500
+EXPORT_IMAGE_CACHE_TARGET_MB = 450
+
 
 class Settings(BaseSettings):
     """Настройки приложения, которые можно переопределить через .env или переменные контейнера."""
@@ -11,6 +14,8 @@ class Settings(BaseSettings):
     secret_key: str = "change-me"
     internal_api_token: str = ""
     base_path: str = "/vr/catalog"
+    export_image_cache_max_mb: int = EXPORT_IMAGE_CACHE_MAX_MB
+    export_image_cache_target_mb: int = EXPORT_IMAGE_CACHE_TARGET_MB
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 
