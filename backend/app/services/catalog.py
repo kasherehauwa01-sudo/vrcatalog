@@ -51,7 +51,6 @@ INTEGRATION_SORT_FIELDS = {
     "article": Product.article,
     "name": Product.name,
 }
-INTEGRATION_BATCH_SIZE = 500
 NEW_PRODUCT_PERIOD = timedelta(days=7)
 NEW_PRODUCT_TYPE_FILTER = "Новинка"
 EXCLUDED_YYY_SECTION = "яяявывод/разукомплектация НЕ ВЫГРУЖАТЬ НА САЙТ"
@@ -368,23 +367,21 @@ def integration_product_search(db: Session, request):
 
 
 def integration_batch_product_info(db: Session, requested_products):
-    """Пакетно сопоставляет товары по code, затем по article, без N+1 запросов."""
+    """Пакетно сопоставляет товары и загружает связанные данные пятью запросами."""
     codes = {item.code.casefold() for item in requested_products if item.code}
     articles = {item.article.casefold() for item in requested_products if item.article}
     normalized_code = func.lower(func.trim(Product.code))
     normalized_article = func.lower(func.trim(Product.article))
-    candidates_by_id = {}
-    lookup_values = [("code", list(codes)), ("article", list(articles))]
-    for field, values in lookup_values:
-        expression = normalized_code if field == "code" else normalized_article
-        for start in range(0, len(values), INTEGRATION_BATCH_SIZE):
-            chunk = values[start:start + INTEGRATION_BATCH_SIZE]
-            for product in db.query(Product).filter(expression.in_(chunk)).order_by(Product.id).all():
-                candidates_by_id[product.id] = product
+    lookup_conditions = []
+    if codes:
+        lookup_conditions.append(normalized_code.in_(codes))
+    if articles:
+        lookup_conditions.append(normalized_article.in_(articles))
+    candidates = db.query(Product).filter(or_(*lookup_conditions)).order_by(Product.id).all()
 
     by_code = {}
     by_article = {}
-    for product in sorted(candidates_by_id.values(), key=lambda item: item.id):
+    for product in candidates:
         by_code.setdefault(product.code.strip().casefold(), product)
         if product.article and product.article.strip():
             by_article.setdefault(product.article.strip().casefold(), product)
@@ -400,45 +397,83 @@ def integration_batch_product_info(db: Session, requested_products):
             matched_products.append(product)
 
     product_ids = [product.id for product in matched_products]
-    horeca_product_ids = set()
-    first_images = {}
-    normalized_property_name = func.lower(func.trim(ProductProperty.name))
-    normalized_property_value = func.lower(func.trim(ProductProperty.value))
-    for start in range(0, len(product_ids), INTEGRATION_BATCH_SIZE):
-        chunk = product_ids[start:start + INTEGRATION_BATCH_SIZE]
-        horeca_product_ids.update(
-            product_id
-            for product_id, in db.query(ProductProperty.product_id)
-            .filter(
-                ProductProperty.product_id.in_(chunk),
-                normalized_property_name == "horeca",
-                normalized_property_value == "horeca",
-            )
-            .distinct()
-            .all()
+    details = {
+        product_id: {"properties": [], "stocks": [], "prices": [], "image_url": None}
+        for product_id in product_ids
+    }
+    if not product_ids:
+        return matched_products, details
+
+    property_rows = (
+        db.query(ProductProperty.product_id, ProductProperty.name, ProductProperty.value)
+        .filter(ProductProperty.product_id.in_(product_ids))
+        .order_by(ProductProperty.product_id, ProductProperty.name, ProductProperty.value, ProductProperty.id)
+        .all()
+    )
+    seen_properties = {product_id: set() for product_id in product_ids}
+    for product_id, raw_name, raw_value in property_rows:
+        name = (raw_name or "").strip()
+        value = (raw_value or "").strip()
+        pair = (name, value)
+        if not name or not value or pair in seen_properties[product_id]:
+            continue
+        seen_properties[product_id].add(pair)
+        details[product_id]["properties"].append({"name": name, "value": value})
+    for product_id in product_ids:
+        details[product_id]["properties"].sort(
+            key=lambda item: (item["name"].casefold(), item["value"].casefold())
         )
-        first_orders = (
-            db.query(
-                ProductImage.product_id.label("product_id"),
-                func.min(ProductImage.image_order).label("image_order"),
-            )
-            .filter(ProductImage.product_id.in_(chunk))
-            .group_by(ProductImage.product_id)
-            .subquery()
+
+    first_orders = (
+        db.query(
+            ProductImage.product_id.label("product_id"),
+            func.min(ProductImage.image_order).label("image_order"),
         )
-        image_rows = (
-            db.query(ProductImage)
-            .join(
-                first_orders,
-                and_(
-                    ProductImage.product_id == first_orders.c.product_id,
-                    ProductImage.image_order == first_orders.c.image_order,
-                ),
-            )
-            .all()
+        .filter(ProductImage.product_id.in_(product_ids))
+        .group_by(ProductImage.product_id)
+        .subquery()
+    )
+    image_rows = (
+        db.query(ProductImage.product_id, ProductImage.image_url)
+        .join(
+            first_orders,
+            and_(
+                ProductImage.product_id == first_orders.c.product_id,
+                ProductImage.image_order == first_orders.c.image_order,
+            ),
         )
-        first_images.update({image.product_id: image.image_url for image in image_rows})
-    return matched_products, horeca_product_ids, first_images
+        .all()
+    )
+    for product_id, image_url in image_rows:
+        details[product_id]["image_url"] = image_url
+
+    warehouse_name = func.coalesce(WarehouseSetting.name, Stock.warehouse)
+    stock_rows = (
+        db.query(
+            Stock.product_id,
+            warehouse_name.label("warehouse_name"),
+            func.sum(Stock.quantity).label("quantity"),
+        )
+        .outerjoin(WarehouseSetting, WarehouseSetting.code == Stock.warehouse)
+        .filter(Stock.product_id.in_(product_ids))
+        .group_by(Stock.product_id, Stock.warehouse, WarehouseSetting.name)
+        .order_by(Stock.product_id, warehouse_name)
+        .all()
+    )
+    for product_id, name, quantity in stock_rows:
+        details[product_id]["stocks"].append({"warehouse": name, "quantity": quantity})
+
+    price_rows = (
+        db.query(Price.product_id, Price.price_type, Price.price_value)
+        .filter(Price.product_id.in_(product_ids))
+        .order_by(Price.product_id, Price.price_type, Price.price_value, Price.id)
+        .all()
+    )
+    for product_id, name, value in price_rows:
+        normalized_name = (name or "").strip()
+        if normalized_name:
+            details[product_id]["prices"].append({"name": normalized_name, "value": value, "currency": "RUB"})
+    return matched_products, details
 
 
 def paginated_products(db: Session, params):

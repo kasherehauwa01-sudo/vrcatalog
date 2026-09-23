@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import settings
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.catalog import Product, ProductImage, ProductProperty, ServiceLog, Stock, WarehouseSetting
+from app.models.catalog import Price, Product, ProductImage, ProductProperty, ServiceLog, Stock, WarehouseSetting
 
 
 class InternalProductApiTests(unittest.TestCase):
@@ -42,6 +42,7 @@ class InternalProductApiTests(unittest.TestCase):
     def setUp(self):
         with Session(self.engine) as db:
             db.query(ServiceLog).delete()
+            db.query(Price).delete()
             db.query(Stock).delete()
             db.query(ProductImage).delete()
             db.query(ProductProperty).delete()
@@ -479,6 +480,88 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertIsNone(items[1]["image_url"])
         self.assertEqual(items[0]["article"], "10001")
         self.assertEqual(items[0]["name"], "Товар А")
+        self.assertEqual(items[1]["properties"], [])
+        self.assertEqual(items[1]["stocks"], [])
+        self.assertEqual(items[1]["prices"], [])
+
+    def test_integration_batch_info_returns_complete_product_data(self):
+        with Session(self.engine) as db:
+            first, second = db.query(Product).order_by(Product.id).limit(2).all()
+            first.brand = "  Прямой бренд  "
+            first.manufacturer = " Фабрика "
+            first.section = " Посуда "
+            first.material = None
+            first.product_type = None
+            first.properties.extend([
+                ProductProperty(name=" Цвет ", value=" Белый "),
+                ProductProperty(name="Материал", value=" Фарфор "),
+                ProductProperty(name="Материал", value="Фарфор"),
+                ProductProperty(name="Subcategory", value="Тарелки"),
+                ProductProperty(name=" ", value="не возвращать"),
+                ProductProperty(name="Пустое", value="   "),
+            ])
+            first.images.extend([
+                ProductImage(image_order=5, image_url="images/later.jpg"),
+                ProductImage(image_order=1, image_url="images/first.jpg"),
+            ])
+            first.prices.extend([
+                Price(price_type="Розничная", price_value=1490),
+                Price(price_type="Оптовая", price_value=1190),
+            ])
+            second.properties.append(ProductProperty(name="Brand", value="Другой бренд"))
+            second.stocks.append(Stock(warehouse="MAIN", quantity=99))
+            second.prices.append(Price(price_type="Розничная", price_value=10))
+            db.commit()
+
+        response = self.client.post(
+            "/api/integration/products/batch-info",
+            headers={"Authorization": "Bearer test-internal-token"},
+            json={"products": [{"code": "p-1"}, {"article": "10002"}]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        items = {item["code"]: item for item in response.json()["items"]}
+        first_item = items["P-1"]
+        self.assertEqual(first_item["image_url"], "https://volgorost.ru/upload/import_images/images/first.jpg")
+        self.assertEqual(first_item["brand"], "Прямой бренд")
+        self.assertEqual(first_item["manufacturer"], "Фабрика")
+        self.assertEqual(first_item["category"], "Посуда")
+        self.assertEqual(first_item["subcategory"], "Тарелки")
+        self.assertEqual(first_item["material"], "Фарфор")
+        self.assertEqual(
+            first_item["properties"],
+            [
+                {"name": "Subcategory", "value": "Тарелки"},
+                {"name": "Материал", "value": "Фарфор"},
+                {"name": "Цвет", "value": "Белый"},
+            ],
+        )
+        self.assertEqual(
+            first_item["stocks"],
+            [
+                {"warehouse": "Авиаторов Зал+Склад", "quantity": 13.0},
+                {"warehouse": "Бахтурова", "quantity": 2.0},
+                {"warehouse": "Основной склад", "quantity": 7.0},
+            ],
+        )
+        self.assertEqual(
+            first_item["prices"],
+            [
+                {"name": "Оптовая", "value": 1190.0, "currency": "RUB"},
+                {"name": "Розничная", "value": 1490.0, "currency": "RUB"},
+            ],
+        )
+        self.assertEqual(items["P-2"]["properties"], [{"name": "Brand", "value": "Другой бренд"}])
+        self.assertEqual(items["P-2"]["stocks"], [{"warehouse": "Основной склад", "quantity": 99.0}])
+        self.assertEqual(len(items["P-2"]["prices"]), 1)
+
+    def test_integration_batch_info_rejects_invalid_token(self):
+        response = self.client.post(
+            "/api/integration/products/batch-info",
+            headers={"Authorization": "Bearer wrong"},
+            json={"products": [{"code": "P-1"}]},
+        )
+        self.assertEqual(response.status_code, 401)
 
     def test_integration_batch_info_validates_size_and_empty_identifiers(self):
         headers = {"Authorization": "Bearer test-internal-token"}
@@ -496,30 +579,34 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertEqual(too_many.status_code, 422)
 
     def test_integration_batch_info_uses_bounded_query_count(self):
-        statements = []
+        def request_with_query_count(products):
+            statements = []
 
-        def record_statement(*args):
-            statements.append(args[2])
+            def record_statement(*args):
+                statements.append(args[2])
 
-        event.listen(self.engine, "before_cursor_execute", record_statement)
-        try:
-            response = self.client.post(
-                "/api/integration/products/batch-info",
-                headers={"Authorization": "Bearer test-internal-token"},
-                json={
-                    "products": [
-                        {"code": "P-1", "article": "10001"},
-                        {"code": "P-2", "article": "10002"},
-                        {"code": "P-3", "article": "00123"},
-                    ]
-                },
-            )
-        finally:
-            event.remove(self.engine, "before_cursor_execute", record_statement)
+            event.listen(self.engine, "before_cursor_execute", record_statement)
+            try:
+                response = self.client.post(
+                    "/api/integration/products/batch-info",
+                    headers={"Authorization": "Bearer test-internal-token"},
+                    json={"products": products},
+                )
+            finally:
+                event.remove(self.engine, "before_cursor_execute", record_statement)
+            return response, len(statements)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.json()["items"]), 3)
-        self.assertLessEqual(len(statements), 4)
+        single_response, single_count = request_with_query_count([{"code": "P-1"}])
+        large_response, large_count = request_with_query_count([
+            {"code": "P-1" if index == 0 else f"missing-{index}"}
+            for index in range(5000)
+        ])
+
+        self.assertEqual(single_response.status_code, 200)
+        self.assertEqual(large_response.status_code, 200)
+        self.assertEqual(len(large_response.json()["items"]), 1)
+        self.assertEqual(single_count, 5)
+        self.assertEqual(large_count, single_count)
 
     @property
     def headers(self):

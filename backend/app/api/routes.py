@@ -169,19 +169,59 @@ def integration_products_batch_info(
     db: Session = Depends(get_db),
     authorization: Annotated[str | None, Header()] = None,
 ):
-    require_integration_token(authorization)
-    products, horeca_product_ids, first_images = integration_batch_product_info(
+    try:
+        require_integration_token(authorization)
+    except HTTPException as exc:
+        # Для batch-контракта Sales Journal любая ошибка Bearer-а является 401.
+        raise HTTPException(401, exc.detail) from exc
+    products, details_by_product_id = integration_batch_product_info(
         db,
         request.products,
     )
+    property_aliases = {
+        "brand": {"бренд", "brand"},
+        "manufacturer": {"производитель", "manufacturer"},
+        "category": {"категория", "category"},
+        "subcategory": {"подкатегория", "subcategory"},
+        "material": {"материал", "material"},
+    }
+
+    def normalized_value(product, field: str):
+        direct_fields = {
+            "brand": product.brand,
+            "manufacturer": product.manufacturer,
+            "category": product.section,
+            "subcategory": product.product_type,
+            "material": product.material,
+        }
+        direct_value = (direct_fields[field] or "").strip()
+        if direct_value:
+            return direct_value
+        return next((
+            item["value"]
+            for item in details_by_product_id[product.id]["properties"]
+            if item["name"].casefold() in property_aliases[field]
+        ), None)
+
     return {
         "items": [
             {
                 "code": str(product.code),
                 "article": str(product.article) if product.article is not None else None,
                 "name": product.name,
-                "horeca": product.id in horeca_product_ids,
-                "image_url": public_image_url(first_images.get(product.id)),
+                "horeca": any(
+                    item["name"].casefold() == "horeca" and item["value"].casefold() == "horeca"
+                    for item in details_by_product_id[product.id]["properties"]
+                ),
+                "image_url": public_image_url(details_by_product_id[product.id]["image_url"]),
+                "brand": normalized_value(product, "brand"),
+                "manufacturer": normalized_value(product, "manufacturer"),
+                "category": normalized_value(product, "category"),
+                "subcategory": normalized_value(product, "subcategory"),
+                "material": normalized_value(product, "material"),
+                "properties": details_by_product_id[product.id]["properties"],
+                "stocks": details_by_product_id[product.id]["stocks"],
+                "prices": details_by_product_id[product.id]["prices"],
             }
             for product in products
         ]
