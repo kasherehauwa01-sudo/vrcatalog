@@ -185,12 +185,35 @@ class IntegrationBatchProductsRequest(BaseModel):
     products: list[IntegrationBatchProductIn] = Field(min_length=1, max_length=5000)
 
 
+class IntegrationBatchProductProperty(BaseModel):
+    name: str
+    value: str
+
+
+class IntegrationBatchProductStock(BaseModel):
+    warehouse: str
+    quantity: float
+
+
+class IntegrationBatchProductPrice(BaseModel):
+    name: str
+    value: float
+    currency: str = "RUB"
+
+
 class IntegrationBatchProductOut(BaseModel):
     code: str
     article: str | None
     name: str
     horeca: bool
     image_url: str | None
+    brand: str | None = None
+    manufacturer: str | None = None
+    category: str | None = None
+    material: str | None = None
+    properties: list[IntegrationBatchProductProperty]
+    stocks: list[IntegrationBatchProductStock]
+    prices: list[IntegrationBatchProductPrice]
 
 
 class IntegrationBatchProductsResponse(BaseModel):
