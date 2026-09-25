@@ -623,6 +623,97 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertEqual(single_count, 5)
         self.assertEqual(large_count, single_count)
 
+    def test_integration_category_map_requires_valid_bearer_token(self):
+        payload = {"products": [{"code": "P-1"}]}
+        missing = self.client.post(
+            "/api/integration/products/category-map",
+            json=payload,
+        )
+        invalid = self.client.post(
+            "/api/integration/products/category-map",
+            headers={"Authorization": "Bearer wrong"},
+            json=payload,
+        )
+
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(invalid.status_code, 403)
+
+    def test_integration_category_map_matches_in_order_and_normalizes_category(self):
+        with Session(self.engine) as db:
+            first = db.query(Product).filter(Product.code == "P-1").one()
+            second = db.query(Product).filter(Product.code == "P-2").one()
+            first.section = "  Посуда  "
+            second.section = "   "
+            # Артикул P-2 проверяет, что найденный code имеет приоритет над article.
+            first.article = "DUPLICATE"
+            second.article = "duplicate"
+            db.commit()
+
+        response = self.client.post(
+            "/api/integration/products/category-map",
+            headers={"Authorization": "Bearer test-internal-token"},
+            json={"products": [
+                {"code": "  p-1  ", "article": "10002"},
+                {"code": "missing", "article": " DUPLICATE "},
+                {"article": "duplicate"},
+                {"code": " p-2 "},
+                {"code": "P-POSITIVE"},
+                {"code": "not-found"},
+                {"code": "P-1"},
+            ]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"items": [
+            {"code": "P-1", "article": "DUPLICATE", "category": "Посуда"},
+            {"code": "P-1", "article": "DUPLICATE", "category": "Посуда"},
+            {"code": "P-1", "article": "DUPLICATE", "category": "Посуда"},
+            {"code": "P-2", "article": "duplicate", "category": None},
+            {"code": "P-POSITIVE", "article": "POSITIVE", "category": None},
+            {"code": "not-found", "article": None, "category": None},
+            {"code": "P-1", "article": "DUPLICATE", "category": "Посуда"},
+        ]})
+
+    def test_integration_category_map_uses_one_products_only_query(self):
+        statements = []
+
+        def record_statement(*args):
+            statements.append(args[2])
+
+        event.listen(self.engine, "before_cursor_execute", record_statement)
+        try:
+            response = self.client.post(
+                "/api/integration/products/category-map",
+                headers={"Authorization": "Bearer test-internal-token"},
+                json={"products": [
+                    {"code": "P-1" if index == 0 else f"missing-{index}"}
+                    for index in range(5000)
+                ]},
+            )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", record_statement)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["items"]), 5000)
+        self.assertEqual(len(statements), 1)
+        normalized_sql = statements[0].lower()
+        self.assertIn("from products", normalized_sql)
+        self.assertNotIn("product_properties", normalized_sql)
+        self.assertNotIn("product_images", normalized_sql)
+        self.assertNotIn("stocks", normalized_sql)
+        self.assertNotIn("prices", normalized_sql)
+
+    def test_batch_info_still_works_alongside_category_map(self):
+        response = self.client.post(
+            "/api/integration/products/batch-info",
+            headers={"Authorization": "Bearer test-internal-token"},
+            json={"products": [{"code": "P-1"}]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"][0]["code"], "P-1")
+        self.assertIn("properties", response.json()["items"][0])
+
     @property
     def headers(self):
         return {"X-Internal-Token": "test-internal-token"}

@@ -36,9 +36,9 @@ from app.db.session import SessionLocal, get_db
 from app.core.config import settings
 from app.importer.xml_importer import XMLCatalogImporter, public_image_url
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationCategoryMapResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
-from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
+from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
@@ -229,6 +229,18 @@ def integration_products_batch_info(
             for product in products
         ]
     }
+
+
+@router.post("/integration/products/category-map", response_model=IntegrationCategoryMapResponse)
+def integration_products_category_map(
+    request: IntegrationBatchProductsRequest,
+    db: Session = Depends(get_db),
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """Возвращает категории без загрузки тяжёлых связей карточки товара."""
+    require_integration_token(authorization)
+    return {"items": integration_product_category_map(db, request.products)}
+
 
 @router.post("/import", response_model=MetaOut)
 def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):

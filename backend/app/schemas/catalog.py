@@ -220,6 +220,16 @@ class IntegrationBatchProductsResponse(BaseModel):
     items: list[IntegrationBatchProductOut]
 
 
+class IntegrationCategoryMapProductOut(BaseModel):
+    code: str | None
+    article: str | None
+    category: str | None
+
+
+class IntegrationCategoryMapResponse(BaseModel):
+    items: list[IntegrationCategoryMapProductOut]
+
+
 class ProductTypeUpdateIn(BaseModel):
     product_type: str | None = None
 class ProductDetailOut(ProductListOut):
