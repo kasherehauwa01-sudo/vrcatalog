@@ -493,6 +493,59 @@ def integration_batch_product_info(db: Session, requested_products):
     return matched_products, details
 
 
+def integration_product_category_map(db: Session, requested_products):
+    """Сопоставляет пакет товаров одним лёгким запросом только к products."""
+    codes = {item.code.casefold() for item in requested_products if item.code}
+    articles = {item.article.casefold() for item in requested_products if item.article}
+    normalized_code = func.lower(func.trim(Product.code))
+    normalized_article = func.lower(func.trim(Product.article))
+    conditions = []
+    if codes:
+        conditions.append(normalized_code.in_(codes))
+    if articles:
+        conditions.append(normalized_article.in_(articles))
+
+    candidates = (
+        db.query(Product.id, Product.code, Product.article, Product.section)
+        .filter(or_(*conditions))
+        .all()
+    )
+    by_code = {}
+    by_article = {}
+    for candidate in candidates:
+        code_key = candidate.code.strip().casefold()
+        current_by_code = by_code.get(code_key)
+        if current_by_code is None or candidate.id < current_by_code.id:
+            by_code[code_key] = candidate
+        if candidate.article and candidate.article.strip():
+            article_key = candidate.article.strip().casefold()
+            current_by_article = by_article.get(article_key)
+            # Минимальный PK — устойчивое правило для неуникальных артикулов,
+            # не зависящее от порядка строк в выбранном PostgreSQL плане.
+            if current_by_article is None or candidate.id < current_by_article.id:
+                by_article[article_key] = candidate
+
+    items = []
+    for requested in requested_products:
+        product = by_code.get(requested.code.casefold()) if requested.code else None
+        if product is None and requested.article:
+            product = by_article.get(requested.article.casefold())
+        if product is None:
+            items.append({
+                "code": requested.code,
+                "article": requested.article,
+                "category": None,
+            })
+            continue
+        section = product.section.strip() if product.section else ""
+        items.append({
+            "code": str(product.code),
+            "article": str(product.article) if product.article is not None else None,
+            "category": section or None,
+        })
+    return items
+
+
 def paginated_products(db: Session, params):
     q = catalog_product_query(db, params)
     total = q.order_by(None).count()
