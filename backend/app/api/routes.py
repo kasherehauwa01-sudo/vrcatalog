@@ -8,6 +8,7 @@ import tempfile
 import time
 import uuid
 import gc
+from datetime import date
 from copy import copy
 from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO, BytesIO
@@ -21,6 +22,7 @@ from typing import Annotated, Any, Callable, Literal
 
 from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
@@ -36,13 +38,14 @@ from app.db.session import SessionLocal, get_db
 from app.core.config import settings
 from app.importer.xml_importer import XMLCatalogImporter, public_image_url
 from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationCategoryMapResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, PhotoReportDownloadIn, PhotoReportPageOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
-from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
+from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
+from app.services.photo_report import create_photo_archive, photo_report_page
 
 router = APIRouter()
 
@@ -230,6 +233,18 @@ def integration_products_batch_info(
         ]
     }
 
+
+@router.post("/integration/products/category-map", response_model=IntegrationCategoryMapResponse)
+def integration_products_category_map(
+    request: IntegrationBatchProductsRequest,
+    db: Session = Depends(get_db),
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """Возвращает категории без загрузки тяжёлых связей карточки товара."""
+    require_integration_token(authorization)
+    return {"items": integration_product_category_map(db, request.products)}
+
+
 @router.post("/import", response_model=MetaOut)
 def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
     if not file.filename.lower().endswith(".xml"):
@@ -379,6 +394,73 @@ def search_products(
     items, pagination = paginated_products(db, params)
     type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
     return {"items": [decorate(item, type_names) for item in items], "pagination": pagination}
+
+
+@router.get("/reports/photos", response_model=PhotoReportPageOut)
+def report_photos(
+    db: Session = Depends(get_db),
+    search: Annotated[str | None, Query(max_length=255)] = None,
+    id: Annotated[int | None, Query(ge=1)] = None,
+    name: Annotated[str | None, Query(max_length=512)] = None,
+    code: Annotated[str | None, Query(max_length=2000)] = None,
+    article: Annotated[str | None, Query(max_length=2000)] = None,
+    barcode: Annotated[str | None, Query(max_length=2000)] = None,
+    section: Annotated[str | None, Query(max_length=2000)] = None,
+    manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
+    brand: Annotated[str | None, Query(max_length=2000)] = None,
+    manager: Annotated[str | None, Query(max_length=2000)] = None,
+    country: Annotated[str | None, Query(max_length=2000)] = None,
+    material: Annotated[str | None, Query(max_length=2000)] = None,
+    color: Annotated[str | None, Query(max_length=2000)] = None,
+    product_type: Annotated[str | None, Query(alias="productType", max_length=2000)] = None,
+    warehouse: Annotated[str | None, Query(max_length=2000)] = None,
+    availability: Literal["all", "in_stock", "out_of_stock"] = "all",
+    in_stock_only: Annotated[bool, Query(alias="inStockOnly")] = True,
+    exclude_yyy: Annotated[bool, Query(alias="excludeYyy")] = True,
+    only_new: Annotated[bool, Query(alias="onlyNew")] = False,
+    quantity_from: Annotated[float | None, Query(alias="quantityFrom")] = None,
+    quantity_to: Annotated[float | None, Query(alias="quantityTo")] = None,
+    price_from: Annotated[float | None, Query(alias="priceFrom", ge=0)] = None,
+    price_to: Annotated[float | None, Query(alias="priceTo", ge=0)] = None,
+    property: Annotated[list[str] | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(alias="pageSize", ge=20, le=100)] = 50,
+):
+    if quantity_from is not None and quantity_to is not None and quantity_from > quantity_to:
+        raise HTTPException(422, "Минимальное количество не может быть больше максимального")
+    if price_from is not None and price_to is not None and price_from > price_to:
+        raise HTTPException(422, "Минимальная цена не может быть больше максимальной")
+    properties: dict[str, list[str]] = {}
+    for item in property or []:
+        property_name, separator, value = item.partition(":")
+        if not separator or not property_name.strip() or not value.strip():
+            raise HTTPException(422, "Свойство должно иметь формат «Название:Значение»")
+        properties.setdefault(property_name.strip(), []).append(value.strip())
+    params = {
+        "search": search, "id": id, "name": name, "code": code, "article": article,
+        "barcode": barcode, "section": section, "manufacturer": manufacturer,
+        "brand": brand, "manager": manager, "country": country, "material": material,
+        "color": color, "product_type": product_type, "warehouse": warehouse,
+        "availability": availability, "in_stock_only": in_stock_only,
+        "exclude_yyy": exclude_yyy, "only_new": only_new,
+        "quantity_from": quantity_from, "quantity_to": quantity_to,
+        "price_from": price_from, "price_to": price_to, "properties": properties,
+    }
+    return photo_report_page(db, params, page, page_size)
+
+
+@router.post("/reports/photos/download")
+def download_report_photos(payload: PhotoReportDownloadIn, db: Session = Depends(get_db)):
+    try:
+        archive_path, _ = create_photo_archive(db, payload.images)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return FileResponse(
+        archive_path,
+        filename=f"photos_{date.today().isoformat()}.zip",
+        media_type="application/zip",
+        background=BackgroundTask(archive_path.unlink, missing_ok=True),
+    )
 
 @router.delete("/products")
 def delete_products(product_ids: list[int] = Body(...), db: Session = Depends(get_db)):

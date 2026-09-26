@@ -16,6 +16,7 @@ import type {
   NotificationHistory,
   DynamicAnalog,
   AnalogSelectionSetting,
+  PhotoReportPage,
 } from "../types/catalog";
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -49,6 +50,21 @@ export const api = {
   },
   async product(id: number): Promise<ProductDetail> {
     return request<ProductDetail>(`${API}/products/${id}`);
+  },
+  async photoReport(params: URLSearchParams): Promise<PhotoReportPage> {
+    return request<PhotoReportPage>(`${API}/reports/photos?${params}`);
+  },
+  async downloadReportPhotos(images: { product_id: number; image_id: number }[]): Promise<Blob> {
+    const response = await fetch(`${API}/reports/photos/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ images }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.detail ?? `Ошибка скачивания: ${response.status}`);
+    }
+    return response.blob();
   },
   async productAnalogs(id: number, showAll = false): Promise<DynamicAnalog[]> {
     return request<DynamicAnalog[]>(`${API}/products/${id}/dynamic-analogs${showAll ? "?show_all=true" : ""}`);

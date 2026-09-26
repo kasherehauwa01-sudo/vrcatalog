@@ -63,6 +63,16 @@ class Product(Base):
     images: Mapped[list["ProductImage"]] = relationship(cascade="all, delete-orphan", back_populates="product", order_by="ProductImage.image_order")
 
 
+Index(
+    "ix_products_normalized_code",
+    func.lower(func.trim(Product.code)),
+).ddl_if(dialect="postgresql")
+Index(
+    "ix_products_normalized_article",
+    func.lower(func.trim(Product.article)),
+).ddl_if(dialect="postgresql")
+
+
 class Price(Base):
     __tablename__ = "prices"
     id: Mapped[int] = mapped_column(primary_key=True)

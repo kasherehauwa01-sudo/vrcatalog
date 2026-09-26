@@ -220,6 +220,48 @@ class IntegrationBatchProductsResponse(BaseModel):
     items: list[IntegrationBatchProductOut]
 
 
+class IntegrationCategoryMapProductOut(BaseModel):
+    code: str | None
+    article: str | None
+    category: str | None
+
+
+class IntegrationCategoryMapResponse(BaseModel):
+    items: list[IntegrationCategoryMapProductOut]
+
+
+class PhotoReportImageOut(BaseModel):
+    id: int
+    product_id: int
+    order: int
+    preview_url: str
+
+
+class PhotoReportProductOut(BaseModel):
+    id: int
+    code: str
+    article: str | None
+    name: str
+    images: list[PhotoReportImageOut]
+
+
+class PhotoReportPageOut(BaseModel):
+    items: list[PhotoReportProductOut]
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+
+
+class PhotoReportSelectionIn(BaseModel):
+    product_id: int = Field(ge=1)
+    image_id: int = Field(ge=1)
+
+
+class PhotoReportDownloadIn(BaseModel):
+    images: list[PhotoReportSelectionIn] = Field(min_length=1, max_length=500)
+
+
 class ProductTypeUpdateIn(BaseModel):
     product_type: str | None = None
 class ProductDetailOut(ProductListOut):
