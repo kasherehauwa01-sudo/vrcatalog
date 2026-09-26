@@ -22,6 +22,29 @@ export type ProductPage = {
   };
 };
 
+export type PhotoReportImage = {
+  id: number;
+  product_id: number;
+  order: number;
+  preview_url: string;
+};
+
+export type PhotoReportProduct = {
+  id: number;
+  code: string;
+  article?: string;
+  name: string;
+  images: PhotoReportImage[];
+};
+
+export type PhotoReportPage = {
+  items: PhotoReportProduct[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+};
+
 export type ProductDetail = Product & {
   created_at: string;
   updated_at: string;

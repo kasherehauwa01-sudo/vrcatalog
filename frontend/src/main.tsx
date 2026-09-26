@@ -52,6 +52,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import { api } from "./api/client";
 import { BarcodeScanner } from "./components/BarcodeScanner";
+import { togglePhotoSelection } from "./photoSelection";
 import type {
   Meta,
   Product,
@@ -68,6 +69,7 @@ import type {
   NotificationHistory,
   DynamicAnalog,
   AnalogSelectionSetting,
+  PhotoReportProduct,
 } from "./types/catalog";
 
 const theme = createTheme({
@@ -271,6 +273,15 @@ function App() {
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState<number | null>(null);
   const [exportMessage, setExportMessage] = useState("Формируем Excel. Не закрывайте это окно…");
+  const [reportsOpen, setReportsOpen] = useState(false);
+  const [photoReportOpen, setPhotoReportOpen] = useState(false);
+  const [photoReportItems, setPhotoReportItems] = useState<PhotoReportProduct[]>([]);
+  const [photoReportPage, setPhotoReportPage] = useState(0);
+  const [photoReportTotal, setPhotoReportTotal] = useState(0);
+  const [photoReportLoading, setPhotoReportLoading] = useState(false);
+  const [photoReportDownloading, setPhotoReportDownloading] = useState(false);
+  const [photoReportError, setPhotoReportError] = useState<string | null>(null);
+  const [selectedPhotoKeys, setSelectedPhotoKeys] = useState<Set<string>>(() => new Set());
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 100, totalItems: 0, totalPages: 0 });
@@ -654,6 +665,61 @@ function App() {
       setExporting(false);
     }
   };
+  const loadPhotoReportPage = async (page: number, replace = false) => {
+    setPhotoReportLoading(true);
+    setPhotoReportError(null);
+    try {
+      const reportParams = new URLSearchParams(params);
+      ["page", "pageSize", "sort", "order", "column"].forEach((key) => reportParams.delete(key));
+      reportParams.set("page", String(page));
+      reportParams.set("pageSize", "50");
+      const result = await api.photoReport(reportParams);
+      setPhotoReportItems((current) => replace ? result.items : [...current, ...result.items]);
+      setPhotoReportPage(result.page);
+      setPhotoReportTotal(result.total_items);
+    } catch (error) {
+      setPhotoReportError(error instanceof Error ? error.message : "Не удалось загрузить отчет");
+    } finally {
+      setPhotoReportLoading(false);
+    }
+  };
+  const openPhotoReport = () => {
+    setReportsOpen(false);
+    setPhotoReportOpen(true);
+    setPhotoReportItems([]);
+    setPhotoReportPage(0);
+    setPhotoReportTotal(0);
+    setSelectedPhotoKeys(new Set());
+    void loadPhotoReportPage(1, true);
+  };
+  const toggleReportPhoto = (productId: number, imageId: number) => {
+    const key = `${productId}:${imageId}`;
+    setSelectedPhotoKeys((current) => togglePhotoSelection(current, key));
+  };
+  const downloadSelectedPhotos = async () => {
+    if (!selectedPhotoKeys.size) return;
+    setPhotoReportDownloading(true);
+    setPhotoReportError(null);
+    try {
+      const images = [...selectedPhotoKeys].map((key) => {
+        const [productId, imageId] = key.split(":").map(Number);
+        return { product_id: productId, image_id: imageId };
+      });
+      const archive = await api.downloadReportPhotos(images);
+      const url = URL.createObjectURL(archive);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `photos_${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      setPhotoReportError(error instanceof Error ? error.message : "Не удалось подготовить фотографии");
+    } finally {
+      setPhotoReportDownloading(false);
+    }
+  };
   const openLogs = async () => {
     setSettingsTab("logs");
     setLogs(await api.logs());
@@ -961,6 +1027,96 @@ function App() {
               <Button onClick={closeDeleteDialog}>Отмена</Button>
               <Button color="error" variant="contained" onClick={deleteSelected}>
                 Подтвердить удаление
+              </Button>
+            </DialogActions>
+          </Dialog>
+
+          <Dialog open={reportsOpen} onClose={() => setReportsOpen(false)} maxWidth="sm" fullWidth>
+            <DialogTitle>Отчеты</DialogTitle>
+            <DialogContent>
+              <Card variant="outlined" sx={{ mt: 1 }}>
+                <CardContent>
+                  <Typography variant="h6">Скачать фото</Typography>
+                  <Typography color="text.secondary" sx={{ mb: 2 }}>
+                    Выберите фотографии всех товаров из текущей отфильтрованной выборки.
+                  </Typography>
+                  <Button variant="contained" onClick={openPhotoReport}>Открыть отчет</Button>
+                </CardContent>
+              </Card>
+            </DialogContent>
+            <DialogActions><Button onClick={() => setReportsOpen(false)}>Закрыть</Button></DialogActions>
+          </Dialog>
+
+          <Dialog
+            open={photoReportOpen}
+            onClose={() => !photoReportDownloading && setPhotoReportOpen(false)}
+            fullWidth
+            maxWidth="lg"
+            PaperProps={{ sx: { height: "90vh" } }}
+          >
+            <DialogTitle>Скачать фото</DialogTitle>
+            <DialogContent dividers sx={{ p: 2 }}>
+              <Typography color="text.secondary" sx={{ mb: 2 }}>
+                Товаров по текущим фильтрам: {photoReportTotal}. Загружено: {photoReportItems.length}.
+              </Typography>
+              {photoReportError && <Typography color="error" sx={{ mb: 2 }}>{photoReportError}</Typography>}
+              <Stack spacing={2}>
+                {photoReportItems.map((product) => (
+                  <Card key={product.id} variant="outlined">
+                    <CardContent>
+                      <Typography fontWeight={800}>{product.name}</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Код: {product.code} · Артикул: {product.article || "—"}
+                      </Typography>
+                      {product.images.length ? (
+                        <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", mt: 2 }}>
+                          {product.images.map((image) => {
+                            const key = `${product.id}:${image.id}`;
+                            const selected = selectedPhotoKeys.has(key);
+                            return (
+                              <Box
+                                component="button"
+                                type="button"
+                                key={image.id}
+                                aria-pressed={selected}
+                                aria-label={`Фото ${image.order} товара ${product.code}`}
+                                onClick={() => toggleReportPhoto(product.id, image.id)}
+                                sx={{
+                                  position: "relative", width: 132, height: 132, p: 0.5,
+                                  borderRadius: 2, cursor: "pointer", bgcolor: selected ? "primary.50" : "background.paper",
+                                  border: "3px solid", borderColor: selected ? "primary.main" : "divider",
+                                }}
+                              >
+                                <Box component="img" loading="lazy" src={image.preview_url} alt="" sx={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                                {selected && (
+                                  <Box sx={{ position: "absolute", top: 6, right: 6, width: 24, height: 24, borderRadius: "50%", bgcolor: "primary.main", color: "white", fontWeight: 900 }}>
+                                    ✓
+                                  </Box>
+                                )}
+                              </Box>
+                            );
+                          })}
+                        </Box>
+                      ) : <Typography color="text.secondary" sx={{ mt: 2 }}>Нет фотографий</Typography>}
+                    </CardContent>
+                  </Card>
+                ))}
+              </Stack>
+              {photoReportLoading && <LinearProgress sx={{ mt: 2 }} />}
+              {!photoReportLoading && photoReportItems.length < photoReportTotal && (
+                <Box sx={{ textAlign: "center", mt: 2 }}>
+                  <Button variant="outlined" onClick={() => void loadPhotoReportPage(photoReportPage + 1)}>Показать еще</Button>
+                </Box>
+              )}
+              {!photoReportLoading && !photoReportItems.length && !photoReportError && (
+                <Typography align="center" color="text.secondary" sx={{ py: 6 }}>Товары не найдены</Typography>
+              )}
+            </DialogContent>
+            <DialogActions sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", px: 3, py: 2 }}>
+              <Typography sx={{ mr: "auto", fontWeight: 800 }}>Выбрано фото: {selectedPhotoKeys.size}</Typography>
+              <Button disabled={photoReportDownloading} onClick={() => setPhotoReportOpen(false)}>Закрыть</Button>
+              <Button variant="contained" disabled={!selectedPhotoKeys.size || photoReportDownloading} onClick={downloadSelectedPhotos}>
+                {photoReportDownloading ? "Подготовка фотографий…" : "Скачать выбранные фото"}
               </Button>
             </DialogActions>
           </Dialog>
@@ -1674,7 +1830,10 @@ function App() {
                 <Typography color="text.secondary" fontWeight={700}>
                   Найдено товаров: {pagination.totalItems}
                 </Typography>
-                <Button onClick={openExportDialog} sx={{ whiteSpace: "nowrap" }}>Скачать Excel</Button>
+                <Stack direction="row" spacing={1}>
+                  <Button onClick={() => setReportsOpen(true)} sx={{ whiteSpace: "nowrap" }}>Отчеты</Button>
+                  <Button onClick={openExportDialog} sx={{ whiteSpace: "nowrap" }}>Скачать Excel</Button>
+                </Stack>
               </Stack>
               <TableContainer component={Card} sx={{ position: "relative" }}>
                 {loading && <LinearProgress />}

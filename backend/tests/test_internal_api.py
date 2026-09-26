@@ -1,8 +1,12 @@
 import json
+from io import BytesIO
 import time
 import unittest
+from unittest.mock import patch
+from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
+from PIL import Image
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -713,6 +717,132 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["items"][0]["code"], "P-1")
         self.assertIn("properties", response.json()["items"][0])
+
+    def test_photo_report_uses_catalog_filters_and_ignores_catalog_page(self):
+        with Session(self.engine) as db:
+            first = db.query(Product).filter(Product.code == "P-1").one()
+            first.images.extend([
+                ProductImage(image_order=1, image_url="https://example.test/one.png"),
+                ProductImage(image_order=2, image_url="https://example.test/two.jpg"),
+            ])
+            db.commit()
+
+        response = self.client.get(
+            "/api/reports/photos",
+            params={"code": "P-1", "inStockOnly": "false", "page": 1, "pageSize": 20},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total_items"], 1)
+        self.assertEqual(payload["items"][0]["code"], "P-1")
+        self.assertEqual(len(payload["items"][0]["images"]), 2)
+        self.assertEqual(set(payload["items"][0]["images"][0]), {"id", "product_id", "order", "preview_url"})
+
+        unfiltered = self.client.get(
+            "/api/reports/photos",
+            params={"inStockOnly": "false", "page": 1, "pageSize": 100},
+        ).json()
+        multiple_filters = self.client.get(
+            "/api/reports/photos",
+            params={
+                "code": "P-1",
+                "availability": "out_of_stock",
+                "quantityTo": 0,
+                "inStockOnly": "false",
+                "page": 1,
+                "pageSize": 20,
+            },
+        ).json()
+        self.assertGreater(unfiltered["total_items"], payload["total_items"])
+        self.assertEqual([item["code"] for item in multiple_filters["items"]], ["P-1"])
+
+    def test_photo_report_returns_products_without_images_and_multiple_pages(self):
+        with Session(self.engine) as db:
+            db.add_all([
+                Product(code=f"REPORT-{index}", article=None, name=f"Отчет {index}", search_text="")
+                for index in range(25)
+            ])
+            db.commit()
+
+        first_page = self.client.get(
+            "/api/reports/photos",
+            params={"code": "REPORT-", "inStockOnly": "false", "page": 1, "pageSize": 20},
+        ).json()
+        second_page = self.client.get(
+            "/api/reports/photos",
+            params={"code": "REPORT-", "inStockOnly": "false", "page": 2, "pageSize": 20},
+        ).json()
+
+        self.assertEqual(first_page["total_items"], 25)
+        self.assertEqual(len(first_page["items"]), 20)
+        self.assertEqual(len(second_page["items"]), 5)
+        self.assertTrue(all(item["images"] == [] for item in first_page["items"] + second_page["items"]))
+
+    def test_photo_download_validates_ids_and_converts_only_selected_images(self):
+        with Session(self.engine) as db:
+            first, second = db.query(Product).order_by(Product.id).limit(2).all()
+            selected_png = ProductImage(image_order=1, image_url="https://example.test/selected.png")
+            skipped = ProductImage(image_order=2, image_url="https://example.test/skipped.png")
+            selected_webp = ProductImage(image_order=1, image_url="https://example.test/selected.webp")
+            first.images.extend([selected_png, skipped])
+            second.images.append(selected_webp)
+            db.commit()
+            selections = [
+                {"product_id": first.id, "image_id": selected_png.id},
+                {"product_id": second.id, "image_id": selected_webp.id},
+            ]
+
+        def create_source(_url, destination):
+            Image.new("RGBA", (8, 8), (255, 0, 0, 0)).save(destination, format="PNG")
+
+        with patch("app.services.photo_report._download_to_file", side_effect=create_source):
+            response = self.client.post("/api/reports/photos/download", json={"images": selections})
+
+        self.assertEqual(response.status_code, 200)
+        with ZipFile(BytesIO(response.content)) as archive:
+            self.assertEqual(len(archive.namelist()), 2)
+            self.assertEqual(len(set(archive.namelist())), 2)
+            self.assertTrue(all(name.endswith(".jpg") for name in archive.namelist()))
+            for name in archive.namelist():
+                with Image.open(BytesIO(archive.read(name))) as image:
+                    self.assertEqual(image.format, "JPEG")
+                    self.assertEqual(image.convert("RGB").getpixel((0, 0)), (255, 255, 255))
+
+        arbitrary_url = self.client.post(
+            "/api/reports/photos/download",
+            json={"images": [{"url": "http://127.0.0.1/private"}]},
+        )
+        wrong_product = self.client.post(
+            "/api/reports/photos/download",
+            json={"images": [{"product_id": 999999, "image_id": selections[0]["image_id"]}]},
+        )
+        self.assertEqual(arbitrary_url.status_code, 422)
+        self.assertEqual(wrong_product.status_code, 422)
+
+    def test_unavailable_photo_does_not_break_archive_when_another_is_available(self):
+        with Session(self.engine) as db:
+            product = db.query(Product).filter(Product.code == "P-1").one()
+            good = ProductImage(image_order=1, image_url="https://example.test/good.jpg")
+            bad = ProductImage(image_order=2, image_url="https://example.test/bad.jpg")
+            product.images.extend([good, bad])
+            db.commit()
+            payload = {"images": [
+                {"product_id": product.id, "image_id": good.id},
+                {"product_id": product.id, "image_id": bad.id},
+            ]}
+
+        def create_or_fail(url, destination):
+            if "bad" in url:
+                raise OSError("unavailable")
+            Image.new("RGB", (8, 8), "blue").save(destination, format="JPEG")
+
+        with patch("app.services.photo_report._download_to_file", side_effect=create_or_fail):
+            response = self.client.post("/api/reports/photos/download", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        with ZipFile(BytesIO(response.content)) as archive:
+            self.assertEqual(len(archive.namelist()), 1)
 
     @property
     def headers(self):
