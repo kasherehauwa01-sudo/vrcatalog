@@ -70,6 +70,10 @@ import type {
   DynamicAnalog,
   AnalogSelectionSetting,
   PhotoReportProduct,
+  ProductHistoryDetail,
+  ProductHistoryPreview,
+  ProductHistorySetting,
+  ProductHistorySummary,
 } from "./types/catalog";
 
 const theme = createTheme({
@@ -260,7 +264,7 @@ function App() {
   const [settingsPassword, setSettingsPassword] = useState("");
   const [settingsPasswordError, setSettingsPasswordError] = useState(false);
   const [settingsUnlocked, setSettingsUnlocked] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "mail" | "scenarios" | "analogs" | "logs">("settings");
+  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "mail" | "scenarios" | "analogs" | "history" | "logs">("settings");
   const [openSettingsGroups, setOpenSettingsGroups] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -282,6 +286,12 @@ function App() {
   const [photoReportDownloading, setPhotoReportDownloading] = useState(false);
   const [photoReportError, setPhotoReportError] = useState<string | null>(null);
   const [selectedPhotoKeys, setSelectedPhotoKeys] = useState<Set<string>>(() => new Set());
+  const [productHistorySetting, setProductHistorySetting] = useState<ProductHistorySetting | null>(null);
+  const [productHistoryRows, setProductHistoryRows] = useState<ProductHistorySummary[]>([]);
+  const [productHistoryPreview, setProductHistoryPreview] = useState<ProductHistoryPreview | null>(null);
+  const [selectedProductHistory, setSelectedProductHistory] = useState<ProductHistoryDetail | null>(null);
+  const [productHistorySearch, setProductHistorySearch] = useState("");
+  const [productHistoryMessage, setProductHistoryMessage] = useState<string | null>(null);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 100, totalItems: 0, totalPages: 0 });
@@ -748,6 +758,27 @@ function App() {
   const openAnalogSettings = async () => {
     setSettingsTab("analogs");
     setAnalogSettings(await api.analogSelectionSettings());
+  };
+  const openProductHistory = async () => {
+    setSettingsTab("history");
+    setSelectedProductHistory(null);
+    setProductHistoryMessage(null);
+    const [setting, rows, preview] = await Promise.all([
+      api.productHistorySettings(), api.productHistory(), api.productHistoryPreview(),
+    ]);
+    setProductHistorySetting(setting);
+    setProductHistoryRows(rows);
+    setProductHistoryPreview(preview);
+  };
+  const openProductHistoryPeriod = async (period: string, search = "") => {
+    setProductHistorySearch(search);
+    setSelectedProductHistory(await api.productHistoryDetail(period, search));
+  };
+  const formatHistoryPeriod = (period: string) => {
+    const formatted = new Intl.DateTimeFormat("ru-RU", {
+      month: "long", year: "numeric", timeZone: "UTC",
+    }).format(new Date(`${period.slice(0, 7)}-01T00:00:00Z`)).replace(" г.", "");
+    return formatted.charAt(0).toLocaleUpperCase("ru-RU") + formatted.slice(1);
   };
   const openProduct = async (id: number) => {
     setAllAnalogsOpen(false);
@@ -1288,6 +1319,8 @@ function App() {
               <CardContent>
                 <Tabs
                   value={settingsTab}
+                  variant="scrollable"
+                  scrollButtons="auto"
                   onChange={(_, value) =>
                     value === "logs"
                       ? openLogs()
@@ -1299,6 +1332,8 @@ function App() {
                             ? openScenarios()
                             : value === "analogs"
                               ? openAnalogSettings()
+                              : value === "history"
+                                ? openProductHistory()
                             : openGeneralSettings()
                   }
                   sx={{ mb: 2 }}
@@ -1308,6 +1343,7 @@ function App() {
                   <Tab value="mail" label="Почта" />
                   <Tab value="scenarios" label="Сценарии" />
                   <Tab value="analogs" label="Подбор аналогов" />
+                  <Tab value="history" label="История" />
                   <Tab value="logs" label="Логи" />
                 </Tabs>
                 {settingsTab === "settings" && (
@@ -1592,6 +1628,76 @@ function App() {
                     <TextField label="Минимальный процент похожести" type="number" inputProps={{ min: 0, max: 100 }} value={analogSettings.minimum_similarity} onChange={(event) => setAnalogSettings({ ...analogSettings, minimum_similarity: Number(event.target.value) })} />
                     <TextField label="Максимальное количество аналогов" type="number" inputProps={{ min: 1, max: 50 }} value={analogSettings.maximum_analogs} onChange={(event) => setAnalogSettings({ ...analogSettings, maximum_analogs: Number(event.target.value) })} />
                     <Button variant="contained" onClick={async () => setAnalogSettings(await api.updateAnalogSelectionSettings(analogSettings))}>Сохранить</Button>
+                  </Stack>
+                )}
+                {settingsTab === "history" && productHistorySetting && (
+                  <Stack spacing={2}>
+                    <Typography variant="h6">История товарных подборок</Typography>
+                    <FormControlLabel
+                      control={<Switch checked={productHistorySetting.save_for_next_month} onChange={async (event) => {
+                        const saved = await api.updateProductHistorySettings({ save_for_next_month: event.target.checked });
+                        setProductHistorySetting(saved);
+                        setProductHistoryPreview(await api.productHistoryPreview());
+                      }} />}
+                      label="Сохранять снимок для следующего месяца"
+                    />
+                    <Typography color="text.secondary">
+                      Автоматическая проверка выполняется существующим фоновым worker. После 28 числа отсутствующий снимок создается автоматически.
+                    </Typography>
+                    {productHistoryPreview && (
+                      <Paper variant="outlined" sx={{ p: 2 }}>
+                        <Typography fontWeight={800}>Новый снимок: {productHistoryPreview.snapshot_name}</Typography>
+                        <Typography>Период: {formatHistoryPeriod(productHistoryPreview.period)}</Typography>
+                        <Typography>Найдено товаров: {productHistoryPreview.item_count}</Typography>
+                        {productHistoryPreview.exists && <Typography color="warning.main">Снимок этого периода уже существует.</Typography>}
+                        <Button
+                          variant="contained"
+                          sx={{ mt: 1 }}
+                          disabled={productHistoryPreview.exists}
+                          onClick={async () => {
+                            try {
+                              await api.createProductHistory(productHistoryPreview.period.slice(0, 7));
+                              await openProductHistory();
+                              setProductHistoryMessage("Снимок успешно сформирован.");
+                            } catch (error) {
+                              setProductHistoryMessage(error instanceof Error ? error.message : "Не удалось сформировать снимок");
+                            }
+                          }}
+                        >Сформировать снимок</Button>
+                      </Paper>
+                    )}
+                    {productHistoryMessage && <Typography>{productHistoryMessage}</Typography>}
+                    {!selectedProductHistory ? (
+                      <Stack spacing={1}>
+                        <Typography fontWeight={800}>Акция месяца</Typography>
+                        {productHistoryRows.map((snapshot) => (
+                          <Paper key={snapshot.id} variant="outlined" sx={{ p: 2, cursor: "pointer" }} onClick={() => void openProductHistoryPeriod(snapshot.period)}>
+                            <Typography fontWeight={800}>{formatHistoryPeriod(snapshot.period)} — {snapshot.item_count} товаров</Typography>
+                            <Typography variant="body2" color="text.secondary">Источник: {snapshot.creation_source === "automatic" ? "автоматически" : "вручную"}</Typography>
+                          </Paper>
+                        ))}
+                        {!productHistoryRows.length && <Typography color="text.secondary">Снимки пока не сформированы.</Typography>}
+                      </Stack>
+                    ) : (
+                      <Stack spacing={2}>
+                        <Button onClick={() => setSelectedProductHistory(null)}>← К списку периодов</Button>
+                        <Typography variant="h6">{formatHistoryPeriod(selectedProductHistory.period)}</Typography>
+                        <TextField
+                          label="Поиск по коду, артикулу или наименованию"
+                          value={productHistorySearch}
+                          onChange={(event) => setProductHistorySearch(event.target.value)}
+                          onKeyDown={(event) => { if (event.key === "Enter") void openProductHistoryPeriod(selectedProductHistory.period, productHistorySearch); }}
+                        />
+                        <TableContainer component={Paper} variant="outlined">
+                          <Table size="small">
+                            <TableHead><TableRow><TableCell>Код</TableCell><TableCell>Артикул</TableCell><TableCell>Наименование</TableCell><TableCell align="right">Базовая цена</TableCell><TableCell align="right">Акционная цена</TableCell><TableCell>Все цены</TableCell></TableRow></TableHead>
+                            <TableBody>{selectedProductHistory.items.map((item) => (
+                              <TableRow key={item.code}><TableCell>{item.code}</TableCell><TableCell>{item.article || "—"}</TableCell><TableCell>{item.name}</TableCell><TableCell align="right">{item.base_price ?? "—"}</TableCell><TableCell align="right">{item.promo_price ?? "—"}</TableCell><TableCell>{item.prices.length ? item.prices.map((price) => <Typography key={`${price.price_type}-${price.price_value}`} variant="body2">{price.price_type}: {price.price_value} руб.</Typography>) : "—"}</TableCell></TableRow>
+                            ))}</TableBody>
+                          </Table>
+                        </TableContainer>
+                      </Stack>
+                    )}
                   </Stack>
                 )}
                 {settingsTab === "mappings" && (

@@ -1,5 +1,6 @@
 import json
 import secrets
+from datetime import datetime
 from time import perf_counter
 from typing import Annotated
 
@@ -10,14 +11,18 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models.catalog import ServiceLog
 from app.schemas.catalog import (
+    InternalHistoryPeriodsOut,
+    InternalHistorySnapshotOut,
     InternalProductResponse,
     InternalProductsRequest,
     InternalProductsResponse,
 )
 from app.services.internal_catalog import products_by_articles
+from app.services.product_history import SNAPSHOT_TYPE, list_snapshots, snapshot_by_period
 
 
 router = APIRouter(prefix="/internal/products", include_in_schema=False)
+history_router = APIRouter(prefix="/internal/history", include_in_schema=False)
 
 
 def token_is_valid(token: str | None) -> bool:
@@ -169,3 +174,48 @@ def internal_products_by_articles(
         warehouse_names=warehouses,
     )
     return {"ok": True, "items": items}
+
+
+def require_history_token(token: str | None) -> None:
+    if not token_is_valid(token):
+        raise HTTPException(status_code=401, detail="Неверный внутренний токен")
+
+
+@history_router.get("/monthly-promotion", response_model=InternalHistoryPeriodsOut)
+def internal_history_periods(
+    x_internal_token: Annotated[str | None, Header()] = None,
+    db: Session = Depends(get_db),
+):
+    require_history_token(x_internal_token)
+    return {"items": [
+        {
+            "period": snapshot.period.strftime("%Y-%m"),
+            "type": snapshot.snapshot_type,
+            "created_at": snapshot.created_at,
+            "item_count": snapshot.item_count,
+        }
+        for snapshot in list_snapshots(db)
+    ]}
+
+
+@history_router.get("/monthly-promotion/{period}", response_model=InternalHistorySnapshotOut)
+def internal_history_snapshot(
+    period: str,
+    x_internal_token: Annotated[str | None, Header()] = None,
+    db: Session = Depends(get_db),
+):
+    require_history_token(x_internal_token)
+    try:
+        parsed_period = datetime.strptime(period, "%Y-%m").date().replace(day=1)
+    except ValueError as exc:
+        raise HTTPException(422, "Период должен иметь формат YYYY-MM") from exc
+    snapshot, items = snapshot_by_period(db, parsed_period)
+    if snapshot is None:
+        raise HTTPException(404, "Исторический снимок не найден")
+    return {
+        "period": snapshot.period.strftime("%Y-%m"),
+        "type": SNAPSHOT_TYPE,
+        "created_at": snapshot.created_at,
+        "item_count": snapshot.item_count,
+        "items": items,
+    }

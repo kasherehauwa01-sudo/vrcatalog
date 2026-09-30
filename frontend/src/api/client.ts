@@ -17,6 +17,10 @@ import type {
   DynamicAnalog,
   AnalogSelectionSetting,
   PhotoReportPage,
+  ProductHistoryDetail,
+  ProductHistoryPreview,
+  ProductHistorySetting,
+  ProductHistorySummary,
 } from "../types/catalog";
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -53,6 +57,28 @@ export const api = {
   },
   async photoReport(params: URLSearchParams): Promise<PhotoReportPage> {
     return request<PhotoReportPage>(`${API}/reports/photos?${params}`);
+  },
+  async productHistorySettings(): Promise<ProductHistorySetting> {
+    return request<ProductHistorySetting>(`${API}/history/monthly-promotion/settings`);
+  },
+  async updateProductHistorySettings(payload: ProductHistorySetting): Promise<ProductHistorySetting> {
+    return request<ProductHistorySetting>(`${API}/history/monthly-promotion/settings`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+  },
+  async productHistoryPreview(period?: string): Promise<ProductHistoryPreview> {
+    const query = period ? `?period=${encodeURIComponent(period)}` : "";
+    return request<ProductHistoryPreview>(`${API}/history/monthly-promotion/preview${query}`);
+  },
+  async createProductHistory(period: string): Promise<ProductHistorySummary> {
+    return request<ProductHistorySummary>(`${API}/history/monthly-promotion?period=${encodeURIComponent(period)}`, { method: "POST" });
+  },
+  async productHistory(): Promise<ProductHistorySummary[]> {
+    return request<ProductHistorySummary[]>(`${API}/history/monthly-promotion`);
+  },
+  async productHistoryDetail(period: string, search = ""): Promise<ProductHistoryDetail> {
+    const query = search ? `?search=${encodeURIComponent(search)}` : "";
+    return request<ProductHistoryDetail>(`${API}/history/monthly-promotion/${encodeURIComponent(period.slice(0, 7))}${query}`);
   },
   async downloadReportPhotos(images: { product_id: number; image_id: number }[]): Promise<Blob> {
     const response = await fetch(`${API}/reports/photos/download`, {

@@ -8,7 +8,7 @@ import tempfile
 import time
 import uuid
 import gc
-from datetime import date
+from datetime import date, datetime, timedelta
 from copy import copy
 from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO, BytesIO
@@ -37,8 +37,8 @@ from sqlalchemy.orm import Session, selectinload
 from app.db.session import SessionLocal, get_db
 from app.core.config import settings
 from app.importer.xml_importer import XMLCatalogImporter, public_image_url
-from app.models.catalog import Favorite, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationCategoryMapResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, PhotoReportDownloadIn, PhotoReportPageOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.models.catalog import Favorite, HistorySnapshot, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
+from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, HistorySettingOut, HistorySettingUpdateIn, HistorySnapshotDetailOut, HistorySnapshotPreviewOut, HistorySnapshotSummaryOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationCategoryMapResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, PhotoReportDownloadIn, PhotoReportPageOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
 from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
@@ -46,6 +46,7 @@ from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
 from app.services.photo_report import create_photo_archive, photo_report_page
+from app.services.product_history import SNAPSHOT_TYPE, create_snapshot, get_history_setting, list_snapshots, manual_period, snapshot_by_period, snapshot_preview
 
 router = APIRouter()
 
@@ -243,6 +244,78 @@ def integration_products_category_map(
     """Возвращает категории без загрузки тяжёлых связей карточки товара."""
     require_integration_token(authorization)
     return {"items": integration_product_category_map(db, request.products)}
+
+
+def _history_period(value: str) -> date:
+    try:
+        return date.fromisoformat(f"{value}-01")
+    except ValueError as exc:
+        raise HTTPException(422, "Период должен иметь формат YYYY-MM") from exc
+
+
+def _history_summary(snapshot: HistorySnapshot) -> dict:
+    return {
+        "id": snapshot.id,
+        "period": snapshot.period,
+        "snapshot_type": snapshot.snapshot_type,
+        "snapshot_name": "Акция месяца",
+        "item_count": snapshot.item_count,
+        "created_at": snapshot.created_at,
+        "creation_source": snapshot.creation_source,
+    }
+
+
+@router.get("/history/monthly-promotion/settings", response_model=HistorySettingOut)
+def history_settings(db: Session = Depends(get_db)):
+    setting = get_history_setting(db)
+    db.commit()
+    return setting
+
+
+@router.put("/history/monthly-promotion/settings", response_model=HistorySettingOut)
+def update_history_settings(payload: HistorySettingUpdateIn, db: Session = Depends(get_db)):
+    setting = get_history_setting(db)
+    setting.save_for_next_month = payload.save_for_next_month
+    db.commit()
+    db.refresh(setting)
+    return setting
+
+
+@router.get("/history/monthly-promotion/preview", response_model=HistorySnapshotPreviewOut)
+def history_snapshot_preview(period: str | None = None, db: Session = Depends(get_db)):
+    setting = get_history_setting(db)
+    today = (datetime.utcnow() + timedelta(hours=3)).date()
+    target = _history_period(period) if period else manual_period(today, setting.save_for_next_month)
+    result = snapshot_preview(db, target)
+    db.commit()
+    return result
+
+
+@router.post("/history/monthly-promotion", response_model=HistorySnapshotSummaryOut)
+def create_history_snapshot(period: str | None = None, db: Session = Depends(get_db)):
+    setting = get_history_setting(db)
+    today = (datetime.utcnow() + timedelta(hours=3)).date()
+    target = _history_period(period) if period else manual_period(today, setting.save_for_next_month)
+    snapshot, created = create_snapshot(db, target, "manual")
+    if not created:
+        db.rollback()
+        raise HTTPException(409, "Снимок для выбранного периода уже существует")
+    db.commit()
+    db.refresh(snapshot)
+    return _history_summary(snapshot)
+
+
+@router.get("/history/monthly-promotion", response_model=list[HistorySnapshotSummaryOut])
+def history_snapshots(db: Session = Depends(get_db)):
+    return [_history_summary(snapshot) for snapshot in list_snapshots(db)]
+
+
+@router.get("/history/monthly-promotion/{period}", response_model=HistorySnapshotDetailOut)
+def history_snapshot(period: str, search: str = "", db: Session = Depends(get_db)):
+    snapshot, items = snapshot_by_period(db, _history_period(period), search)
+    if snapshot is None:
+        raise HTTPException(404, "Исторический снимок не найден")
+    return {**_history_summary(snapshot), "items": items}
 
 
 @router.post("/import", response_model=MetaOut)

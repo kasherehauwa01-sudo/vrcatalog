@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -241,6 +242,74 @@ class ProductTypeSetting(Base):
     code: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class HistorySetting(Base):
+    __tablename__ = "history_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    snapshot_type: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    save_for_next_month: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class HistorySnapshot(Base):
+    __tablename__ = "history_snapshots"
+    __table_args__ = (
+        UniqueConstraint("snapshot_type", "period", name="uq_history_snapshots_type_period"),
+        Index("ix_history_snapshots_type_period", "snapshot_type", "period"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    snapshot_type: Mapped[str] = mapped_column(String(64), index=True)
+    period: Mapped[date] = mapped_column(Date, index=True)
+    source_property: Mapped[str] = mapped_column(String(255))
+    source_value: Mapped[str] = mapped_column(String(255))
+    creation_source: Mapped[str] = mapped_column(String(64))
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="success")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    items: Mapped[list["HistorySnapshotItem"]] = relationship(
+        cascade="all, delete-orphan",
+        back_populates="snapshot",
+        order_by="HistorySnapshotItem.id",
+    )
+
+
+class HistorySnapshotItem(Base):
+    __tablename__ = "history_snapshot_items"
+    __table_args__ = (UniqueConstraint("snapshot_id", "code", name="uq_history_snapshot_items_snapshot_code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("history_snapshots.id", ondelete="CASCADE"), index=True)
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"), nullable=True, index=True)
+    code: Mapped[str] = mapped_column(String(128), index=True)
+    article: Mapped[str | None] = mapped_column(String(255))
+    name: Mapped[str] = mapped_column(String(512))
+    base_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    promo_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    product_type_code: Mapped[str | None] = mapped_column(String(255))
+    product_type_name: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    snapshot: Mapped[HistorySnapshot] = relationship(back_populates="items")
+    prices: Mapped[list["HistorySnapshotItemPrice"]] = relationship(
+        cascade="all, delete-orphan",
+        back_populates="item",
+        order_by="HistorySnapshotItemPrice.id",
+    )
+
+
+class HistorySnapshotItemPrice(Base):
+    __tablename__ = "history_snapshot_item_prices"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    snapshot_item_id: Mapped[int] = mapped_column(
+        ForeignKey("history_snapshot_items.id", ondelete="CASCADE"), index=True,
+    )
+    price_type: Mapped[str] = mapped_column(String(255), index=True)
+    price_value: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    item: Mapped[HistorySnapshotItem] = relationship(back_populates="prices")
 
 
 class AnalogSelectionSetting(Base):

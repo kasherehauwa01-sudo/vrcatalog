@@ -196,3 +196,30 @@ export type NotificationHistory = {
   error_message?: string;
   duration_ms: number;
 };
+
+export type ProductHistorySetting = { save_for_next_month: boolean };
+export type ProductHistorySummary = {
+  id: number;
+  period: string;
+  snapshot_type: string;
+  snapshot_name: string;
+  item_count: number;
+  created_at: string;
+  creation_source: string;
+};
+export type ProductHistoryItem = {
+  code: string;
+  article?: string;
+  name: string;
+  base_price?: string;
+  promo_price?: string;
+  prices: { price_type: string; price_value: string }[];
+};
+export type ProductHistoryDetail = ProductHistorySummary & { items: ProductHistoryItem[] };
+export type ProductHistoryPreview = {
+  period: string;
+  snapshot_type: string;
+  snapshot_name: string;
+  item_count: number;
+  exists: boolean;
+};
