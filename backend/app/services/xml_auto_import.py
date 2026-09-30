@@ -454,7 +454,9 @@ def start_worker() -> None:
         while True:
             run_once()
             from app.services.monthly_promotion import run_scheduled_if_due
+            from app.services.product_history import run_history_snapshot_if_due
             run_scheduled_if_due()
+            run_history_snapshot_if_due()
             time.sleep(CHECK_INTERVAL_SECONDS)
 
     threading.Thread(target=loop, daemon=True, name="xml-ftp-auto-import").start()
