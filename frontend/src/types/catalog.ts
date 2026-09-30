@@ -22,6 +22,29 @@ export type ProductPage = {
   };
 };
 
+export type PhotoReportImage = {
+  id: number;
+  product_id: number;
+  order: number;
+  preview_url: string;
+};
+
+export type PhotoReportProduct = {
+  id: number;
+  code: string;
+  article?: string;
+  name: string;
+  images: PhotoReportImage[];
+};
+
+export type PhotoReportPage = {
+  items: PhotoReportProduct[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+};
+
 export type ProductDetail = Product & {
   created_at: string;
   updated_at: string;
@@ -172,4 +195,30 @@ export type NotificationHistory = {
   status: "sent" | "error";
   error_message?: string;
   duration_ms: number;
+};
+
+export type ProductHistorySetting = { save_for_next_month: boolean };
+export type ProductHistorySummary = {
+  id: number;
+  period: string;
+  snapshot_type: string;
+  snapshot_name: string;
+  item_count: number;
+  created_at: string;
+  creation_source: string;
+};
+export type ProductHistoryItem = {
+  code: string;
+  article?: string;
+  name: string;
+  base_price?: string;
+  promo_price?: string;
+};
+export type ProductHistoryDetail = ProductHistorySummary & { items: ProductHistoryItem[] };
+export type ProductHistoryPreview = {
+  period: string;
+  snapshot_type: string;
+  snapshot_name: string;
+  item_count: number;
+  exists: boolean;
 };
