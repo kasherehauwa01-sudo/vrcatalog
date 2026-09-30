@@ -296,10 +296,7 @@ def create_history_snapshot(period: str | None = None, db: Session = Depends(get
     setting = get_history_setting(db)
     today = (datetime.utcnow() + timedelta(hours=3)).date()
     target = _history_period(period) if period else manual_period(today, setting.save_for_next_month)
-    snapshot, created = create_snapshot(db, target, "manual")
-    if not created:
-        db.rollback()
-        raise HTTPException(409, "Снимок для выбранного периода уже существует")
+    snapshot, _ = create_snapshot(db, target, "manual", replace_existing=True)
     db.commit()
     db.refresh(snapshot)
     return _history_summary(snapshot)

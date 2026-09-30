@@ -1343,7 +1343,7 @@ function App() {
                   <Tab value="mail" label="Почта" />
                   <Tab value="scenarios" label="Сценарии" />
                   <Tab value="analogs" label="Подбор аналогов" />
-                  <Tab value="history" label="История" />
+                  <Tab value="history" label={'История цен "Акция месяца"'} />
                   <Tab value="logs" label="Логи" />
                 </Tabs>
                 {settingsTab === "settings" && (
@@ -1632,7 +1632,7 @@ function App() {
                 )}
                 {settingsTab === "history" && productHistorySetting && (
                   <Stack spacing={2}>
-                    <Typography variant="h6">История товарных подборок</Typography>
+                    <Typography variant="h6">История цен «Акция месяца»</Typography>
                     <FormControlLabel
                       control={<Switch checked={productHistorySetting.save_for_next_month} onChange={async (event) => {
                         const saved = await api.updateProductHistorySettings({ save_for_next_month: event.target.checked });
@@ -1649,21 +1649,20 @@ function App() {
                         <Typography fontWeight={800}>Новый снимок: {productHistoryPreview.snapshot_name}</Typography>
                         <Typography>Период: {formatHistoryPeriod(productHistoryPreview.period)}</Typography>
                         <Typography>Найдено товаров: {productHistoryPreview.item_count}</Typography>
-                        {productHistoryPreview.exists && <Typography color="warning.main">Снимок этого периода уже существует.</Typography>}
+                        {productHistoryPreview.exists && <Typography color="warning.main">Снимок этого периода уже существует и будет обновлен текущими данными.</Typography>}
                         <Button
                           variant="contained"
                           sx={{ mt: 1 }}
-                          disabled={productHistoryPreview.exists}
                           onClick={async () => {
                             try {
                               await api.createProductHistory(productHistoryPreview.period.slice(0, 7));
                               await openProductHistory();
-                              setProductHistoryMessage("Снимок успешно сформирован.");
+                              setProductHistoryMessage("Снимок успешно сохранен.");
                             } catch (error) {
                               setProductHistoryMessage(error instanceof Error ? error.message : "Не удалось сформировать снимок");
                             }
                           }}
-                        >Сформировать снимок</Button>
+                        >Сохранить снимок</Button>
                       </Paper>
                     )}
                     {productHistoryMessage && <Typography>{productHistoryMessage}</Typography>}

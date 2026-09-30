@@ -98,27 +98,43 @@ def snapshot_preview(db: Session, period: date) -> dict:
     }
 
 
-def create_snapshot(db: Session, period: date, creation_source: str) -> tuple[HistorySnapshot, bool]:
-    """Создаёт неизменяемый снимок в текущей транзакции или возвращает существующий."""
+def create_snapshot(
+    db: Session,
+    period: date,
+    creation_source: str,
+    *,
+    replace_existing: bool = False,
+) -> tuple[HistorySnapshot, bool]:
+    """Создаёт снимок; явное ручное сохранение может атомарно обновить период."""
     if db.bind and db.bind.dialect.name == "postgresql":
         # Межпроцессная блокировка дополняет UNIQUE constraint при нескольких контейнерах.
         db.execute(text("SELECT pg_advisory_xact_lock(9282026)"))
     existing = db.query(HistorySnapshot).filter_by(snapshot_type=SNAPSHOT_TYPE, period=period).first()
-    if existing:
+    if existing and not replace_existing:
         add_log(db, "history_snapshot_skipped", f"Снимок {PROMOTION_NAME} за {period:%Y-%m} уже существует. Создание пропущено.")
         return existing, False
 
     products = promotion_products(db)
-    snapshot = HistorySnapshot(
-        snapshot_type=SNAPSHOT_TYPE,
-        period=period,
-        source_property=SOURCE_PROPERTY,
-        source_value=PROMOTION_NAME,
-        creation_source=creation_source,
-        item_count=len(products),
-        status="success",
-    )
-    db.add(snapshot)
+    if existing:
+        snapshot = existing
+        # ORM-cascade удаляет прежние строки и все связанные исторические цены.
+        # Новые строки создаются в той же транзакции, поэтому частичного обновления нет.
+        snapshot.items.clear()
+        snapshot.creation_source = creation_source
+        snapshot.item_count = len(products)
+        snapshot.status = "success"
+        snapshot.created_at = datetime.utcnow()
+    else:
+        snapshot = HistorySnapshot(
+            snapshot_type=SNAPSHOT_TYPE,
+            period=period,
+            source_property=SOURCE_PROPERTY,
+            source_value=PROMOTION_NAME,
+            creation_source=creation_source,
+            item_count=len(products),
+            status="success",
+        )
+        db.add(snapshot)
     db.flush()
     missing_base = 0
     missing_promo = 0
@@ -149,15 +165,16 @@ def create_snapshot(db: Session, period: date, creation_source: str) -> tuple[Hi
             for price in product.prices
         ])
     db.flush()
+    action = "обновление" if existing else "создание"
     message = (
-        f"Формирование истории «{PROMOTION_NAME}»; период={period:%Y-%m}; "
+        f"Формирование истории «{PROMOTION_NAME}»; действие={action}; период={period:%Y-%m}; "
         f"найдено={len(products)}; сохранено={len(products)}; "
         f"без базовой цены={missing_base}; без акционной цены={missing_promo}; "
         f"snapshot_id={snapshot.id}; статус=успешно"
     )
     add_log(db, "history_snapshot_created", message)
     logger.info(message)
-    return snapshot, True
+    return snapshot, existing is None
 
 
 def run_history_snapshot_if_due(now: datetime | None = None) -> None:

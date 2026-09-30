@@ -138,7 +138,12 @@ class ProductHistoryTests(unittest.TestCase):
 
     def test_manual_and_internal_api_are_read_only_and_authorized(self):
         created = self.client.post("/api/history/monthly-promotion?period=2026-10")
-        duplicate = self.client.post("/api/history/monthly-promotion?period=2026-10")
+        with Session(self.engine) as db:
+            product = db.query(Product).filter_by(code="P-1").one()
+            product.name = "Обновленное имя акции"
+            next(price for price in product.prices if price.price_type == "ЦенаРозничная").price_value = 749
+            db.commit()
+        updated = self.client.post("/api/history/monthly-promotion?period=2026-10")
         unauthorized = self.client.get("/api/internal/history/monthly-promotion")
         periods = self.client.get(
             "/api/internal/history/monthly-promotion",
@@ -150,12 +155,13 @@ class ProductHistoryTests(unittest.TestCase):
         )
 
         self.assertEqual(created.status_code, 200)
-        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(updated.status_code, 200)
         self.assertEqual(unauthorized.status_code, 401)
         self.assertEqual(periods.status_code, 200)
         self.assertEqual(periods.json()["items"][0]["period"], "2026-10")
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(detail.json()["type"], "monthly_promotion")
-        self.assertEqual(detail.json()["items"][0]["name"], "Товар акции")
+        self.assertEqual(detail.json()["items"][0]["name"], "Обновленное имя акции")
         self.assertEqual(detail.json()["items"][0]["base_price"], "1000.00")
+        self.assertEqual(detail.json()["items"][0]["promo_price"], "749.00")
         self.assertEqual(len(detail.json()["items"][0]["prices"]), 6)
