@@ -6,11 +6,12 @@ from unittest.mock import patch
 from openpyxl import load_workbook
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+import xlrd
 
 from app.db.session import Base
 from app.importer.xml_importer import XMLCatalogImporter
 from app.models.catalog import MailSetting, NotificationEmailHistory, NotificationScenarioSetting, Product, ProductPromotionState, ProductTypeChange
-from app.services.monthly_promotion import PROMOTION_VALUE, build_attachment, build_preview, consolidate_changes, encrypt_password, initialize_promotion_snapshot, normalize_month_promo, run_scenario
+from app.services.monthly_promotion import PROMOTION_VALUE, build_1c_attachment, build_attachment, build_preview, consolidate_changes, encrypt_password, initialize_promotion_snapshot, normalize_month_promo, run_scenario
 
 
 class FakeSmtp:
@@ -70,8 +71,10 @@ class MonthlyPromotionTests(unittest.TestCase):
         self.assertEqual(second["status"], "empty")
         self.assertEqual(len(FakeSmtp.sent), 1)
         attachments = list(FakeSmtp.sent[0].iter_attachments())
-        self.assertEqual(len(attachments), 1)
+        self.assertEqual(len(attachments), 2)
         self.assertEqual(attachments[0].get_filename(), "Изменения товаров Акция месяца.xlsx")
+        self.assertEqual(attachments[1].get_filename(), "для 1с.xls")
+        self.assertEqual(attachments[1].get_content_type(), "application/vnd.ms-excel")
         self.assertTrue(self.db.query(ProductTypeChange).one().processed)
         self.assertIsNone(self.db.query(ProductTypeChange).one().claim_token)
         history = self.db.query(NotificationEmailHistory).one()
@@ -118,6 +121,29 @@ class MonthlyPromotionTests(unittest.TestCase):
         self.assertEqual(rows[0][0], "Добавлены в Акцию месяца")
         self.assertEqual(rows[1], ("Код", "Артикул", "Наименование", "Было", "Стало", "Время изменения"))
         self.assertEqual(rows[2][:5], ("P-1", "ARTICLE-1", "Семена тестовые", "Обычный", PROMOTION_VALUE))
+
+    def test_1c_attachment_is_xls_with_added_product_codes_from_second_row(self):
+        changes = [
+            ProductTypeChange(
+                product_id=self.product.id, product_code="ADDED", article="A",
+                product_name="Добавлен", old_value="Обычный",
+                new_value=PROMOTION_VALUE, source="xml",
+            ),
+            ProductTypeChange(
+                product_id=self.product.id, product_code="REMOVED", article="B",
+                product_name="Исключён", old_value=PROMOTION_VALUE,
+                new_value="Обычный", source="xml",
+            ),
+        ]
+
+        workbook = xlrd.open_workbook(file_contents=build_1c_attachment(changes))
+        worksheet = workbook.sheet_by_index(0)
+
+        self.assertEqual(worksheet.name, "Код")
+        self.assertEqual(worksheet.ncols, 1)
+        self.assertEqual(worksheet.cell_value(0, 0), "")
+        self.assertEqual(worksheet.cell_value(1, 0), "ADDED")
+        self.assertNotIn("REMOVED", worksheet.col_values(0))
 
     def test_same_promotion_state_is_idempotent_across_many_flushes(self):
         self.product.product_type = PROMOTION_VALUE

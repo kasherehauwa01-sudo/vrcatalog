@@ -17,6 +17,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from sqlalchemy import event, inspect, text
 from sqlalchemy.orm import Session
+import xlwt
 
 from app.core.config import settings
 from app.db.session import SessionLocal
@@ -175,6 +176,7 @@ def send_email(
     html: str,
     attachment: bytes | None = None,
     attachment_name: str = "Изменения товаров Акция месяца.xlsx",
+    extra_attachments: list[tuple[bytes, str, str]] | None = None,
 ) -> None:
     mail = get_mail_setting(db)
     message = EmailMessage()
@@ -189,6 +191,13 @@ def send_email(
             maintype="application",
             subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=attachment_name,
+        )
+    for content, filename, subtype in extra_attachments or []:
+        message.add_attachment(
+            content,
+            maintype="application",
+            subtype=subtype,
+            filename=filename,
         )
     with _smtp(mail) as client:
         client.send_message(message)
@@ -252,6 +261,19 @@ def build_attachment(changes: list[ProductTypeChange]) -> bytes:
     for row in worksheet.iter_rows():
         for cell in row:
             cell.alignment = Alignment(vertical="center", wrap_text=True)
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def build_1c_attachment(changes: list[ProductTypeChange]) -> bytes:
+    """Формирует XLS для 1С только с кодами товаров, добавленных в акцию."""
+    workbook = xlwt.Workbook()
+    worksheet = workbook.add_sheet("Код")
+    added = _change_sections(changes)[0][1]
+    # Первая строка намеренно остаётся пустой: импорт 1С ожидает коды с A2.
+    for row, item in enumerate(added, start=1):
+        worksheet.write(row, 0, item.product_code or "")
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()
@@ -324,7 +346,14 @@ def run_scenario(db: Session, *, force: bool = False) -> dict:
     db.commit()
     smtp_completed = False
     try:
-        send_email(db, targets, subject, result["html"], build_attachment(changes))
+        send_email(
+            db,
+            targets,
+            subject,
+            result["html"],
+            build_attachment(changes),
+            extra_attachments=[(build_1c_attachment(changes), "для 1с.xls", "vnd.ms-excel")],
+        )
         smtp_completed = True
         now = datetime.utcnow()
         claimed_changes = db.query(ProductTypeChange).filter(ProductTypeChange.id.in_(claimed_ids), ProductTypeChange.claim_token == claim_token).all()
