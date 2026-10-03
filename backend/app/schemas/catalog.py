@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
@@ -220,6 +221,111 @@ class IntegrationBatchProductsResponse(BaseModel):
     items: list[IntegrationBatchProductOut]
 
 
+class IntegrationCategoryMapProductOut(BaseModel):
+    code: str | None
+    article: str | None
+    category: str | None
+
+
+class IntegrationCategoryMapResponse(BaseModel):
+    items: list[IntegrationCategoryMapProductOut]
+
+
+class PhotoReportImageOut(BaseModel):
+    id: int
+    product_id: int
+    order: int
+    preview_url: str
+
+
+class PhotoReportProductOut(BaseModel):
+    id: int
+    code: str
+    article: str | None
+    name: str
+    images: list[PhotoReportImageOut]
+
+
+class PhotoReportPageOut(BaseModel):
+    items: list[PhotoReportProductOut]
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+
+
+class PhotoReportSelectionIn(BaseModel):
+    product_id: int = Field(ge=1)
+    image_id: int = Field(ge=1)
+
+
+class PhotoReportDownloadIn(BaseModel):
+    images: list[PhotoReportSelectionIn] = Field(min_length=1, max_length=500)
+
+
+class HistorySettingOut(BaseModel):
+    save_for_next_month: bool
+
+
+class HistorySettingUpdateIn(BaseModel):
+    save_for_next_month: bool
+
+
+class HistorySnapshotSummaryOut(BaseModel):
+    id: int
+    period: date
+    snapshot_type: str
+    snapshot_name: str = "Акция месяца"
+    item_count: int
+    created_at: datetime
+    creation_source: str
+
+
+class HistorySnapshotPreviewOut(BaseModel):
+    period: date
+    snapshot_type: str
+    snapshot_name: str
+    item_count: int
+    exists: bool
+
+
+class HistorySnapshotPriceOut(BaseModel):
+    price_type: str
+    price_value: Decimal
+    model_config = ConfigDict(from_attributes=True)
+
+
+class HistorySnapshotItemOut(BaseModel):
+    code: str
+    article: str | None
+    name: str
+    base_price: Decimal | None
+    promo_price: Decimal | None
+    product_type_code: str | None = None
+    product_type_name: str | None = None
+    prices: list[HistorySnapshotPriceOut] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
+
+
+class HistorySnapshotDetailOut(HistorySnapshotSummaryOut):
+    items: list[HistorySnapshotItemOut]
+
+
+class InternalHistoryPeriodOut(BaseModel):
+    period: str
+    type: str
+    created_at: datetime
+    item_count: int
+
+
+class InternalHistoryPeriodsOut(BaseModel):
+    items: list[InternalHistoryPeriodOut]
+
+
+class InternalHistorySnapshotOut(InternalHistoryPeriodOut):
+    items: list[HistorySnapshotItemOut]
+
+
 class ProductTypeUpdateIn(BaseModel):
     product_type: str | None = None
 class ProductDetailOut(ProductListOut):
@@ -283,12 +389,20 @@ class XmlServerSettingIn(BaseModel):
     host: str
     port: int
     username: str
-    password: str
+    password: str = ""
     xml_dir: str
     connection_attempts: int = Field(default=5, ge=1, le=10)
     retry_delay_seconds: int = Field(default=3, ge=0, le=60)
 
-class XmlServerSettingOut(XmlServerSettingIn):
+class XmlServerSettingOut(BaseModel):
+    protocol: str
+    host: str
+    port: int
+    username: str
+    password_configured: bool
+    xml_dir: str
+    connection_attempts: int
+    retry_delay_seconds: int
     id: int
     created_at: datetime
     updated_at: datetime
@@ -341,6 +455,10 @@ class MailSettingOut(BaseModel):
 
 class TestMailIn(BaseModel):
     email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class AdminLoginIn(BaseModel):
+    password: str = Field(min_length=1, max_length=1024)
 
 
 class ScenarioSettingIn(BaseModel):

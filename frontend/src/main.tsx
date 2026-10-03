@@ -52,6 +52,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import { api } from "./api/client";
 import { BarcodeScanner } from "./components/BarcodeScanner";
+import { togglePhotoSelection } from "./photoSelection";
 import type {
   Meta,
   Product,
@@ -68,6 +69,11 @@ import type {
   NotificationHistory,
   DynamicAnalog,
   AnalogSelectionSetting,
+  PhotoReportProduct,
+  ProductHistoryDetail,
+  ProductHistoryPreview,
+  ProductHistorySetting,
+  ProductHistorySummary,
 } from "./types/catalog";
 
 const theme = createTheme({
@@ -104,9 +110,6 @@ const theme = createTheme({
     },
   },
 });
-
-const SETTINGS_PASSWORD = "8852285";
-const DELETE_PASSWORD = "8852285";
 
 const exportMainColumns = [
   ["photo", "Фото"],
@@ -258,12 +261,10 @@ function App() {
   const [settingsPassword, setSettingsPassword] = useState("");
   const [settingsPasswordError, setSettingsPasswordError] = useState(false);
   const [settingsUnlocked, setSettingsUnlocked] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "mail" | "scenarios" | "analogs" | "logs">("settings");
+  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "mail" | "scenarios" | "analogs" | "history" | "logs">("settings");
   const [openSettingsGroups, setOpenSettingsGroups] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [deletePassword, setDeletePassword] = useState("");
-  const [deletePasswordError, setDeletePasswordError] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportColumns, setExportColumns] = useState<string[]>(defaultExportColumns);
   const [exportWarehouses, setExportWarehouses] = useState<Warehouse[]>([]);
@@ -271,6 +272,21 @@ function App() {
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState<number | null>(null);
   const [exportMessage, setExportMessage] = useState("Формируем Excel. Не закрывайте это окно…");
+  const [reportsOpen, setReportsOpen] = useState(false);
+  const [photoReportOpen, setPhotoReportOpen] = useState(false);
+  const [photoReportItems, setPhotoReportItems] = useState<PhotoReportProduct[]>([]);
+  const [photoReportPage, setPhotoReportPage] = useState(0);
+  const [photoReportTotal, setPhotoReportTotal] = useState(0);
+  const [photoReportLoading, setPhotoReportLoading] = useState(false);
+  const [photoReportDownloading, setPhotoReportDownloading] = useState(false);
+  const [photoReportError, setPhotoReportError] = useState<string | null>(null);
+  const [selectedPhotoKeys, setSelectedPhotoKeys] = useState<Set<string>>(() => new Set());
+  const [productHistorySetting, setProductHistorySetting] = useState<ProductHistorySetting | null>(null);
+  const [productHistoryRows, setProductHistoryRows] = useState<ProductHistorySummary[]>([]);
+  const [productHistoryPreview, setProductHistoryPreview] = useState<ProductHistoryPreview | null>(null);
+  const [selectedProductHistory, setSelectedProductHistory] = useState<ProductHistoryDetail | null>(null);
+  const [productHistorySearch, setProductHistorySearch] = useState("");
+  const [productHistoryMessage, setProductHistoryMessage] = useState<string | null>(null);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 100, totalItems: 0, totalPages: 0 });
@@ -354,6 +370,14 @@ function App() {
     window.addEventListener("popstate", restore); return () => window.removeEventListener("popstate", restore);
   }, []);
   useEffect(() => {
+    const expired = () => {
+      setSettingsUnlocked(false);
+      if (tab === "settings") setSettingsPasswordOpen(true);
+    };
+    window.addEventListener("vrcatalog-admin-expired", expired);
+    return () => window.removeEventListener("vrcatalog-admin-expired", expired);
+  }, [tab]);
+  useEffect(() => {
     if (tab === "settings" && settingsTab === "settings") {
       openGeneralSettings();
     }
@@ -381,14 +405,15 @@ function App() {
     setSettingsPasswordError(false);
   };
   const openSettings = () => {
-    if (settingsUnlocked) {
-      setTab("settings");
-      return;
-    }
-    setSettingsPasswordOpen(true);
+    void api.adminSession().then((authenticated) => {
+      if (authenticated) { setSettingsUnlocked(true); setTab("settings"); }
+      else { setSettingsUnlocked(false); setSettingsPasswordOpen(true); }
+    });
   };
-  const unlockSettings = () => {
-    if (settingsPassword !== SETTINGS_PASSWORD) {
+  const unlockSettings = async () => {
+    try {
+      await api.adminLogin(settingsPassword);
+    } catch {
       setSettingsPasswordError(true);
       return;
     }
@@ -580,15 +605,9 @@ function App() {
     setSelectedIds(allSelected ? [] : products.map((product) => product.id));
   const closeDeleteDialog = () => {
     setDeleteDialogOpen(false);
-    setDeletePassword("");
-    setDeletePasswordError(false);
   };
   const deleteSelected = async () => {
     if (!selectedIds.length) return;
-    if (deletePassword !== DELETE_PASSWORD) {
-      setDeletePasswordError(true);
-      return;
-    }
     await api.deleteProducts(selectedIds);
     closeDeleteDialog();
     reload();
@@ -654,6 +673,61 @@ function App() {
       setExporting(false);
     }
   };
+  const loadPhotoReportPage = async (page: number, replace = false) => {
+    setPhotoReportLoading(true);
+    setPhotoReportError(null);
+    try {
+      const reportParams = new URLSearchParams(params);
+      ["page", "pageSize", "sort", "order", "column"].forEach((key) => reportParams.delete(key));
+      reportParams.set("page", String(page));
+      reportParams.set("pageSize", "50");
+      const result = await api.photoReport(reportParams);
+      setPhotoReportItems((current) => replace ? result.items : [...current, ...result.items]);
+      setPhotoReportPage(result.page);
+      setPhotoReportTotal(result.total_items);
+    } catch (error) {
+      setPhotoReportError(error instanceof Error ? error.message : "Не удалось загрузить отчет");
+    } finally {
+      setPhotoReportLoading(false);
+    }
+  };
+  const openPhotoReport = () => {
+    setReportsOpen(false);
+    setPhotoReportOpen(true);
+    setPhotoReportItems([]);
+    setPhotoReportPage(0);
+    setPhotoReportTotal(0);
+    setSelectedPhotoKeys(new Set());
+    void loadPhotoReportPage(1, true);
+  };
+  const toggleReportPhoto = (productId: number, imageId: number) => {
+    const key = `${productId}:${imageId}`;
+    setSelectedPhotoKeys((current) => togglePhotoSelection(current, key));
+  };
+  const downloadSelectedPhotos = async () => {
+    if (!selectedPhotoKeys.size) return;
+    setPhotoReportDownloading(true);
+    setPhotoReportError(null);
+    try {
+      const images = [...selectedPhotoKeys].map((key) => {
+        const [productId, imageId] = key.split(":").map(Number);
+        return { product_id: productId, image_id: imageId };
+      });
+      const archive = await api.downloadReportPhotos(images);
+      const url = URL.createObjectURL(archive);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `photos_${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      setPhotoReportError(error instanceof Error ? error.message : "Не удалось подготовить фотографии");
+    } finally {
+      setPhotoReportDownloading(false);
+    }
+  };
   const openLogs = async () => {
     setSettingsTab("logs");
     setLogs(await api.logs());
@@ -682,6 +756,27 @@ function App() {
   const openAnalogSettings = async () => {
     setSettingsTab("analogs");
     setAnalogSettings(await api.analogSelectionSettings());
+  };
+  const openProductHistory = async () => {
+    setSettingsTab("history");
+    setSelectedProductHistory(null);
+    setProductHistoryMessage(null);
+    const [setting, rows, preview] = await Promise.all([
+      api.productHistorySettings(), api.productHistory(), api.productHistoryPreview(),
+    ]);
+    setProductHistorySetting(setting);
+    setProductHistoryRows(rows);
+    setProductHistoryPreview(preview);
+  };
+  const openProductHistoryPeriod = async (period: string, search = "") => {
+    setProductHistorySearch(search);
+    setSelectedProductHistory(await api.productHistoryDetail(period, search));
+  };
+  const formatHistoryPeriod = (period: string) => {
+    const formatted = new Intl.DateTimeFormat("ru-RU", {
+      month: "long", year: "numeric", timeZone: "UTC",
+    }).format(new Date(`${period.slice(0, 7)}-01T00:00:00Z`)).replace(" г.", "");
+    return formatted.charAt(0).toLocaleUpperCase("ru-RU") + formatted.slice(1);
   };
   const openProduct = async (id: number) => {
     setAllAnalogsOpen(false);
@@ -825,7 +920,10 @@ function App() {
             color="error"
             variant="contained"
             startIcon={<DeleteIcon />}
-            onClick={() => setDeleteDialogOpen(true)}
+            onClick={async () => {
+              if (await api.adminSession()) setDeleteDialogOpen(true);
+              else setSettingsPasswordOpen(true);
+            }}
             sx={{ position: "fixed", top: 16, right: 24, zIndex: (muiTheme) => muiTheme.zIndex.modal - 1 }}
           >
             Удалить выбранные ({selectedIds.length})
@@ -885,20 +983,20 @@ function App() {
                 label="Пароль"
                 value={settingsPassword}
                 error={settingsPasswordError}
-                helperText={settingsPasswordError ? "Неверный пароль" : "Введите пароль для доступа к вкладке"}
+                helperText={settingsPasswordError ? "Неверные учетные данные или слишком много попыток" : "Введите пароль администратора"}
                 onChange={(event) => {
                   setSettingsPassword(event.target.value);
                   setSettingsPasswordError(false);
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") unlockSettings();
+                  if (event.key === "Enter") void unlockSettings();
                 }}
                 sx={{ mt: 1 }}
               />
             </DialogContent>
             <DialogActions>
               <Button onClick={closeSettingsPassword}>Отмена</Button>
-              <Button variant="contained" onClick={unlockSettings}>Войти</Button>
+              <Button variant="contained" onClick={() => void unlockSettings()}>Войти</Button>
             </DialogActions>
           </Dialog>
 
@@ -940,27 +1038,102 @@ function App() {
               <Typography sx={{ mb: 2 }}>
                 Вы действительно хотите удалить выбранные товары ({selectedIds.length})? Это действие нельзя отменить.
               </Typography>
-              <TextField
-                autoFocus
-                fullWidth
-                type="password"
-                label="Пароль"
-                value={deletePassword}
-                error={deletePasswordError}
-                helperText={deletePasswordError ? "Неверный пароль" : "Введите пароль для подтверждения удаления"}
-                onChange={(event) => {
-                  setDeletePassword(event.target.value);
-                  setDeletePasswordError(false);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") deleteSelected();
-                }}
-              />
+              <Typography color="text.secondary">Операция будет выполнена от имени текущей административной сессии.</Typography>
             </DialogContent>
             <DialogActions>
               <Button onClick={closeDeleteDialog}>Отмена</Button>
               <Button color="error" variant="contained" onClick={deleteSelected}>
                 Подтвердить удаление
+              </Button>
+            </DialogActions>
+          </Dialog>
+
+          <Dialog open={reportsOpen} onClose={() => setReportsOpen(false)} maxWidth="sm" fullWidth>
+            <DialogTitle>Отчеты</DialogTitle>
+            <DialogContent>
+              <Card variant="outlined" sx={{ mt: 1 }}>
+                <CardContent>
+                  <Typography variant="h6">Скачать фото</Typography>
+                  <Typography color="text.secondary" sx={{ mb: 2 }}>
+                    Выберите фотографии всех товаров из текущей отфильтрованной выборки.
+                  </Typography>
+                  <Button variant="contained" onClick={openPhotoReport}>Открыть отчет</Button>
+                </CardContent>
+              </Card>
+            </DialogContent>
+            <DialogActions><Button onClick={() => setReportsOpen(false)}>Закрыть</Button></DialogActions>
+          </Dialog>
+
+          <Dialog
+            open={photoReportOpen}
+            onClose={() => !photoReportDownloading && setPhotoReportOpen(false)}
+            fullWidth
+            maxWidth="lg"
+            PaperProps={{ sx: { height: "90vh" } }}
+          >
+            <DialogTitle>Скачать фото</DialogTitle>
+            <DialogContent dividers sx={{ p: 2 }}>
+              <Typography color="text.secondary" sx={{ mb: 2 }}>
+                Товаров по текущим фильтрам: {photoReportTotal}. Загружено: {photoReportItems.length}.
+              </Typography>
+              {photoReportError && <Typography color="error" sx={{ mb: 2 }}>{photoReportError}</Typography>}
+              <Stack spacing={2}>
+                {photoReportItems.map((product) => (
+                  <Card key={product.id} variant="outlined">
+                    <CardContent>
+                      <Typography fontWeight={800}>{product.name}</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Код: {product.code} · Артикул: {product.article || "—"}
+                      </Typography>
+                      {product.images.length ? (
+                        <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", mt: 2 }}>
+                          {product.images.map((image) => {
+                            const key = `${product.id}:${image.id}`;
+                            const selected = selectedPhotoKeys.has(key);
+                            return (
+                              <Box
+                                component="button"
+                                type="button"
+                                key={image.id}
+                                aria-pressed={selected}
+                                aria-label={`Фото ${image.order} товара ${product.code}`}
+                                onClick={() => toggleReportPhoto(product.id, image.id)}
+                                sx={{
+                                  position: "relative", width: 132, height: 132, p: 0.5,
+                                  borderRadius: 2, cursor: "pointer", bgcolor: selected ? "primary.50" : "background.paper",
+                                  border: "3px solid", borderColor: selected ? "primary.main" : "divider",
+                                }}
+                              >
+                                <Box component="img" loading="lazy" src={image.preview_url} alt="" sx={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                                {selected && (
+                                  <Box sx={{ position: "absolute", top: 6, right: 6, width: 24, height: 24, borderRadius: "50%", bgcolor: "primary.main", color: "white", fontWeight: 900 }}>
+                                    ✓
+                                  </Box>
+                                )}
+                              </Box>
+                            );
+                          })}
+                        </Box>
+                      ) : <Typography color="text.secondary" sx={{ mt: 2 }}>Нет фотографий</Typography>}
+                    </CardContent>
+                  </Card>
+                ))}
+              </Stack>
+              {photoReportLoading && <LinearProgress sx={{ mt: 2 }} />}
+              {!photoReportLoading && photoReportItems.length < photoReportTotal && (
+                <Box sx={{ textAlign: "center", mt: 2 }}>
+                  <Button variant="outlined" onClick={() => void loadPhotoReportPage(photoReportPage + 1)}>Показать еще</Button>
+                </Box>
+              )}
+              {!photoReportLoading && !photoReportItems.length && !photoReportError && (
+                <Typography align="center" color="text.secondary" sx={{ py: 6 }}>Товары не найдены</Typography>
+              )}
+            </DialogContent>
+            <DialogActions sx={{ position: "sticky", bottom: 0, bgcolor: "background.paper", px: 3, py: 2 }}>
+              <Typography sx={{ mr: "auto", fontWeight: 800 }}>Выбрано фото: {selectedPhotoKeys.size}</Typography>
+              <Button disabled={photoReportDownloading} onClick={() => setPhotoReportOpen(false)}>Закрыть</Button>
+              <Button variant="contained" disabled={!selectedPhotoKeys.size || photoReportDownloading} onClick={downloadSelectedPhotos}>
+                {photoReportDownloading ? "Подготовка фотографий…" : "Скачать выбранные фото"}
               </Button>
             </DialogActions>
           </Dialog>
@@ -1132,6 +1305,8 @@ function App() {
               <CardContent>
                 <Tabs
                   value={settingsTab}
+                  variant="scrollable"
+                  scrollButtons="auto"
                   onChange={(_, value) =>
                     value === "logs"
                       ? openLogs()
@@ -1143,6 +1318,8 @@ function App() {
                             ? openScenarios()
                             : value === "analogs"
                               ? openAnalogSettings()
+                              : value === "history"
+                                ? openProductHistory()
                             : openGeneralSettings()
                   }
                   sx={{ mb: 2 }}
@@ -1152,8 +1329,12 @@ function App() {
                   <Tab value="mail" label="Почта" />
                   <Tab value="scenarios" label="Сценарии" />
                   <Tab value="analogs" label="Подбор аналогов" />
+                  <Tab value="history" label={'История цен "Акция месяца"'} />
                   <Tab value="logs" label="Логи" />
                 </Tabs>
+                <Button size="small" onClick={async () => { await api.adminLogout(); setSettingsUnlocked(false); setTab("catalog"); }} sx={{ mb: 2 }}>
+                  Выйти из режима администратора
+                </Button>
                 {settingsTab === "settings" && (
                   <Box>
                     <Typography variant="h6">Настройки</Typography>
@@ -1238,9 +1419,9 @@ function App() {
                           }
                         />
                         <TextField
-                          label="Пароль"
+                          label={xmlServerForm.password_configured ? "Новый пароль (оставьте пустым, чтобы не менять)" : "Пароль"}
                           type="password"
-                          value={xmlServerForm.password}
+                          value={xmlServerForm.password ?? ""}
                           onChange={(e) =>
                             setXmlServerForm({ ...xmlServerForm, password: e.target.value })
                           }
@@ -1436,6 +1617,75 @@ function App() {
                     <TextField label="Минимальный процент похожести" type="number" inputProps={{ min: 0, max: 100 }} value={analogSettings.minimum_similarity} onChange={(event) => setAnalogSettings({ ...analogSettings, minimum_similarity: Number(event.target.value) })} />
                     <TextField label="Максимальное количество аналогов" type="number" inputProps={{ min: 1, max: 50 }} value={analogSettings.maximum_analogs} onChange={(event) => setAnalogSettings({ ...analogSettings, maximum_analogs: Number(event.target.value) })} />
                     <Button variant="contained" onClick={async () => setAnalogSettings(await api.updateAnalogSelectionSettings(analogSettings))}>Сохранить</Button>
+                  </Stack>
+                )}
+                {settingsTab === "history" && productHistorySetting && (
+                  <Stack spacing={2}>
+                    <Typography variant="h6">История цен «Акция месяца»</Typography>
+                    <FormControlLabel
+                      control={<Switch checked={productHistorySetting.save_for_next_month} onChange={async (event) => {
+                        const saved = await api.updateProductHistorySettings({ save_for_next_month: event.target.checked });
+                        setProductHistorySetting(saved);
+                        setProductHistoryPreview(await api.productHistoryPreview());
+                      }} />}
+                      label="Сохранять снимок для следующего месяца"
+                    />
+                    <Typography color="text.secondary">
+                      Автоматическая проверка выполняется существующим фоновым worker. После 28 числа отсутствующий снимок создается автоматически.
+                    </Typography>
+                    {productHistoryPreview && (
+                      <Paper variant="outlined" sx={{ p: 2 }}>
+                        <Typography fontWeight={800}>Новый снимок: {productHistoryPreview.snapshot_name}</Typography>
+                        <Typography>Период: {formatHistoryPeriod(productHistoryPreview.period)}</Typography>
+                        <Typography>Найдено товаров: {productHistoryPreview.item_count}</Typography>
+                        {productHistoryPreview.exists && <Typography color="warning.main">Снимок этого периода уже существует и будет обновлен текущими данными.</Typography>}
+                        <Button
+                          variant="contained"
+                          sx={{ mt: 1 }}
+                          onClick={async () => {
+                            try {
+                              await api.createProductHistory(productHistoryPreview.period.slice(0, 7));
+                              await openProductHistory();
+                              setProductHistoryMessage("Снимок успешно сохранен.");
+                            } catch (error) {
+                              setProductHistoryMessage(error instanceof Error ? error.message : "Не удалось сформировать снимок");
+                            }
+                          }}
+                        >Сохранить снимок</Button>
+                      </Paper>
+                    )}
+                    {productHistoryMessage && <Typography>{productHistoryMessage}</Typography>}
+                    {!selectedProductHistory ? (
+                      <Stack spacing={1}>
+                        <Typography fontWeight={800}>Акция месяца</Typography>
+                        {productHistoryRows.map((snapshot) => (
+                          <Paper key={snapshot.id} variant="outlined" sx={{ p: 2, cursor: "pointer" }} onClick={() => void openProductHistoryPeriod(snapshot.period)}>
+                            <Typography fontWeight={800}>{formatHistoryPeriod(snapshot.period)} — {snapshot.item_count} товаров</Typography>
+                            <Typography variant="body2" color="text.secondary">Источник: {snapshot.creation_source === "automatic" ? "автоматически" : "вручную"}</Typography>
+                          </Paper>
+                        ))}
+                        {!productHistoryRows.length && <Typography color="text.secondary">Снимки пока не сформированы.</Typography>}
+                      </Stack>
+                    ) : (
+                      <Stack spacing={2}>
+                        <Button onClick={() => setSelectedProductHistory(null)}>← К списку периодов</Button>
+                        <Typography variant="h6">{formatHistoryPeriod(selectedProductHistory.period)}</Typography>
+                        <TextField
+                          label="Поиск по коду, артикулу или наименованию"
+                          value={productHistorySearch}
+                          onChange={(event) => setProductHistorySearch(event.target.value)}
+                          onKeyDown={(event) => { if (event.key === "Enter") void openProductHistoryPeriod(selectedProductHistory.period, productHistorySearch); }}
+                        />
+                        <TableContainer component={Paper} variant="outlined">
+                          <Table size="small">
+                            <TableHead><TableRow><TableCell>Код</TableCell><TableCell>Артикул</TableCell><TableCell>Наименование</TableCell><TableCell align="right">Базовая цена</TableCell><TableCell align="right">Акционная цена</TableCell><TableCell>Все цены</TableCell></TableRow></TableHead>
+                            <TableBody>{selectedProductHistory.items.map((item) => (
+                              <TableRow key={item.code}><TableCell>{item.code}</TableCell><TableCell>{item.article || "—"}</TableCell><TableCell>{item.name}</TableCell><TableCell align="right">{item.base_price ?? "—"}</TableCell><TableCell align="right">{item.promo_price ?? "—"}</TableCell><TableCell>{item.prices.length ? item.prices.map((price) => <Typography key={`${price.price_type}-${price.price_value}`} variant="body2">{price.price_type}: {price.price_value} руб.</Typography>) : "—"}</TableCell></TableRow>
+                            ))}</TableBody>
+                          </Table>
+                        </TableContainer>
+                      </Stack>
+                    )}
                   </Stack>
                 )}
                 {settingsTab === "mappings" && (
@@ -1674,7 +1924,10 @@ function App() {
                 <Typography color="text.secondary" fontWeight={700}>
                   Найдено товаров: {pagination.totalItems}
                 </Typography>
-                <Button onClick={openExportDialog} sx={{ whiteSpace: "nowrap" }}>Скачать Excel</Button>
+                <Stack direction="row" spacing={1}>
+                  <Button onClick={() => setReportsOpen(true)} sx={{ whiteSpace: "nowrap" }}>Отчеты</Button>
+                  <Button onClick={openExportDialog} sx={{ whiteSpace: "nowrap" }}>Скачать Excel</Button>
+                </Stack>
               </Stack>
               <TableContainer component={Card} sx={{ position: "relative" }}>
                 {loading && <LinearProgress />}

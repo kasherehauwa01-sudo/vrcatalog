@@ -62,13 +62,17 @@ cp .env.example .env
 ```env
 BASE_PATH=/vr/catalog
 PORT=8080
-DATABASE_URL=postgresql+psycopg://vrcatalog:vrcatalog_password@postgres:5432/vrcatalog
+DATABASE_URL=postgresql+psycopg://vrcatalog:CHANGE_ME@postgres:5432/vrcatalog
 UPLOAD_DIR=/app/uploads
-SECRET_KEY=change-this-secret-key
-INTERNAL_API_TOKEN=replace-with-a-long-random-token
+SECRET_KEY=CHANGE_ME_WITH_AT_LEAST_32_RANDOM_CHARACTERS
+INTERNAL_API_TOKEN=CHANGE_ME_WITH_AT_LEAST_32_RANDOM_CHARACTERS
+ADMIN_PASSWORD_HASH=CHANGE_ME_WITH_ARGON2ID_HASH
+ENVIRONMENT=production
+CORS_ORIGINS=https://kvasmix.ru
+ENABLE_API_DOCS=false
 POSTGRES_DB=vrcatalog
 POSTGRES_USER=vrcatalog
-POSTGRES_PASSWORD=vrcatalog_password
+POSTGRES_PASSWORD=CHANGE_ME
 VITE_BASE_PATH=/vr/catalog/
 ```
 

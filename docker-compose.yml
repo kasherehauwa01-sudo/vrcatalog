@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-vrcatalog}
       POSTGRES_USER: ${POSTGRES_USER:-vrcatalog}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vrcatalog_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -19,12 +19,20 @@ services:
       context: ./backend
     environment:
       PYTHONPATH: /app
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
       EXPORT_IMAGE_CACHE_MAX_MB: ${EXPORT_IMAGE_CACHE_MAX_MB:-500}
       EXPORT_IMAGE_CACHE_TARGET_MB: ${EXPORT_IMAGE_CACHE_TARGET_MB:-450}
-      SECRET_KEY: ${SECRET_KEY}
-      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      PREVIOUS_SECRET_KEY: ${PREVIOUS_SECRET_KEY:-}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?ADMIN_PASSWORD_HASH must be set}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
+      ADMIN_SESSION_HOURS: ${ADMIN_SESSION_HOURS:-8}
+      MAX_XML_UPLOAD_MB: ${MAX_XML_UPLOAD_MB:-200}
+      IMAGE_ALLOWED_HOSTS: ${IMAGE_ALLOWED_HOSTS:-}
       BASE_PATH: ${BASE_PATH:-/vr/catalog}
       PORT: 8000
     volumes:
@@ -38,6 +46,12 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=256m,mode=1777
 
   frontend:
     build:
@@ -45,16 +59,22 @@ services:
       args:
         VITE_BASE_PATH: ${VITE_BASE_PATH:-/vr/catalog/}
     ports:
-      - "${PORT:-8080}:80"
+      - "127.0.0.1:${PORT:-8080}:8080"
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/vr/catalog/api/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/vr/catalog/api/health"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
 
 volumes:
   postgres_data:
