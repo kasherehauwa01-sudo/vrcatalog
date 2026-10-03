@@ -43,6 +43,7 @@ import {
   Typography,
   createTheme,
 } from "@mui/material";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import CloseIcon from "@mui/icons-material/Close";
 import DeleteIcon from "@mui/icons-material/Delete";
@@ -328,10 +329,27 @@ function App() {
   const [allAnalogsLoading, setAllAnalogsLoading] = useState(false);
   const [analogReason, setAnalogReason] = useState<DynamicAnalog | null>(null);
   const [queryVersion, setQueryVersion] = useState(0);
+  const [catalogBackAvailable, setCatalogBackAvailable] = useState(
+    () => Boolean(window.history.state?.catalogBack),
+  );
   const params = useMemo(() => new URLSearchParams(window.location.search), [queryVersion]);
   const replaceCatalogParams = (next: URLSearchParams) => {
     const query = next.toString();
-    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}`,
+    );
+    setQueryVersion((value) => value + 1);
+  };
+  const pushCatalogParams = (next: URLSearchParams) => {
+    const query = next.toString();
+    window.history.pushState(
+      { ...window.history.state, catalogBack: true },
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}`,
+    );
+    setCatalogBackAvailable(true);
     setQueryVersion((value) => value + 1);
   };
   const updateParams = (changes: Record<string, string | number | null>, resetPage = true) => {
@@ -365,7 +383,13 @@ function App() {
     const restore = () => {
       const restored = new URLSearchParams(window.location.search);
       const restoredActive = multiFromUrl(restored); const restoredFields = fieldsFromUrl(restored);
-      setSearch(restored.get("search") ?? ""); setActive(restoredActive); setDraftActive(restoredActive); setFilterFields(restoredFields); setDraftFields(restoredFields); setQueryVersion((value) => value + 1);
+      setSearch(restored.get("search") ?? "");
+      setActive(restoredActive);
+      setDraftActive(restoredActive);
+      setFilterFields(restoredFields);
+      setDraftFields(restoredFields);
+      setCatalogBackAvailable(Boolean(window.history.state?.catalogBack));
+      setQueryVersion((value) => value + 1);
     };
     window.addEventListener("popstate", restore); return () => window.removeEventListener("popstate", restore);
   }, []);
@@ -559,7 +583,7 @@ function App() {
     setDraftActive(nextActive);
     setFilterFields(nextFields);
     setDraftFields(nextFields);
-    replaceCatalogParams(next);
+    pushCatalogParams(next);
   };
   const clickableDetailFilters: Record<string, string> = {
     Раздел: "section",
@@ -1900,6 +1924,17 @@ function App() {
 
           {tab === "catalog" && (
             <Stack spacing={2}>
+              {catalogBackAvailable && (
+                <Box>
+                  <Button
+                    variant="outlined"
+                    startIcon={<ArrowBackIcon />}
+                    onClick={() => window.history.back()}
+                  >
+                    Назад
+                  </Button>
+                </Box>
+              )}
               {activeConditionCount > 0 && (
                 <Paper variant="outlined" sx={{ p: 1.5 }}>
                   <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
