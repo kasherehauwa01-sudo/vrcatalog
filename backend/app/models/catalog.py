@@ -193,6 +193,7 @@ class XmlServerSetting(Base):
     port: Mapped[int] = mapped_column(Integer, default=21)
     username: Mapped[str] = mapped_column(String(255), default="")
     password: Mapped[str] = mapped_column(String(255), default="")
+    encrypted_password: Mapped[str] = mapped_column(Text, default="")
     xml_dir: Mapped[str] = mapped_column(String(512), default="/xml")
     connection_attempts: Mapped[int] = mapped_column(Integer, default=5)
     retry_delay_seconds: Mapped[int] = mapped_column(Integer, default=3)
@@ -251,6 +252,16 @@ class HistorySetting(Base):
     snapshot_type: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     save_for_next_month: Mapped[bool] = mapped_column(Boolean, default=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AdminSession(Base):
+    __tablename__ = "admin_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
 
 
 class HistorySnapshot(Base):

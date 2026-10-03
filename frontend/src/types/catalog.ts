@@ -134,7 +134,8 @@ export type XmlServerSetting = {
   host: string;
   port: number;
   username: string;
-  password: string;
+  password?: string;
+  password_configured: boolean;
   xml_dir: string;
   connection_attempts: number;
   retry_delay_seconds: number;

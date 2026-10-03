@@ -112,9 +112,6 @@ const theme = createTheme({
   },
 });
 
-const SETTINGS_PASSWORD = "8852285";
-const DELETE_PASSWORD = "8852285";
-
 const exportMainColumns = [
   ["photo", "Фото"],
   ["article", "Артикул"],
@@ -269,8 +266,6 @@ function App() {
   const [openSettingsGroups, setOpenSettingsGroups] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [deletePassword, setDeletePassword] = useState("");
-  const [deletePasswordError, setDeletePasswordError] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportColumns, setExportColumns] = useState<string[]>(defaultExportColumns);
   const [exportWarehouses, setExportWarehouses] = useState<Warehouse[]>([]);
@@ -399,6 +394,14 @@ function App() {
     window.addEventListener("popstate", restore); return () => window.removeEventListener("popstate", restore);
   }, []);
   useEffect(() => {
+    const expired = () => {
+      setSettingsUnlocked(false);
+      if (tab === "settings") setSettingsPasswordOpen(true);
+    };
+    window.addEventListener("vrcatalog-admin-expired", expired);
+    return () => window.removeEventListener("vrcatalog-admin-expired", expired);
+  }, [tab]);
+  useEffect(() => {
     if (tab === "settings" && settingsTab === "settings") {
       openGeneralSettings();
     }
@@ -426,14 +429,15 @@ function App() {
     setSettingsPasswordError(false);
   };
   const openSettings = () => {
-    if (settingsUnlocked) {
-      setTab("settings");
-      return;
-    }
-    setSettingsPasswordOpen(true);
+    void api.adminSession().then((authenticated) => {
+      if (authenticated) { setSettingsUnlocked(true); setTab("settings"); }
+      else { setSettingsUnlocked(false); setSettingsPasswordOpen(true); }
+    });
   };
-  const unlockSettings = () => {
-    if (settingsPassword !== SETTINGS_PASSWORD) {
+  const unlockSettings = async () => {
+    try {
+      await api.adminLogin(settingsPassword);
+    } catch {
       setSettingsPasswordError(true);
       return;
     }
@@ -625,15 +629,9 @@ function App() {
     setSelectedIds(allSelected ? [] : products.map((product) => product.id));
   const closeDeleteDialog = () => {
     setDeleteDialogOpen(false);
-    setDeletePassword("");
-    setDeletePasswordError(false);
   };
   const deleteSelected = async () => {
     if (!selectedIds.length) return;
-    if (deletePassword !== DELETE_PASSWORD) {
-      setDeletePasswordError(true);
-      return;
-    }
     await api.deleteProducts(selectedIds);
     closeDeleteDialog();
     reload();
@@ -946,7 +944,10 @@ function App() {
             color="error"
             variant="contained"
             startIcon={<DeleteIcon />}
-            onClick={() => setDeleteDialogOpen(true)}
+            onClick={async () => {
+              if (await api.adminSession()) setDeleteDialogOpen(true);
+              else setSettingsPasswordOpen(true);
+            }}
             sx={{ position: "fixed", top: 16, right: 24, zIndex: (muiTheme) => muiTheme.zIndex.modal - 1 }}
           >
             Удалить выбранные ({selectedIds.length})
@@ -1006,20 +1007,20 @@ function App() {
                 label="Пароль"
                 value={settingsPassword}
                 error={settingsPasswordError}
-                helperText={settingsPasswordError ? "Неверный пароль" : "Введите пароль для доступа к вкладке"}
+                helperText={settingsPasswordError ? "Неверные учетные данные или слишком много попыток" : "Введите пароль администратора"}
                 onChange={(event) => {
                   setSettingsPassword(event.target.value);
                   setSettingsPasswordError(false);
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") unlockSettings();
+                  if (event.key === "Enter") void unlockSettings();
                 }}
                 sx={{ mt: 1 }}
               />
             </DialogContent>
             <DialogActions>
               <Button onClick={closeSettingsPassword}>Отмена</Button>
-              <Button variant="contained" onClick={unlockSettings}>Войти</Button>
+              <Button variant="contained" onClick={() => void unlockSettings()}>Войти</Button>
             </DialogActions>
           </Dialog>
 
@@ -1061,22 +1062,7 @@ function App() {
               <Typography sx={{ mb: 2 }}>
                 Вы действительно хотите удалить выбранные товары ({selectedIds.length})? Это действие нельзя отменить.
               </Typography>
-              <TextField
-                autoFocus
-                fullWidth
-                type="password"
-                label="Пароль"
-                value={deletePassword}
-                error={deletePasswordError}
-                helperText={deletePasswordError ? "Неверный пароль" : "Введите пароль для подтверждения удаления"}
-                onChange={(event) => {
-                  setDeletePassword(event.target.value);
-                  setDeletePasswordError(false);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") deleteSelected();
-                }}
-              />
+              <Typography color="text.secondary">Операция будет выполнена от имени текущей административной сессии.</Typography>
             </DialogContent>
             <DialogActions>
               <Button onClick={closeDeleteDialog}>Отмена</Button>
@@ -1370,6 +1356,9 @@ function App() {
                   <Tab value="history" label={'История цен "Акция месяца"'} />
                   <Tab value="logs" label="Логи" />
                 </Tabs>
+                <Button size="small" onClick={async () => { await api.adminLogout(); setSettingsUnlocked(false); setTab("catalog"); }} sx={{ mb: 2 }}>
+                  Выйти из режима администратора
+                </Button>
                 {settingsTab === "settings" && (
                   <Box>
                     <Typography variant="h6">Настройки</Typography>
@@ -1454,9 +1443,9 @@ function App() {
                           }
                         />
                         <TextField
-                          label="Пароль"
+                          label={xmlServerForm.password_configured ? "Новый пароль (оставьте пустым, чтобы не менять)" : "Пароль"}
                           type="password"
-                          value={xmlServerForm.password}
+                          value={xmlServerForm.password ?? ""}
                           onChange={(e) =>
                             setXmlServerForm({ ...xmlServerForm, password: e.target.value })
                           }
