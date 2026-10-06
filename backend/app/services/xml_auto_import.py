@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.credentials import decrypt_secret, encrypt_secret
 from app.db.session import SessionLocal
 from app.importer.xml_importer import XMLCatalogImporter, xml_product_count
 from app.models.catalog import AutoImportState, FtpConnectionLog, XmlServerSetting
@@ -100,6 +101,12 @@ def default_xml_server_setting() -> XmlServerSetting:
 def get_xml_server_setting(db: Session) -> XmlServerSetting:
     setting = db.query(XmlServerSetting).order_by(XmlServerSetting.id).first()
     if setting:
+        # Безопасный ленивый перенос production-записи: plaintext очищается
+        # только после успешного шифрования в рамках одной транзакции.
+        if setting.password and not setting.encrypted_password:
+            setting.encrypted_password = encrypt_secret(setting.password)
+            setting.password = ""
+            db.commit()
         return setting
     setting = default_xml_server_setting()
     db.add(setting)
@@ -169,7 +176,7 @@ def connect(setting: XmlServerSetting, db: Session | None = None) -> FTP:
         ftp = FTP()
         try:
             ftp.connect(setting.host, setting.port, timeout=30)
-            ftp.login(setting.username, setting.password)
+            ftp.login(setting.username, decrypt_secret(setting.encrypted_password))
             ftp.cwd(setting.xml_dir)
             setattr(ftp, "_vrcatalog_attempt", attempt)
             setattr(ftp, "_vrcatalog_duration_ms", round((time.perf_counter() - started) * 1000, 3))
@@ -194,23 +201,14 @@ def connect(setting: XmlServerSetting, db: Session | None = None) -> FTP:
 
 def test_connection(db: Session) -> tuple[bool, str]:
     setting = get_xml_server_setting(db)
-    started = time.perf_counter()
     try:
         ftp = connect(setting, db)
         attempt = getattr(ftp, "_vrcatalog_attempt", 1)
         ftp.quit()
-        return True, (
-            f"Host: {setting.host}\nPort: {setting.port}\nПротокол: {setting.protocol}\n"
-            f"Время подключения: {round((time.perf_counter() - started) * 1000, 3)} мс\n"
-            f"Количество попыток: {attempt}\nРезультат: Подключено"
-        )
-    except Exception as exc:  # noqa: BLE001 - пользователю нужен полный текст ошибки
-        return False, (
-            f"Host: {setting.host}\nPort: {setting.port}\nПротокол: {setting.protocol}\n"
-            f"Время подключения: {round((time.perf_counter() - started) * 1000, 3)} мс\n"
-            f"Количество попыток: {getattr(exc, 'vrcatalog_attempts', 1)}\n"
-            f"Результат: Ошибка\nПричина: {type(exc).__name__}: {exc}"
-        )
+        return True, f"Подключение успешно. Попыток: {attempt}."
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Проверка FTP завершилась ошибкой: error_type=%s", type(exc).__name__)
+        return False, "Не удалось подключиться к XML-серверу. Проверьте настройки."
 
 
 def moscow_now() -> datetime:
@@ -454,7 +452,9 @@ def start_worker() -> None:
         while True:
             run_once()
             from app.services.monthly_promotion import run_scheduled_if_due
+            from app.services.product_history import run_history_snapshot_if_due
             run_scheduled_if_due()
+            run_history_snapshot_if_due()
             time.sleep(CHECK_INTERVAL_SECONDS)
 
     threading.Thread(target=loop, daemon=True, name="xml-ftp-auto-import").start()

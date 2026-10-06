@@ -16,14 +16,27 @@ import type {
   NotificationHistory,
   DynamicAnalog,
   AnalogSelectionSetting,
+  PhotoReportPage,
+  ProductHistoryDetail,
+  ProductHistoryPreview,
+  ProductHistorySetting,
+  ProductHistorySummary,
 } from "../types/catalog";
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 const API = `${basePath}/api`;
+let csrfToken = "";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const method = (init?.method ?? "GET").toUpperCase();
+  const headers = new Headers(init?.headers);
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) headers.set("X-CSRF-Token", csrfToken);
+  const response = await fetch(url, { ...init, headers, credentials: "same-origin" });
   if (!response.ok) {
+    if (response.status === 401 && !url.endsWith("/admin/login")) {
+      csrfToken = "";
+      window.dispatchEvent(new Event("vrcatalog-admin-expired"));
+    }
     const payload = await response.json().catch(() => null);
     throw new Error(payload?.detail ?? `Ошибка API: ${response.status}`);
   }
@@ -31,6 +44,23 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  async adminLogin(password: string): Promise<void> {
+    const result = await request<{ authenticated: boolean; csrf_token: string }>(`${API}/admin/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }),
+    });
+    csrfToken = result.csrf_token;
+  },
+  async adminSession(): Promise<boolean> {
+    try {
+      const result = await request<{ authenticated: boolean; csrf_token: string }>(`${API}/admin/session`);
+      csrfToken = result.csrf_token;
+      return result.authenticated;
+    } catch { csrfToken = ""; return false; }
+  },
+  async adminLogout(): Promise<void> {
+    await request(`${API}/admin/logout`, { method: "POST" });
+    csrfToken = "";
+  },
   async meta(): Promise<Meta> {
     return request<Meta>(`${API}/meta`);
   },
@@ -49,6 +79,44 @@ export const api = {
   },
   async product(id: number): Promise<ProductDetail> {
     return request<ProductDetail>(`${API}/products/${id}`);
+  },
+  async photoReport(params: URLSearchParams): Promise<PhotoReportPage> {
+    return request<PhotoReportPage>(`${API}/reports/photos?${params}`);
+  },
+  async productHistorySettings(): Promise<ProductHistorySetting> {
+    return request<ProductHistorySetting>(`${API}/history/monthly-promotion/settings`);
+  },
+  async updateProductHistorySettings(payload: ProductHistorySetting): Promise<ProductHistorySetting> {
+    return request<ProductHistorySetting>(`${API}/history/monthly-promotion/settings`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+  },
+  async productHistoryPreview(period?: string): Promise<ProductHistoryPreview> {
+    const query = period ? `?period=${encodeURIComponent(period)}` : "";
+    return request<ProductHistoryPreview>(`${API}/history/monthly-promotion/preview${query}`);
+  },
+  async createProductHistory(period: string): Promise<ProductHistorySummary> {
+    return request<ProductHistorySummary>(`${API}/history/monthly-promotion?period=${encodeURIComponent(period)}`, { method: "POST" });
+  },
+  async productHistory(): Promise<ProductHistorySummary[]> {
+    return request<ProductHistorySummary[]>(`${API}/history/monthly-promotion`);
+  },
+  async productHistoryDetail(period: string, search = ""): Promise<ProductHistoryDetail> {
+    const query = search ? `?search=${encodeURIComponent(search)}` : "";
+    return request<ProductHistoryDetail>(`${API}/history/monthly-promotion/${encodeURIComponent(period.slice(0, 7))}${query}`);
+  },
+  async downloadReportPhotos(images: { product_id: number; image_id: number }[]): Promise<Blob> {
+    const response = await fetch(`${API}/reports/photos/download`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+      body: JSON.stringify({ images }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.detail ?? `Ошибка скачивания: ${response.status}`);
+    }
+    return response.blob();
   },
   async productAnalogs(id: number, showAll = false): Promise<DynamicAnalog[]> {
     return request<DynamicAnalog[]>(`${API}/products/${id}/dynamic-analogs${showAll ? "?show_all=true" : ""}`);
@@ -159,7 +227,7 @@ export const api = {
     host: string;
     port: number;
     username: string;
-    password: string;
+    password?: string;
     xml_dir: string;
   }): Promise<XmlServerSetting> {
     return request<XmlServerSetting>(`${API}/xml-server-settings`, {
