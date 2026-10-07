@@ -68,6 +68,8 @@ class ProductImageOut(BaseModel):
     url: str
     model_config = ConfigDict(from_attributes=True)
 class ProductListOut(BaseModel):
+    category_id: int | None = None
+    category1: str | None = Field(default=None, title="Категория1")
     id: int; code: str; name: str; article: str | None; section: str | None; product_type: str | None = None; product_type_name: str | None = None; quantity: float
     is_new: bool
     images: list[ProductImageOut] = []

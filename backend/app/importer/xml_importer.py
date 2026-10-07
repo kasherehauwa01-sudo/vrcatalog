@@ -138,6 +138,9 @@ class XMLCatalogImporter:
     """Независимый сервис импорта: XML читается только здесь, API работает уже с БД."""
 
     def import_file(self, db: Session, path: Path, filename: str) -> ImportRun:
+        from app.services.catalog_categories import lock_import, category_lookup, normalize_section
+        lock_import(db)
+        lookup = category_lookup(db)
         previous_source = db.info.get("change_source")
         db.info["change_source"] = "xml"
         run = ImportRun(filename=filename, status="running")
@@ -159,6 +162,7 @@ class XMLCatalogImporter:
             for item in products:
                 try:
                     parsed_product = self._parse_product(item)
+                    parsed_product.category_id, parsed_product.category1 = lookup.get(normalize_section(parsed_product.section), (None, None))
                     if parsed_product.code in seen_codes:
                         add_log(db, "xml_duplicate_product_code", f"Duplicate product code in source: {parsed_product.code}", "warning")
                         continue
@@ -257,6 +261,8 @@ class XMLCatalogImporter:
             "name": product.name,
             "article": product.article,
             "section": product.section,
+            "category_id": product.category_id,
+            "category1": product.category1,
             "product_type": product.product_type,
             "description": product.description,
             "quantity": product.quantity,

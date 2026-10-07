@@ -1,3 +1,4 @@
+import type { CategoryNode } from "../categoryTree";
 import type {
   Meta,
   Product,
@@ -64,6 +65,11 @@ export const api = {
   async meta(): Promise<Meta> {
     return request<Meta>(`${API}/meta`);
   },
+  async categoryFilters(): Promise<{ filters: Record<string, string[]>; section_tree: CategoryNode[] }> {
+    return request(`${API}/filters?tree=true`);
+  },
+  async categoryStatus(): Promise<CategorySyncStatus> { return request(`${API}/catalog-categories/status`); },
+  async syncCategories(): Promise<CategorySyncStatus> { return request(`${API}/catalog-categories/sync`, { method: "POST" }); },
   async filters(params?: URLSearchParams): Promise<Record<string, string[]>> {
     const query = params?.toString();
     return request<Record<string, string[]>>(`${API}/filters${query ? `?${query}` : ""}`);
@@ -307,3 +313,7 @@ export const api = {
     };
   },
 };
+
+export type CategorySyncStatus = { status: string; last_attempt_at?: string; last_success_at?: string;
+  category_count?: number; section_count?: number; last_error?: string;
+  unmatched_sections: { name: string; product_count: number }[] };

@@ -380,7 +380,7 @@ def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
     return meta(db)
 
 @router.get("/products", response_model=list[ProductListOut], response_model_exclude_none=True)
-def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le=10000)] = 60, offset: Annotated[int, Query(ge=0)] = 0, search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False, property: str | None = None, property_value: str | None = None, authorization: Annotated[str | None, Header()] = None, x_internal_token: Annotated[str | None, Header()] = None):
+def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le=10000)] = 60, offset: Annotated[int, Query(ge=0)] = 0, search: str | None = None, section: str | None = None, category: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False, property: str | None = None, property_value: str | None = None, authorization: Annotated[str | None, Header()] = None, x_internal_token: Annotated[str | None, Header()] = None):
     if (property is None) != (property_value is None):
         raise HTTPException(422, "Параметры property и property_value должны передаваться вместе")
     if property is not None:
@@ -398,7 +398,7 @@ def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le
         if not secrets.compare_digest(provided_token, configured_token):
             raise HTTPException(403, "Недостаточно прав для доступа")
     params = {
-        "search": search, "section": section, "manufacturer": manufacturer,
+        "search": search, "section": section, "category": category, "manufacturer": manufacturer,
         "brand": brand, "manager": manager, "country": country,
         "material": material, "color": color, "in_stock": in_stock,
         "price_min": price_min, "price_max": price_max,
@@ -431,7 +431,7 @@ def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le
 
 
 @router.get("/products/count")
-def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False):
+def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, category: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False):
     params = locals(); params.pop("db")
     return {"count": product_query(db, params).count()}
 
@@ -446,6 +446,7 @@ def search_products(
     article: Annotated[str | None, Query(max_length=2000)] = None,
     barcode: Annotated[str | None, Query(max_length=2000)] = None,
     section: Annotated[str | None, Query(max_length=2000)] = None,
+    category: Annotated[str | None, Query(max_length=2000)] = None,
     manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
     brand: Annotated[str | None, Query(max_length=2000)] = None,
     manager: Annotated[str | None, Query(max_length=2000)] = None,
@@ -487,7 +488,7 @@ def search_products(
         "code": code,
         "article": article,
         "barcode": barcode,
-        "section": section,
+        "section": section, "category": category,
         "manufacturer": manufacturer,
         "brand": brand,
         "manager": manager,
@@ -525,6 +526,7 @@ def report_photos(
     article: Annotated[str | None, Query(max_length=2000)] = None,
     barcode: Annotated[str | None, Query(max_length=2000)] = None,
     section: Annotated[str | None, Query(max_length=2000)] = None,
+    category: Annotated[str | None, Query(max_length=2000)] = None,
     manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
     brand: Annotated[str | None, Query(max_length=2000)] = None,
     manager: Annotated[str | None, Query(max_length=2000)] = None,
@@ -557,7 +559,7 @@ def report_photos(
         properties.setdefault(property_name.strip(), []).append(value.strip())
     params = {
         "search": search, "id": id, "name": name, "code": code, "article": article,
-        "barcode": barcode, "section": section, "manufacturer": manufacturer,
+        "barcode": barcode, "section": section, "category": category, "manufacturer": manufacturer,
         "brand": brand, "manager": manager, "country": country, "material": material,
         "color": color, "product_type": product_type, "warehouse": warehouse,
         "availability": availability, "in_stock_only": in_stock_only,
@@ -835,6 +837,9 @@ def run_auto_import_now():
 @router.get("/filters")
 def filters(
     db: Session = Depends(get_db),
+    tree: bool = False,
+    section: str | None = None,
+    category: str | None = None,
     brand: str | None = None,
     manager: str | None = None,
     manufacturer: str | None = None,
@@ -851,7 +856,8 @@ def filters(
         property_name, separator, value = item.partition(":")
         if separator and property_name.strip() and value.strip():
             properties.setdefault(property_name.strip(), []).append(value.strip())
-    return list_filters(db, {
+    data = list_filters(db, {
+        "section": section, "category": category,
         "brand": brand,
         "manager": manager,
         "manufacturer": manufacturer,
@@ -863,6 +869,27 @@ def filters(
         "exclude_yyy": exclude_yyy,
         "properties": properties,
     })
+
+    if tree:
+        from app.services.catalog_categories import category_tree
+        return {"filters": data, "section_tree": category_tree(db)}
+    return data
+
+
+@router.get("/catalog-categories/status", dependencies=[Depends(require_admin)])
+def category_sync_status(db: Session = Depends(get_db)):
+    from app.services.catalog_categories import sync_status
+    return sync_status(db)
+
+
+@router.post("/catalog-categories/sync", dependencies=[Depends(require_heavy_admin)])
+def category_sync():
+    from app.services.catalog_categories import sync_categories
+    result = sync_categories()
+    if result["status"] == "busy":
+        raise HTTPException(409, "Синхронизация уже выполняется")
+    return result
+
 
 @router.get("/meta", response_model=MetaOut)
 def get_meta(db: Session = Depends(get_db)):
@@ -1081,6 +1108,7 @@ def start_xlsx_export(
     article: Annotated[str | None, Query(max_length=2000)] = None,
     barcode: Annotated[str | None, Query(max_length=2000)] = None,
     section: Annotated[str | None, Query(max_length=2000)] = None,
+    category: Annotated[str | None, Query(max_length=2000)] = None,
     manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
     brand: Annotated[str | None, Query(max_length=2000)] = None,
     manager: Annotated[str | None, Query(max_length=2000)] = None,
@@ -1113,7 +1141,7 @@ def start_xlsx_export(
         properties.setdefault(property_name.strip(), []).append(value.strip())
     params = {
         "search": search, "id": id, "name": name, "code": code, "article": article,
-        "barcode": barcode, "section": section, "manufacturer": manufacturer, "brand": brand,
+        "barcode": barcode, "section": section, "category": category, "manufacturer": manufacturer, "brand": brand,
         "manager": manager, "country": country, "material": material, "color": color,
         "product_type": product_type, "warehouse": warehouse, "availability": availability,
         "in_stock_only": in_stock_only, "exclude_yyy": exclude_yyy, "only_new": only_new,
@@ -1194,7 +1222,7 @@ def download_xlsx_export_chunk(job_id: str, offset: Annotated[int, Query(ge=0)] 
 
 
 @router.get("/export.xlsx")
-def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):
+def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, category: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):
     params = locals(); params.pop("db"); columns = params.pop("column")
     add_log(db, "export_xlsx", f"Экспорт Excel; поиск: {search or ''}")
     db.commit()
