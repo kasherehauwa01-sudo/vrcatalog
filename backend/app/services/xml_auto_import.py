@@ -450,6 +450,8 @@ def start_worker() -> None:
 
     def loop() -> None:
         while True:
+            from app.services.catalog_categories import run_category_sync_if_due
+            run_category_sync_if_due()
             run_once()
             from app.services.monthly_promotion import run_scheduled_if_due
             from app.services.product_history import run_history_snapshot_if_due

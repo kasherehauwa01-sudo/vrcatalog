@@ -1,3 +1,6 @@
+import { SectionTree } from "./components/SectionTree";
+import { CategoryNode } from "./categoryTree";
+import { CategorySettings } from "./components/CategorySettings";
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -141,6 +144,7 @@ const exportPriceColumns = ["ЦенаОптовая", "ЦенаКорпорат�
 const defaultExportColumns = ["code", "name", "section"];
 
 const labels: Record<string, string> = {
+  category: "Категория1",
   section: "Раздел",
   manufacturer: "Производитель",
   brand: "Бренд",
@@ -250,6 +254,7 @@ function App() {
   };
   const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ code: p.get("code") ?? "", article: p.get("article") ?? "", name: p.get("name") ?? "", inStockOnly: p.get("inStockOnly") ?? "true", excludeYyy: p.get("excludeYyy") ?? "true", onlyNew: p.get("onlyNew") ?? "false", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
   const [search, setSearch] = useState(initialParams.get("search") ?? "");
+  const [sectionTree, setSectionTree] = useState<CategoryNode[]>([]);
   const [filters, setFilters] = useState<Record<string, string[]>>({});
   const [propertyOptions, setPropertyOptions] = useState<Record<string, string[]>>({});
   const filterLabels = useMemo(() => Object.keys(filters).reduce<Record<string, string>>((result, key) => {
@@ -381,7 +386,7 @@ function App() {
     finally { setLoading(false); }
   };
   useEffect(() => { reload(); }, [params.toString()]);
-  useEffect(() => { Promise.all([api.meta(), api.filters()]).then(([m, f]) => { setMeta(m); setFilters(f); setPropertyOptions(f); }); }, []);
+  useEffect(() => { Promise.all([api.meta(), api.categoryFilters()]).then(([m, f]) => { setMeta(m); setFilters(f.filters); setPropertyOptions(f.filters); setSectionTree(f.section_tree); }); }, []);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const normalized = search.trim();
@@ -546,6 +551,7 @@ function App() {
         dependentParams.set(key === "product_type" ? "productType" : key, serializeFilterValues(values));
       }
     });
+    if (draftActive.category?.length) dependentParams.set("category", serializeFilterValues(draftActive.category));
     setPropertyOptions(await api.filters(dependentParams));
     setPropertyPickerOpen(true);
   };
@@ -1310,6 +1316,7 @@ function App() {
                           <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
                         </Button>
                         <Collapse in={!!openFilterGroups[key]} unmountOnExit>
+                          {key === "section" ? <SectionTree tree={sectionTree} categories={draftActive.category ?? []} sections={draftActive.section ?? []} onChange={(selection) => setDraftActive((current) => ({ ...current, ...selection }))} /> : <>
                           {searchableFilterLabels.has(label) && (
                             <TextField fullWidth size="small" label={`Поиск: ${label}`} value={filterValueSearch[key] ?? ""} onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))} sx={{ mt: 1 }} />
                           )}
@@ -1319,6 +1326,7 @@ function App() {
                             ))}
                             {visibleFilterValues(key).length === 0 && <Typography variant="body2" color="text.secondary">Значения не найдены</Typography>}
                           </Stack>
+                          </>}
                         </Collapse>
                       </Box>
                     ))}
@@ -1373,6 +1381,7 @@ function App() {
                 {settingsTab === "settings" && (
                   <Box>
                     <Typography variant="h6">Настройки</Typography>
+                    <CategorySettings onSynced={async () => { const result = await api.categoryFilters(); setFilters(result.filters); setPropertyOptions(result.filters); setSectionTree(result.section_tree); reload(); }} />
                     <Button
                       variant="contained"
                       startIcon={<UploadFileIcon />}
@@ -1951,7 +1960,7 @@ function App() {
                   <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
                     <Typography variant="body2" fontWeight={700}>Активные условия:</Typography>
                     {Object.entries(active).flatMap(([key, values]) => values.map((value) => (
-                      <Chip key={`${key}-${value}`} label={`${filterLabel(key)}: ${value}`} onDelete={() => removeFilter(key, value)} />
+                      <Chip key={`${key}-${value}`} label={`${filterLabel(key)}: ${key === "category" ? sectionTree.find((node) => (node.id === null ? "uncategorized" : String(node.id)) === value)?.name ?? value : value}`} onDelete={() => removeFilter(key, value)} />
                     )))}
                     {Object.entries(filterFields).filter(isActiveFilterField).map(([key, value]) => (
                       <Chip key={key} label={`${filterFieldLabels[key as keyof FilterFields]}: ${value === "in_stock" ? "В наличии" : value === "out_of_stock" ? "Нет в наличии" : value === "true" ? "Да" : value}`} onDelete={() => removeFilter(key)} />
@@ -2165,6 +2174,7 @@ function App() {
                   {[
                     ["Код", detail.code],
                     ["Артикул", detail.article],
+                    ["Категория1", detail.category1 ?? undefined],
                     ["Раздел", detail.section],
                     ["Вид товара", detail.product_type_name ?? detail.product_type],
                     ["Производитель", detail.manufacturer],

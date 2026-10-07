@@ -4,6 +4,8 @@ export type Product = {
   name: string;
   article?: string;
   section?: string;
+  category1?: string | null;
+  category_id?: number | null;
   product_type?: string;
   product_type_name?: string;
   quantity: number;

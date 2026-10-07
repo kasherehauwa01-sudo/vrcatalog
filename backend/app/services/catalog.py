@@ -121,7 +121,10 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
     if barcode_values:
         q = q.filter(Product.barcodes.any(Barcode.value.in_(barcode_values)))
 
+    q = apply_category_filter(q, params)
     for field in FILTER_FIELDS:
+        if field == "section":
+            continue
         values = _values(params.get(field))
         if values:
             q = q.filter(getattr(Product, field).in_(values))
@@ -614,7 +617,10 @@ def product_query(db: Session, params, eager_load: bool = True):
                 and_(*property_conditions)
             )
         )
+    q = apply_category_filter(q, params)
     for field in FILTER_FIELDS:
+        if field == "section":
+            continue
         if value := params.get(field):
             values = _values(value)
             if len(values) > 1:
@@ -749,3 +755,19 @@ def decorate(product: Product, product_type_names: dict[str, str] | None = None)
     if product_type_names is not None:
         product.product_type_name = product_type_name(code, product_type_names)
     return product
+
+
+def apply_category_filter(query, params):
+    conditions = []
+    sections = _values(params.get("section"))
+    categories = _values(params.get("category"))
+    if sections:
+        conditions.append(Product.section.in_(sections))
+    ids = [int(value) for value in categories if value.isdecimal()]
+    if ids:
+        conditions.append(Product.category_id.in_(ids))
+    if "uncategorized" in categories:
+        conditions.append(Product.category_id.is_(None))
+    if categories and not conditions:
+        return query.filter(False)
+    return query.filter(or_(*conditions)) if conditions else query
