@@ -28,11 +28,14 @@ type BarcodeDetectorInstance = {
 type BarcodeDetectorConstructor = new (options: { formats: string[] }) => BarcodeDetectorInstance;
 type CameraCapabilities = MediaTrackCapabilities & {
   focusMode?: string[];
+  focusDistance?: { min?: number; max?: number; step?: number };
   exposureMode?: string[];
   whiteBalanceMode?: string[];
 };
 type CameraConstraintSet = MediaTrackConstraintSet & {
   focusMode?: string;
+  focusDistance?: number;
+  zoom?: number;
   exposureMode?: string;
   whiteBalanceMode?: string;
 };
@@ -201,6 +204,25 @@ export function BarcodeScanner({ onDetected }: Props) {
         streamRef.current = stream;
         const track = stream.getVideoTracks()[0];
         await enableContinuousFocus(track);
+
+        const cameraCapabilities = track.getCapabilities?.() as CameraCapabilities;
+        if (
+          cameraCapabilities?.focusMode?.includes("manual") &&
+          cameraCapabilities.focusDistance
+        ) {
+          try {
+            await track.applyConstraints({
+              advanced: [{
+                focusMode: "manual",
+                focusDistance: 6,
+                zoom: 2,
+              } as CameraConstraintSet],
+            });
+          } catch {
+            // Оставляем настройки камеры по умолчанию.
+          }
+        }
+
         setTorchAvailable(Boolean(track.getCapabilities && "torch" in track.getCapabilities()));
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
