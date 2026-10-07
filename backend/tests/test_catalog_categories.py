@@ -20,6 +20,27 @@ def fixture():
 
 
 class ParserTests(unittest.TestCase):
+    def test_names_without_title_and_nested_markup(self):
+        categories, sections = service.parse_catalog(
+            '<a href="/catalog/interior/"><span> Интерьер </span></a>'
+            '<a href="/catalog/interior/vases/" title=" "><span>Вазы</span> для цветов</a>'
+        )
+        self.assertEqual(categories[0]['name'], 'Интерьер')
+        self.assertEqual(sections[0]['name'], 'Вазы для цветов')
+        self.assertEqual(sections[0]['parent'], categories[0]['source_path'])
+
+    def test_empty_links_do_not_leak_text_from_other_elements(self):
+        categories, sections = service.parse_catalog(
+            '<a href="/catalog/interior/"><img src="icon.png"></a>'
+            '<span>Не название категории</span>'
+            '<a href="https://other.test/catalog/interior/">Чужой каталог</a>'
+        )
+        self.assertEqual((categories, sections), ([], []))
+
+    def test_conflicting_names_without_title_rejected(self):
+        with self.assertRaises(ValueError):
+            service.parse_catalog('<a href="/catalog/c/">Первое</a><a href="/catalog/c/">Другое</a>')
+
     def test_category_title(self):
         categories, _ = service.parse_catalog('<a href="/catalog/interior/" title="Интерьер">Wrong</a>')
         self.assertEqual(categories[0]['name'], 'Интерьер')
@@ -108,6 +129,20 @@ class SyncTests(unittest.TestCase):
     def test_no_uncategorized_group_without_products(self):
         self.sync()
         self.assertNotIn('Без категории', [node['name'] for node in service.category_tree(self.db)])
+
+    def test_sync_text_links_populates_existing_product_and_tree(self):
+        import re
+        self.db.add(Product(code='text-link', name='Ваза', section='Раздел 0 0'))
+        self.db.commit()
+        html = re.sub(r' title="([^"]+)"></a>', r'>\1</a>', fixture())
+        self.assertEqual(self.sync(html)['status'], 'success')
+        self.db.expire_all()
+        product = self.db.query(Product).filter_by(code='text-link').one()
+        self.assertEqual(product.category1, 'Категория 0')
+        tree = service.category_tree(self.db)
+        self.assertEqual(len(tree), 10)
+        self.assertEqual(tree[0]['name'], product.category1)
+        self.assertIn({'name': product.section, 'product_count': 1}, tree[0]['subcategories'])
 
     def test_xml_import_and_reimport(self):
         self.sync()
