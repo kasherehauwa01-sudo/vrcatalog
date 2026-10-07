@@ -105,6 +105,27 @@ class IntegrationFiltersResponse(BaseModel):
     filters: list[IntegrationFilter]
 
 
+class IntegrationCatalogNode(BaseModel):
+    id: str
+    code: str
+    name: str
+    parent_id: str | None = None
+    children: list["IntegrationCatalogNode"] = Field(default_factory=list)
+
+
+class IntegrationBrandOut(BaseModel):
+    value: str
+    label: str
+
+
+class IntegrationBrandsResponse(BaseModel):
+    items: list[IntegrationBrandOut]
+    page: int
+    page_size: int
+    total: int
+    pages: int
+
+
 class IntegrationExcludedProduct(BaseModel):
     code: str | None = Field(default=None, max_length=128)
     article: str | None = Field(default=None, max_length=255)
@@ -152,6 +173,9 @@ class IntegrationProductOut(BaseModel):
     article: str | None
     name: str
     image_url: str | None
+    category_id: str | None = None
+    category_name: str | None = None
+    brand: str | None = None
     properties: list[IntegrationProductPropertyOut]
 
 

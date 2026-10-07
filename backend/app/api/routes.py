@@ -38,9 +38,9 @@ from app.db.session import SessionLocal, get_db
 from app.core.config import settings
 from app.importer.xml_importer import XMLCatalogImporter, public_image_url
 from app.models.catalog import Favorite, HistorySnapshot, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
-from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, HistorySettingOut, HistorySettingUpdateIn, HistorySnapshotDetailOut, HistorySnapshotPreviewOut, HistorySnapshotSummaryOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationCategoryMapResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, PhotoReportDownloadIn, PhotoReportPageOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
+from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, HistorySettingOut, HistorySettingUpdateIn, HistorySnapshotDetailOut, HistorySnapshotPreviewOut, HistorySnapshotSummaryOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationBrandsResponse, IntegrationCatalogNode, IntegrationCategoryMapResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, PhotoReportDownloadIn, PhotoReportPageOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
-from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
+from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_brands, integration_catalog_tree, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
@@ -104,6 +104,34 @@ def integration_product_filters(
     return {"filters": integration_filter_definitions(db)}
 
 
+@router.get("/integration/catalog-tree", response_model=list[IntegrationCatalogNode])
+def integration_catalog_tree_endpoint(
+    db: Session = Depends(get_db),
+    authorization: Annotated[str | None, Header()] = None,
+):
+    require_integration_token(authorization)
+    return integration_catalog_tree(db)
+
+
+@router.get("/integration/brands", response_model=IntegrationBrandsResponse)
+def integration_brands_endpoint(
+    search: Annotated[str, Query(max_length=255)] = "",
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=500)] = 100,
+    db: Session = Depends(get_db),
+    authorization: Annotated[str | None, Header()] = None,
+):
+    require_integration_token(authorization)
+    values, total = integration_brands(db, search, page, page_size)
+    return {
+        "items": [{"value": value, "label": value} for value in values],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": ceil(total / page_size) if total else 0,
+    }
+
+
 @router.get("/integration/product-filters/{filter_key}/options")
 def integration_product_filter_options(
     filter_key: str,
@@ -148,6 +176,9 @@ def integration_products_search(
                 "article": str(product.article) if product.article is not None else None,
                 "name": product.name,
                 "image_url": public_image_url(product.images[0].image_url) if product.images else None,
+                "category_id": product.section.strip() if product.section and product.section.strip() else None,
+                "category_name": product.section.strip() if product.section and product.section.strip() else None,
+                "brand": product.brand.strip() if product.brand and product.brand.strip() else None,
                 "properties": [
                     {
                         "key": f"property:{item.name}",

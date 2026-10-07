@@ -269,6 +269,121 @@ class InternalProductApiTests(unittest.TestCase):
         self.assertEqual(options_response.json()["items"], [{"value": "24 см", "label": "24 см"}])
         self.assertEqual(options_response.json()["total"], 1)
 
+    def test_integration_catalog_tree_requires_auth_and_returns_real_flat_sections(self):
+        endpoint = "/api/integration/catalog-tree"
+        self.assertEqual(self.client.get(endpoint).status_code, 401)
+        self.assertEqual(
+            self.client.get(endpoint, headers={"Authorization": "Bearer wrong"}).status_code,
+            403,
+        )
+
+        response = self.client.get(
+            endpoint,
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        nodes = response.json()
+        names = [node["name"] for node in nodes]
+        self.assertEqual(names, sorted(names, key=lambda value: (value.casefold(), value)))
+        self.assertIn("Семена", names)
+        seed_node = next(node for node in nodes if node["name"] == "Семена")
+        self.assertEqual(seed_node, {
+            "id": "Семена",
+            "code": "Семена",
+            "name": "Семена",
+            "parent_id": None,
+            "children": [],
+        })
+
+    def test_integration_catalog_tree_empty_catalog(self):
+        with Session(self.engine) as db:
+            db.query(Product).delete()
+            db.commit()
+
+        response = self.client.get(
+            "/api/integration/catalog-tree",
+            headers={"Authorization": "Bearer test-internal-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
+    def test_integration_brands_normalizes_searches_and_paginates(self):
+        with Session(self.engine) as db:
+            products = db.query(Product).order_by(Product.id).all()
+            for product, brand in zip(
+                products,
+                [" Pasabahce ", "pasabahce", "Rondell", "REGENT", "", "   ", None],
+                strict=True,
+            ):
+                product.brand = brand
+            db.commit()
+
+        endpoint = "/api/integration/brands"
+        headers = {"Authorization": "Bearer test-internal-token"}
+        self.assertEqual(self.client.get(endpoint).status_code, 401)
+        first_page = self.client.get(endpoint, params={"page": 1, "page_size": 2}, headers=headers)
+        second_page = self.client.get(endpoint, params={"page": 2, "page_size": 2}, headers=headers)
+        partial = self.client.get(endpoint, params={"search": "SABA", "page_size": 100}, headers=headers)
+
+        self.assertEqual(first_page.status_code, 200)
+        self.assertEqual(first_page.json()["total"], 3)
+        self.assertEqual(first_page.json()["pages"], 2)
+        self.assertEqual(len(first_page.json()["items"]), 2)
+        self.assertEqual(len(second_page.json()["items"]), 1)
+        self.assertEqual(partial.json()["items"], [{"value": "Pasabahce", "label": "Pasabahce"}])
+        all_values = [
+            item["value"]
+            for item in first_page.json()["items"] + second_page.json()["items"]
+        ]
+        self.assertEqual(len({value.casefold() for value in all_values}), 3)
+        self.assertTrue(all(value.strip() for value in all_values))
+
+    def test_product_filter_options_explains_legacy_422_contract(self):
+        headers = {"Authorization": "Bearer test-internal-token"}
+        unknown = self.client.get(
+            "/api/integration/product-filters/subcategory/options",
+            headers=headers,
+        )
+        oversized = self.client.get(
+            "/api/integration/product-filters/brand/options",
+            params={"page_size": 500},
+            headers=headers,
+        )
+
+        self.assertEqual(unknown.status_code, 422)
+        self.assertEqual(unknown.json()["detail"], "Неизвестный фильтр: subcategory")
+        self.assertEqual(oversized.status_code, 422)
+
+    def test_integration_search_combines_categories_and_brands(self):
+        with Session(self.engine) as db:
+            products = db.query(Product).order_by(Product.id).all()
+            products[0].section, products[0].brand = " Посуда ", "Regent"
+            products[1].section, products[1].brand = "Посуда", "Rondell"
+            products[2].section, products[2].brand = "Семена", "Regent"
+            db.commit()
+
+        response = self.client.post(
+            "/api/integration/products/search",
+            headers={"Authorization": "Bearer test-internal-token"},
+            json={
+                "filters": {
+                    "section": ["Посуда", "Семена"],
+                    "brand": ["Regent"],
+                },
+                "page": 1,
+                "page_size": 50,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["total"], 2)
+        items = {item["code"]: item for item in response.json()["items"]}
+        self.assertEqual(set(items), {"P-1", "P-3"})
+        self.assertEqual(items["P-1"]["category_id"], "Посуда")
+        self.assertEqual(items["P-1"]["brand"], "Regent")
+
     def test_integration_search_combines_property_filters_with_or_and(self):
         with Session(self.engine) as db:
             products = db.query(Product).order_by(Product.id).all()
