@@ -26,6 +26,19 @@ type BarcodeDetectorInstance = {
   detect(source: HTMLVideoElement): Promise<BarcodeDetectorResult[]>;
 };
 type BarcodeDetectorConstructor = new (options: { formats: string[] }) => BarcodeDetectorInstance;
+type CameraCapabilities = MediaTrackCapabilities & {
+  focusMode?: string[];
+  focusDistance?: { min?: number; max?: number; step?: number };
+  exposureMode?: string[];
+  whiteBalanceMode?: string[];
+};
+type CameraConstraintSet = MediaTrackConstraintSet & {
+  focusMode?: string;
+  focusDistance?: number;
+  zoom?: number;
+  exposureMode?: string;
+  whiteBalanceMode?: string;
+};
 
 declare global {
   interface Window {
@@ -84,6 +97,36 @@ export function BarcodeScanner({ onDetected }: Props) {
   const audioContextRef = useRef<AudioContext | null>(null);
   const busyRef = useRef(false);
   const soundEnabledRef = useRef(true);
+
+  const enableContinuousFocus = async (track: MediaStreamTrack) => {
+    if (!track.getCapabilities) return;
+    const capabilities = track.getCapabilities() as CameraCapabilities;
+    const advanced: CameraConstraintSet = {};
+    if (capabilities.focusMode?.includes("continuous")) advanced.focusMode = "continuous";
+    else if (capabilities.focusMode?.includes("single-shot")) advanced.focusMode = "single-shot";
+    if (capabilities.exposureMode?.includes("continuous")) advanced.exposureMode = "continuous";
+    if (capabilities.whiteBalanceMode?.includes("continuous")) advanced.whiteBalanceMode = "continuous";
+    if (!Object.keys(advanced).length) return;
+    try {
+      await track.applyConstraints({ advanced: [advanced] });
+    } catch {
+      // Не все мобильные браузеры применяют заявленные camera constraints.
+      // Сканирование продолжает работать с настройками камеры по умолчанию.
+    }
+  };
+
+  const refocusCamera = async () => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track?.getCapabilities) return;
+    const capabilities = track.getCapabilities() as CameraCapabilities;
+    if (!capabilities.focusMode?.includes("single-shot")) return;
+    try {
+      await track.applyConstraints({ advanced: [{ focusMode: "single-shot" } as CameraConstraintSet] });
+      window.setTimeout(() => void enableContinuousFocus(track), 350);
+    } catch {
+      // Камера продолжит использовать собственный алгоритм автофокуса.
+    }
+  };
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -147,7 +190,12 @@ export function BarcodeScanner({ onDetected }: Props) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
-          video: { facingMode: { ideal: "environment" } },
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            frameRate: { ideal: 30, min: 15 },
+          },
         });
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
@@ -155,6 +203,26 @@ export function BarcodeScanner({ onDetected }: Props) {
         }
         streamRef.current = stream;
         const track = stream.getVideoTracks()[0];
+        await enableContinuousFocus(track);
+
+        const cameraCapabilities = track.getCapabilities?.() as CameraCapabilities;
+        if (
+          cameraCapabilities?.focusMode?.includes("manual") &&
+          cameraCapabilities.focusDistance
+        ) {
+          try {
+            await track.applyConstraints({
+              advanced: [{
+                focusMode: "manual",
+                focusDistance: 6,
+                zoom: 2,
+              } as CameraConstraintSet],
+            });
+          } catch {
+            // Оставляем настройки камеры по умолчанию.
+          }
+        }
+
         setTorchAvailable(Boolean(track.getCapabilities && "torch" in track.getCapabilities()));
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -230,22 +298,26 @@ export function BarcodeScanner({ onDetected }: Props) {
         <DialogContent sx={{ p: 2, bgcolor: "#08111f" }}>
           <Stack spacing={2} sx={{ height: "100%" }}>
             <Box sx={{ position: "relative", minHeight: 300, flex: 1, overflow: "hidden", borderRadius: 4, bgcolor: "#000" }}>
-              <Box component="video" ref={videoRef} muted playsInline sx={{ width: "100%", height: "100%", objectFit: "cover", position: "absolute" }} />
-              <Box sx={{ position: "absolute", left: "8%", right: "8%", top: "38%", height: 110, border: "3px solid", borderColor: status === "not-found" ? "error.main" : "primary.light", borderRadius: 3, boxShadow: "0 0 0 999px rgba(0,0,0,.38)" }} />
-              <Typography sx={{ position: "absolute", bottom: 22, width: "100%", textAlign: "center", color: "white", fontWeight: 700 }}>
-                {status === "searching" ? <><CircularProgress size={18} color="inherit" sx={{ mr: 1 }} />Ищем товар…</> : status === "not-found" ? "Товар не найден" : "Наведите камеру на штрихкод EAN-13"}
+              <Box component="video" ref={videoRef} muted playsInline onClick={() => void refocusCamera()} sx={{ width: "100%", height: "100%", objectFit: "cover", position: "absolute", cursor: "crosshair" }} />
+              <Box sx={{ pointerEvents: "none", position: "absolute", left: "8%", right: "8%", top: "38%", height: 110, border: "3px solid", borderColor: status === "not-found" ? "error.main" : "primary.light", borderRadius: 3, boxShadow: "0 0 0 999px rgba(0,0,0,.38)" }} />
+              <Typography sx={{ pointerEvents: "none", position: "absolute", bottom: 22, width: "100%", textAlign: "center", color: "white", fontWeight: 700 }}>
+                {status === "searching" ? <><CircularProgress size={18} color="inherit" sx={{ mr: 1 }} />Ищем товар…</> : status === "not-found" ? "Товар не найден" : "Наведите камеру на штрихкод EAN-13. Коснитесь изображения для фокусировки"}
               </Typography>
             </Box>
             {error && <Alert severity="warning">{error}</Alert>}
-            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ color: "white" }}>
-              <FormControlLabel control={<Switch checked={soundEnabled} onChange={(_, checked) => { setSoundEnabled(checked); soundEnabledRef.current = checked; }} />} label="Звуковые сигналы" />
-              <Button color="inherit" startIcon={torchEnabled ? <FlashlightOnIcon /> : <FlashlightOffIcon />} disabled={!torchAvailable} onClick={toggleTorch}>
+            <Stack direction={{ xs: "column", sm: "row" }} gap={1.5} alignItems="stretch" justifyContent="space-between" sx={{ color: "white" }}>
+              <FormControlLabel
+                sx={{ m: 0, minHeight: 58, px: 2, border: "1px solid rgba(255,255,255,.3)", borderRadius: 3, "& .MuiFormControlLabel-label": { fontSize: 18, fontWeight: 700 }, "& .MuiSwitch-root": { transform: "scale(1.2)", mr: 1 } }}
+                control={<Switch checked={soundEnabled} onChange={(_, checked) => { setSoundEnabled(checked); soundEnabledRef.current = checked; }} />}
+                label="Звуковые сигналы"
+              />
+              <Button size="large" sx={{ minHeight: 58, px: 3, fontSize: 18, border: "1px solid rgba(255,255,255,.3)" }} color="inherit" startIcon={torchEnabled ? <FlashlightOnIcon fontSize="large" /> : <FlashlightOffIcon fontSize="large" />} disabled={!torchAvailable} onClick={toggleTorch}>
                 Фонарик
               </Button>
             </Stack>
-            <Stack direction="row" spacing={1}>
-              <TextField fullWidth size="small" label="EAN-13 вручную" value={manualBarcode} error={manualBarcode.length > 0 && !isEan13(manualBarcode)} onChange={(event) => setManualBarcode(event.target.value.replace(/\D/g, "").slice(0, 13))} sx={{ bgcolor: "white", borderRadius: 1 }} />
-              <Button variant="contained" disabled={!isEan13(manualBarcode) || status === "searching"} onClick={() => void processBarcode(manualBarcode)}>Найти</Button>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+              <TextField fullWidth size="medium" label="EAN-13 вручную" value={manualBarcode} error={manualBarcode.length > 0 && !isEan13(manualBarcode)} onChange={(event) => setManualBarcode(event.target.value.replace(/\D/g, "").slice(0, 13))} inputProps={{ inputMode: "numeric", pattern: "[0-9]*", style: { fontSize: 22, letterSpacing: "0.08em", minHeight: 32 } }} sx={{ bgcolor: "white", borderRadius: 2, "& .MuiInputLabel-root": { fontSize: 17 } }} />
+              <Button size="large" sx={{ minHeight: 62, minWidth: 120, fontSize: 18 }} variant="contained" disabled={!isEan13(manualBarcode) || status === "searching"} onClick={() => void processBarcode(manualBarcode)}>Найти</Button>
             </Stack>
           </Stack>
         </DialogContent>

@@ -1,5 +1,6 @@
 import logging
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
+from xml.etree.ElementTree import Element
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -54,15 +55,15 @@ PRICE_NAMES = {
 }
 
 
-def _tag_name(node: ET.Element) -> str:
+def _tag_name(node: Element) -> str:
     return node.tag.rsplit("}", 1)[-1]
 
 
-def _text(node: ET.Element | None) -> str | None:
+def _text(node: Element | None) -> str | None:
     return node.text.strip() if node is not None and node.text and node.text.strip() else None
 
 
-def _child_text(node: ET.Element, *names: str) -> str | None:
+def _child_text(node: Element, *names: str) -> str | None:
     wanted = {name.lower() for name in names}
     for child in node:
         if _tag_name(child).lower() in wanted:
@@ -70,7 +71,7 @@ def _child_text(node: ET.Element, *names: str) -> str | None:
     return None
 
 
-def _children_by_names(product: ET.Element, names: Iterable[str]) -> list[ET.Element]:
+def _children_by_names(product: Element, names: Iterable[str]) -> list[Element]:
     lowered = {n.lower() for n in names}
     return [child for child in product if _tag_name(child).lower() in lowered]
 
@@ -95,7 +96,7 @@ def _clean_xml_text(text: str) -> str:
     return "".join(char for char in text if _is_valid_xml_char(char))
 
 
-def _parse_xml_root(path: Path) -> ET.Element:
+def _parse_xml_root(path: Path) -> Element:
     raw = path.read_bytes()
     parse_errors: list[Exception] = []
     try:
@@ -115,12 +116,12 @@ def _parse_xml_root(path: Path) -> ET.Element:
     raise parse_errors[-1]
 
 
-def _product_code(item: ET.Element) -> str | None:
+def _product_code(item: Element) -> str | None:
     code = _child_text(item, "Код") or item.get("Код") or item.get("code")
     return code.strip() if code and code.strip() else None
 
 
-def _product_nodes(root: ET.Element) -> list[ET.Element]:
+def _product_nodes(root: Element) -> list[Element]:
     products = root.findall(".//Товар") or root.findall(".//product")
     if products:
         return products
@@ -137,6 +138,9 @@ class XMLCatalogImporter:
     """Независимый сервис импорта: XML читается только здесь, API работает уже с БД."""
 
     def import_file(self, db: Session, path: Path, filename: str) -> ImportRun:
+        from app.services.catalog_categories import lock_import, category_lookup, normalize_section
+        lock_import(db)
+        lookup = category_lookup(db)
         previous_source = db.info.get("change_source")
         db.info["change_source"] = "xml"
         run = ImportRun(filename=filename, status="running")
@@ -158,6 +162,7 @@ class XMLCatalogImporter:
             for item in products:
                 try:
                     parsed_product = self._parse_product(item)
+                    parsed_product.category_id, parsed_product.category1 = lookup.get(normalize_section(parsed_product.section), (None, None))
                     if parsed_product.code in seen_codes:
                         add_log(db, "xml_duplicate_product_code", f"Duplicate product code in source: {parsed_product.code}", "warning")
                         continue
@@ -256,6 +261,8 @@ class XMLCatalogImporter:
             "name": product.name,
             "article": product.article,
             "section": product.section,
+            "category_id": product.category_id,
+            "category1": product.category1,
             "product_type": product.product_type,
             "description": product.description,
             "quantity": product.quantity,
@@ -442,7 +449,7 @@ class XMLCatalogImporter:
         )
         return True
 
-    def _product_field(self, item: ET.Element, field: str) -> str | None:
+    def _product_field(self, item: Element, field: str) -> str | None:
         """Читает поле товара только из XML-тегов/атрибутов, которые соответствуют этому полю."""
         names = PRODUCT_FIELD_TAGS[field]
         value = _child_text(item, *names)
@@ -450,7 +457,7 @@ class XMLCatalogImporter:
             value = next((item.get(name) for name in names if item.get(name)), None)
         return value.strip() if value and value.strip() else None
 
-    def _parse_product(self, item: ET.Element) -> Product:
+    def _parse_product(self, item: Element) -> Product:
         code = self._product_field(item, "code")
         name = self._product_field(item, "name")
         section = self._product_field(item, "section")
@@ -478,7 +485,7 @@ class XMLCatalogImporter:
         """Превращает путь изображения из XML в полный внешний URL."""
         return public_image_url(raw_path) or ""
 
-    def _parse_images(self, item: ET.Element) -> list[ProductImage]:
+    def _parse_images(self, item: Element) -> list[ProductImage]:
         """Сохраняет все изображения товара из XML с исходным порядком."""
         images: list[ProductImage] = []
         for images_root in _children_by_names(item, ["Изображения", "images"]):
@@ -489,7 +496,7 @@ class XMLCatalogImporter:
                 images.append(ProductImage(image_order=len(images) + 1, image_url=self._image_url(raw_path)))
         return images
 
-    def _parse_prices(self, item: ET.Element, product: Product) -> None:
+    def _parse_prices(self, item: Element, product: Product) -> None:
         price_nodes = [child for child in item if _tag_name(child).lower() in {"цена", "price"}]
         for price_root in _children_by_names(item, ["Цены", "prices"]):
             price_nodes.extend(list(price_root))
@@ -504,14 +511,14 @@ class XMLCatalogImporter:
                 product.prices.append(Price(price_type=raw_type, price_value=price_value))
                 seen.add(key)
 
-    def _parse_stocks(self, item: ET.Element, product: Product) -> None:
+    def _parse_stocks(self, item: Element, product: Product) -> None:
         for stock_root in _children_by_names(item, ["Склады", "Остатки", "stocks"]):
             for stock in list(stock_root):
                 warehouse = _child_text(stock, "КодСклада") or stock.get("КодСклада") or stock.get("Название") or stock.get("name") or _tag_name(stock)
                 quantity = _child_text(stock, "Количество") or _text(stock) or stock.get("Количество") or stock.get("quantity")
                 product.stocks.append(Stock(warehouse=warehouse, quantity=_float(quantity)))
 
-    def _parse_properties(self, item: ET.Element) -> list[dict[str, str | None]]:
+    def _parse_properties(self, item: Element) -> list[dict[str, str | None]]:
         result: list[dict[str, str | None]] = []
         for prop_root in _children_by_names(item, ["Свойства", "Характеристики", "properties"]):
             for prop in list(prop_root):
@@ -544,12 +551,12 @@ class XMLCatalogImporter:
             if code == "PROP_MATERIAL" or name in {"Материал", "Материал основной"}: product.material = value
             if code == "PROP_COLOR" or name == "Цвет": product.color = value
 
-    def _parse_analogs(self, item: ET.Element, product: Product) -> None:
+    def _parse_analogs(self, item: Element, product: Product) -> None:
         for analog_root in _children_by_names(item, ["Аналоги", "analogs"]):
             for analog in list(analog_root):
                 product.analogs.append(Analog(code=_child_text(analog, "Код") or analog.get("Код") or analog.get("code") or _text(analog), name=_child_text(analog, "Название") or analog.get("Название") or analog.get("name")))
 
-    def _parse_barcodes(self, item: ET.Element, product: Product, properties: list[dict[str, str | None]]) -> None:
+    def _parse_barcodes(self, item: Element, product: Product, properties: list[dict[str, str | None]]) -> None:
         values: list[str] = []
         values.extend(prop["value"] or "" for prop in properties if prop["name"] == "Штрихкод")
         for barcode_root in _children_by_names(item, ["Штрихкоды", "barcodes"]):

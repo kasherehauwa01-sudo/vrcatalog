@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import settings
+from app.core.admin_auth import require_admin
 from app.db.session import Base, get_db
 from app.main import app
 from app.models.catalog import HistorySetting, HistorySnapshot, HistorySnapshotItem, HistorySnapshotItemPrice, Price, Product, ProductTypeSetting, ServiceLog
@@ -28,6 +29,7 @@ class ProductHistoryTests(unittest.TestCase):
                 yield db
 
         app.dependency_overrides[get_db] = override_db
+        app.dependency_overrides[require_admin] = lambda: True
         cls.client = TestClient(app)
         cls.original_token = settings.internal_api_token
         settings.internal_api_token = "history-test-token"

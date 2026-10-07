@@ -32,6 +32,8 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String(512), index=True)
     article: Mapped[str | None] = mapped_column(String(255), index=True)
     section: Mapped[str | None] = mapped_column(String(255), index=True)
+    category_id: Mapped[int | None] = mapped_column(ForeignKey("catalog_categories.id"), index=True)
+    category1: Mapped[str | None] = mapped_column(String(255))
     product_type: Mapped[str | None] = mapped_column(String(255), index=True)
     description: Mapped[str | None] = mapped_column(Text)
     quantity: Mapped[float] = mapped_column(Float, default=0)
@@ -193,6 +195,7 @@ class XmlServerSetting(Base):
     port: Mapped[int] = mapped_column(Integer, default=21)
     username: Mapped[str] = mapped_column(String(255), default="")
     password: Mapped[str] = mapped_column(String(255), default="")
+    encrypted_password: Mapped[str] = mapped_column(Text, default="")
     xml_dir: Mapped[str] = mapped_column(String(512), default="/xml")
     connection_attempts: Mapped[int] = mapped_column(Integer, default=5)
     retry_delay_seconds: Mapped[int] = mapped_column(Integer, default=3)
@@ -251,6 +254,16 @@ class HistorySetting(Base):
     snapshot_type: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     save_for_next_month: Mapped[bool] = mapped_column(Boolean, default=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AdminSession(Base):
+    __tablename__ = "admin_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
 
 
 class HistorySnapshot(Base):
@@ -394,3 +407,36 @@ class NotificationEmailHistory(Base):
     status: Mapped[str] = mapped_column(String(32), index=True)
     error_message: Mapped[str | None] = mapped_column(Text)
     duration_ms: Mapped[float] = mapped_column(Float, default=0)
+
+
+class CatalogCategory(Base):
+    __tablename__ = "catalog_categories"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    source_path: Mapped[str] = mapped_column(String(512), unique=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CatalogSectionMapping(Base):
+    __tablename__ = "catalog_section_mappings"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    category_id: Mapped[int] = mapped_column(ForeignKey("catalog_categories.id"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    normalized_name: Mapped[str] = mapped_column(String(255), index=True)
+    source_path: Mapped[str] = mapped_column(String(512), unique=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class CatalogSyncState(Base):
+    __tablename__ = "catalog_sync_state"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    category_count: Mapped[int] = mapped_column(Integer, default=0)
+    section_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)

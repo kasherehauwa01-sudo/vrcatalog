@@ -68,6 +68,8 @@ class ProductImageOut(BaseModel):
     url: str
     model_config = ConfigDict(from_attributes=True)
 class ProductListOut(BaseModel):
+    category_id: int | None = None
+    category1: str | None = Field(default=None, title="Категория1")
     id: int; code: str; name: str; article: str | None; section: str | None; product_type: str | None = None; product_type_name: str | None = None; quantity: float
     is_new: bool
     images: list[ProductImageOut] = []
@@ -413,12 +415,20 @@ class XmlServerSettingIn(BaseModel):
     host: str
     port: int
     username: str
-    password: str
+    password: str = ""
     xml_dir: str
     connection_attempts: int = Field(default=5, ge=1, le=10)
     retry_delay_seconds: int = Field(default=3, ge=0, le=60)
 
-class XmlServerSettingOut(XmlServerSettingIn):
+class XmlServerSettingOut(BaseModel):
+    protocol: str
+    host: str
+    port: int
+    username: str
+    password_configured: bool
+    xml_dir: str
+    connection_attempts: int
+    retry_delay_seconds: int
     id: int
     created_at: datetime
     updated_at: datetime
@@ -471,6 +481,10 @@ class MailSettingOut(BaseModel):
 
 class TestMailIn(BaseModel):
     email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class AdminLoginIn(BaseModel):
+    password: str = Field(min_length=1, max_length=1024)
 
 
 class ScenarioSettingIn(BaseModel):

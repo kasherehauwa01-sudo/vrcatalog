@@ -20,7 +20,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from typing import Annotated, Any, Callable, Literal
 
-from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Query, Request, Response as FastAPIResponse, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from openpyxl import Workbook
@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import SessionLocal, get_db
 from app.core.config import settings
+from app.core.admin_auth import COOKIE_NAME, check_login_rate_limit, create_admin_session, require_admin, require_heavy_admin, rotate_csrf, verify_admin_password
 from app.importer.xml_importer import XMLCatalogImporter, public_image_url
 from app.models.catalog import Favorite, HistorySnapshot, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
 from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, HistorySettingOut, HistorySettingUpdateIn, HistorySnapshotDetailOut, HistorySnapshotPreviewOut, HistorySnapshotSummaryOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationBrandsResponse, IntegrationCatalogNode, IntegrationCategoryMapResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, PhotoReportDownloadIn, PhotoReportPageOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
@@ -80,6 +81,42 @@ def filtered_product_ids_subquery(db: Session, params: dict):
 @router.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@router.post("/admin/login")
+def admin_login(payload: AdminLoginIn, request: Request, response: FastAPIResponse, db: Session = Depends(get_db)):
+    client = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+    check_login_rate_limit(client)
+    if not verify_admin_password(payload.password):
+        raise HTTPException(401, "Неверные учетные данные")
+    session_token, csrf_token, _ = create_admin_session(db)
+    response.set_cookie(
+        COOKIE_NAME,
+        session_token,
+        max_age=settings.admin_session_hours * 3600,
+        httponly=True,
+        secure=settings.environment.casefold() == "production",
+        samesite="lax",
+        path="/",
+    )
+    return {"authenticated": True, "csrf_token": csrf_token}
+
+
+@router.get("/admin/session")
+def admin_session(session: AdminSession = Depends(require_admin), db: Session = Depends(get_db)):
+    return {"authenticated": True, "csrf_token": rotate_csrf(db, session)}
+
+
+@router.post("/admin/logout")
+def admin_logout(
+    response: FastAPIResponse,
+    session: AdminSession = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    db.delete(session)
+    db.commit()
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"authenticated": False}
 
 
 def require_integration_token(authorization: str | None) -> None:
@@ -296,14 +333,14 @@ def _history_summary(snapshot: HistorySnapshot) -> dict:
     }
 
 
-@router.get("/history/monthly-promotion/settings", response_model=HistorySettingOut)
+@router.get("/history/monthly-promotion/settings", response_model=HistorySettingOut, dependencies=[Depends(require_admin)])
 def history_settings(db: Session = Depends(get_db)):
     setting = get_history_setting(db)
     db.commit()
     return setting
 
 
-@router.put("/history/monthly-promotion/settings", response_model=HistorySettingOut)
+@router.put("/history/monthly-promotion/settings", response_model=HistorySettingOut, dependencies=[Depends(require_admin)])
 def update_history_settings(payload: HistorySettingUpdateIn, db: Session = Depends(get_db)):
     setting = get_history_setting(db)
     setting.save_for_next_month = payload.save_for_next_month
@@ -312,7 +349,7 @@ def update_history_settings(payload: HistorySettingUpdateIn, db: Session = Depen
     return setting
 
 
-@router.get("/history/monthly-promotion/preview", response_model=HistorySnapshotPreviewOut)
+@router.get("/history/monthly-promotion/preview", response_model=HistorySnapshotPreviewOut, dependencies=[Depends(require_admin)])
 def history_snapshot_preview(period: str | None = None, db: Session = Depends(get_db)):
     setting = get_history_setting(db)
     today = (datetime.utcnow() + timedelta(hours=3)).date()
@@ -322,7 +359,7 @@ def history_snapshot_preview(period: str | None = None, db: Session = Depends(ge
     return result
 
 
-@router.post("/history/monthly-promotion", response_model=HistorySnapshotSummaryOut)
+@router.post("/history/monthly-promotion", response_model=HistorySnapshotSummaryOut, dependencies=[Depends(require_admin)])
 def create_history_snapshot(period: str | None = None, db: Session = Depends(get_db)):
     setting = get_history_setting(db)
     today = (datetime.utcnow() + timedelta(hours=3)).date()
@@ -333,12 +370,12 @@ def create_history_snapshot(period: str | None = None, db: Session = Depends(get
     return _history_summary(snapshot)
 
 
-@router.get("/history/monthly-promotion", response_model=list[HistorySnapshotSummaryOut])
+@router.get("/history/monthly-promotion", response_model=list[HistorySnapshotSummaryOut], dependencies=[Depends(require_admin)])
 def history_snapshots(db: Session = Depends(get_db)):
     return [_history_summary(snapshot) for snapshot in list_snapshots(db)]
 
 
-@router.get("/history/monthly-promotion/{period}", response_model=HistorySnapshotDetailOut)
+@router.get("/history/monthly-promotion/{period}", response_model=HistorySnapshotDetailOut, dependencies=[Depends(require_admin)])
 def history_snapshot(period: str, search: str = "", db: Session = Depends(get_db)):
     snapshot, items = snapshot_by_period(db, _history_period(period), search)
     if snapshot is None:
@@ -346,23 +383,35 @@ def history_snapshot(period: str, search: str = "", db: Session = Depends(get_db
     return {**_history_summary(snapshot), "items": items}
 
 
-@router.post("/import", response_model=MetaOut)
+@router.post("/import", response_model=MetaOut, dependencies=[Depends(require_heavy_admin)])
 def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    if not file.filename.lower().endswith(".xml"):
+    if not (file.filename or "").lower().endswith(".xml"):
         raise HTTPException(400, "Загрузите XML-файл")
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xml") as tmp:
-        tmp.write(file.file.read())
-        path = Path(tmp.name)
+    limit = settings.max_xml_upload_mb * 1024 * 1024
+    written = 0
+    temporary = tempfile.NamedTemporaryFile(delete=False, suffix=".xml")
+    path = Path(temporary.name)
     try:
+        with temporary:
+            while chunk := file.file.read(1024 * 1024):
+                written += len(chunk)
+                if written > limit:
+                    raise HTTPException(413, "XML-файл превышает допустимый размер")
+                temporary.write(chunk)
+        if not written:
+            raise HTTPException(400, "XML-файл пуст")
         XMLCatalogImporter().import_file(db, path, file.filename)
-    except Exception as exc:
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Ошибка ручного XML-импорта")
+        raise HTTPException(400, "Не удалось обработать XML-файл") from None
+    finally:
         path.unlink(missing_ok=True)
-        raise HTTPException(400, f"Ошибка импорта XML. Файл: {file.filename}. Причина: {exc}") from exc
-    path.unlink(missing_ok=True)
     return meta(db)
 
 @router.get("/products", response_model=list[ProductListOut], response_model_exclude_none=True)
-def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le=10000)] = 60, offset: Annotated[int, Query(ge=0)] = 0, search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False, property: str | None = None, property_value: str | None = None, authorization: Annotated[str | None, Header()] = None, x_internal_token: Annotated[str | None, Header()] = None):
+def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le=10000)] = 60, offset: Annotated[int, Query(ge=0)] = 0, search: str | None = None, section: str | None = None, category: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False, property: str | None = None, property_value: str | None = None, authorization: Annotated[str | None, Header()] = None, x_internal_token: Annotated[str | None, Header()] = None):
     if (property is None) != (property_value is None):
         raise HTTPException(422, "Параметры property и property_value должны передаваться вместе")
     if property is not None:
@@ -380,7 +429,7 @@ def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le
         if not secrets.compare_digest(provided_token, configured_token):
             raise HTTPException(403, "Недостаточно прав для доступа")
     params = {
-        "search": search, "section": section, "manufacturer": manufacturer,
+        "search": search, "section": section, "category": category, "manufacturer": manufacturer,
         "brand": brand, "manager": manager, "country": country,
         "material": material, "color": color, "in_stock": in_stock,
         "price_min": price_min, "price_max": price_max,
@@ -413,7 +462,7 @@ def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le
 
 
 @router.get("/products/count")
-def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False):
+def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, category: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False):
     params = locals(); params.pop("db")
     return {"count": product_query(db, params).count()}
 
@@ -428,6 +477,7 @@ def search_products(
     article: Annotated[str | None, Query(max_length=2000)] = None,
     barcode: Annotated[str | None, Query(max_length=2000)] = None,
     section: Annotated[str | None, Query(max_length=2000)] = None,
+    category: Annotated[str | None, Query(max_length=2000)] = None,
     manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
     brand: Annotated[str | None, Query(max_length=2000)] = None,
     manager: Annotated[str | None, Query(max_length=2000)] = None,
@@ -469,7 +519,7 @@ def search_products(
         "code": code,
         "article": article,
         "barcode": barcode,
-        "section": section,
+        "section": section, "category": category,
         "manufacturer": manufacturer,
         "brand": brand,
         "manager": manager,
@@ -507,6 +557,7 @@ def report_photos(
     article: Annotated[str | None, Query(max_length=2000)] = None,
     barcode: Annotated[str | None, Query(max_length=2000)] = None,
     section: Annotated[str | None, Query(max_length=2000)] = None,
+    category: Annotated[str | None, Query(max_length=2000)] = None,
     manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
     brand: Annotated[str | None, Query(max_length=2000)] = None,
     manager: Annotated[str | None, Query(max_length=2000)] = None,
@@ -539,7 +590,7 @@ def report_photos(
         properties.setdefault(property_name.strip(), []).append(value.strip())
     params = {
         "search": search, "id": id, "name": name, "code": code, "article": article,
-        "barcode": barcode, "section": section, "manufacturer": manufacturer,
+        "barcode": barcode, "section": section, "category": category, "manufacturer": manufacturer,
         "brand": brand, "manager": manager, "country": country, "material": material,
         "color": color, "product_type": product_type, "warehouse": warehouse,
         "availability": availability, "in_stock_only": in_stock_only,
@@ -550,7 +601,7 @@ def report_photos(
     return photo_report_page(db, params, page, page_size)
 
 
-@router.post("/reports/photos/download")
+@router.post("/reports/photos/download", dependencies=[Depends(require_heavy_admin)])
 def download_report_photos(payload: PhotoReportDownloadIn, db: Session = Depends(get_db)):
     try:
         archive_path, _ = create_photo_archive(db, payload.images)
@@ -563,7 +614,7 @@ def download_report_photos(payload: PhotoReportDownloadIn, db: Session = Depends
         background=BackgroundTask(archive_path.unlink, missing_ok=True),
     )
 
-@router.delete("/products")
+@router.delete("/products", dependencies=[Depends(require_admin)])
 def delete_products(product_ids: list[int] = Body(...), db: Session = Depends(get_db)):
     deleted = db.query(Product).filter(Product.id.in_(product_ids)).delete(synchronize_session=False)
     add_log(db, "products_delete", f"Удалено товаров: {deleted}")
@@ -620,7 +671,7 @@ def analog_selection_settings(db: Session = Depends(get_db)):
     }
 
 
-@router.put("/analog-selection-settings", response_model=AnalogSelectionSettingOut)
+@router.put("/analog-selection-settings", response_model=AnalogSelectionSettingOut, dependencies=[Depends(require_admin)])
 def update_analog_selection_settings(payload: AnalogSelectionSettingIn, db: Session = Depends(get_db)):
     setting = get_analog_settings(db)
     setting.primary_properties_json = json.dumps(payload.primary_properties, ensure_ascii=False)
@@ -631,7 +682,7 @@ def update_analog_selection_settings(payload: AnalogSelectionSettingIn, db: Sess
     return analog_selection_settings(db)
 
 
-@router.patch("/products/{product_id}/product-type")
+@router.patch("/products/{product_id}/product-type", dependencies=[Depends(require_admin)])
 def update_product_product_type(product_id: int, payload: ProductTypeUpdateIn, db: Session = Depends(get_db)):
     product = db.get(Product, product_id)
     if not product:
@@ -642,11 +693,19 @@ def update_product_product_type(product_id: int, payload: ProductTypeUpdateIn, d
     return {"ok": True, "product_type": product.product_type}
 
 
-@router.get("/xml-server-settings", response_model=XmlServerSettingOut)
+@router.get("/xml-server-settings", response_model=XmlServerSettingOut, dependencies=[Depends(require_admin)])
 def xml_server_settings(db: Session = Depends(get_db)):
-    return get_xml_server_setting(db)
+    setting = get_xml_server_setting(db)
+    return {
+        "id": setting.id, "protocol": setting.protocol, "host": setting.host,
+        "port": setting.port, "username": setting.username,
+        "password_configured": bool(setting.encrypted_password), "xml_dir": setting.xml_dir,
+        "connection_attempts": setting.connection_attempts,
+        "retry_delay_seconds": setting.retry_delay_seconds,
+        "created_at": setting.created_at, "updated_at": setting.updated_at,
+    }
 
-@router.put("/xml-server-settings", response_model=XmlServerSettingOut)
+@router.put("/xml-server-settings", response_model=XmlServerSettingOut, dependencies=[Depends(require_admin)])
 def update_xml_server_settings(payload: XmlServerSettingIn, db: Session = Depends(get_db)):
     if payload.protocol.upper() != "FTP":
         raise HTTPException(400, "Пока поддерживается только FTP")
@@ -655,15 +714,18 @@ def update_xml_server_settings(payload: XmlServerSettingIn, db: Session = Depend
     setting.host = payload.host.strip()
     setting.port = payload.port
     setting.username = payload.username.strip()
-    setting.password = payload.password
+    if payload.password:
+        from app.core.credentials import encrypt_secret
+        setting.encrypted_password = encrypt_secret(payload.password)
+        setting.password = ""
     setting.xml_dir = payload.xml_dir.strip() or "/"
     setting.connection_attempts = payload.connection_attempts
     setting.retry_delay_seconds = payload.retry_delay_seconds
     db.commit()
     db.refresh(setting)
-    return setting
+    return xml_server_settings(db)
 
-@router.post("/xml-server-settings/test", response_model=FtpConnectionTestOut)
+@router.post("/xml-server-settings/test", response_model=FtpConnectionTestOut, dependencies=[Depends(require_heavy_admin)])
 def test_xml_server_settings(db: Session = Depends(get_db)):
     success, message = test_connection(db)
     return {"success": success, "message": message}
@@ -685,12 +747,12 @@ def mail_setting_response(item) -> dict:
     }
 
 
-@router.get("/mail-settings", response_model=MailSettingOut)
+@router.get("/mail-settings", response_model=MailSettingOut, dependencies=[Depends(require_admin)])
 def mail_settings(db: Session = Depends(get_db)):
     return mail_setting_response(get_mail_setting(db))
 
 
-@router.put("/mail-settings", response_model=MailSettingOut)
+@router.put("/mail-settings", response_model=MailSettingOut, dependencies=[Depends(require_admin)])
 def update_mail_settings(payload: MailSettingIn, db: Session = Depends(get_db)):
     item = get_mail_setting(db)
     for field in ("smtp_host", "smtp_port", "encryption", "username", "sender_name", "sender_email"):
@@ -702,34 +764,35 @@ def update_mail_settings(payload: MailSettingIn, db: Session = Depends(get_db)):
     return mail_setting_response(item)
 
 
-@router.post("/mail-settings/test")
+@router.post("/mail-settings/test", dependencies=[Depends(require_heavy_admin)])
 def send_test_mail(payload: TestMailIn, db: Session = Depends(get_db)):
     try:
         send_email(db, [payload.email], "Тест уведомлений VR Catalog", "<h2>Тестовое письмо отправлено успешно</h2>")
         db.commit()
         return {"success": True, "message": "Тестовое письмо отправлено успешно."}
-    except Exception as exc:
+    except Exception:
         db.rollback()
+        logger.exception("Ошибка отправки тестового письма")
         item = get_mail_setting(db)
         item.connection_status = "error"
-        item.last_error = str(exc)
+        item.last_error = "Ошибка отправки тестового письма"
         db.commit()
-        return {"success": False, "message": f"Ошибка отправки: {exc}"}
+        return {"success": False, "message": "Не удалось отправить тестовое письмо."}
 
 
-@router.get("/notification-scenarios/monthly-promotion", response_model=ScenarioSettingOut)
+@router.get("/notification-scenarios/monthly-promotion", response_model=ScenarioSettingOut, dependencies=[Depends(require_admin)])
 def monthly_promotion_settings(db: Session = Depends(get_db)):
     item = get_scenario_setting(db)
     return {"code": item.code, "enabled": item.enabled, "send_time": item.send_time, "recipients": scenario_recipients(item)}
 
 
-@router.get("/notification-scenarios", response_model=list[ScenarioSummaryOut])
+@router.get("/notification-scenarios", response_model=list[ScenarioSummaryOut], dependencies=[Depends(require_admin)])
 def notification_scenarios(db: Session = Depends(get_db)):
     item = get_scenario_setting(db)
     return [{"code": item.code, "name": "Акция месяца", "enabled": item.enabled}]
 
 
-@router.patch("/notification-scenarios/{code}/enabled", response_model=ScenarioSummaryOut)
+@router.patch("/notification-scenarios/{code}/enabled", response_model=ScenarioSummaryOut, dependencies=[Depends(require_admin)])
 def toggle_notification_scenario(code: str, enabled: bool = Body(embed=True), db: Session = Depends(get_db)):
     if code != "monthly_promotion":
         raise HTTPException(404, "Сценарий не найден")
@@ -740,7 +803,7 @@ def toggle_notification_scenario(code: str, enabled: bool = Body(embed=True), db
     return {"code": item.code, "name": "Акция месяца", "enabled": item.enabled}
 
 
-@router.put("/notification-scenarios/monthly-promotion", response_model=ScenarioSettingOut)
+@router.put("/notification-scenarios/monthly-promotion", response_model=ScenarioSettingOut, dependencies=[Depends(require_admin)])
 def update_monthly_promotion_settings(payload: ScenarioSettingIn, db: Session = Depends(get_db)):
     item = get_scenario_setting(db)
     item.enabled = payload.enabled
@@ -751,12 +814,15 @@ def update_monthly_promotion_settings(payload: ScenarioSettingIn, db: Session = 
     return {"code": item.code, "enabled": item.enabled, "send_time": item.send_time, "recipients": scenario_recipients(item)}
 
 
-@router.post("/notification-scenarios/monthly-promotion/run", response_model=ScenarioRunOut)
+@router.post("/notification-scenarios/monthly-promotion/run", response_model=ScenarioRunOut, dependencies=[Depends(require_heavy_admin)])
 def run_monthly_promotion(db: Session = Depends(get_db)):
-    return run_scenario(db)
+    result = run_scenario(db)
+    if result.get("status") == "error":
+        result["error"] = "Не удалось выполнить сценарий уведомления"
+    return result
 
 
-@router.get("/notification-scenarios/monthly-promotion/preview", response_model=ScenarioRunOut)
+@router.get("/notification-scenarios/monthly-promotion/preview", response_model=ScenarioRunOut, dependencies=[Depends(require_admin)])
 def preview_monthly_promotion(db: Session = Depends(get_db)):
     from app.models.catalog import ProductTypeChange
     from app.services.monthly_promotion import build_preview, consolidate_changes
@@ -767,7 +833,7 @@ def preview_monthly_promotion(db: Session = Depends(get_db)):
     return {"status": "preview", "changes": len(changes), "sent": 0, "recipients": scenario_recipients(get_scenario_setting(db)), "html": html}
 
 
-@router.get("/notification-scenarios/{code}/history", response_model=list[NotificationHistoryOut])
+@router.get("/notification-scenarios/{code}/history", response_model=list[NotificationHistoryOut], dependencies=[Depends(require_admin)])
 def notification_scenario_history(
     code: str,
     search: str = "",
@@ -790,11 +856,11 @@ def notification_scenario_history(
         })
     return result
 
-@router.get("/auto-import-state", response_model=AutoImportStateOut)
+@router.get("/auto-import-state", response_model=AutoImportStateOut, dependencies=[Depends(require_admin)])
 def auto_import_state(db: Session = Depends(get_db)):
     return get_auto_import_state(db)
 
-@router.post("/auto-import/run")
+@router.post("/auto-import/run", dependencies=[Depends(require_heavy_admin)])
 def run_auto_import_now():
     started = start_manual_import()
     return {"started": started}
@@ -802,6 +868,9 @@ def run_auto_import_now():
 @router.get("/filters")
 def filters(
     db: Session = Depends(get_db),
+    tree: bool = False,
+    section: str | None = None,
+    category: str | None = None,
     brand: str | None = None,
     manager: str | None = None,
     manufacturer: str | None = None,
@@ -818,7 +887,8 @@ def filters(
         property_name, separator, value = item.partition(":")
         if separator and property_name.strip() and value.strip():
             properties.setdefault(property_name.strip(), []).append(value.strip())
-    return list_filters(db, {
+    data = list_filters(db, {
+        "section": section, "category": category,
         "brand": brand,
         "manager": manager,
         "manufacturer": manufacturer,
@@ -830,6 +900,27 @@ def filters(
         "exclude_yyy": exclude_yyy,
         "properties": properties,
     })
+
+    if tree:
+        from app.services.catalog_categories import category_tree
+        return {"filters": data, "section_tree": category_tree(db)}
+    return data
+
+
+@router.get("/catalog-categories/status", dependencies=[Depends(require_admin)])
+def category_sync_status(db: Session = Depends(get_db)):
+    from app.services.catalog_categories import sync_status
+    return sync_status(db)
+
+
+@router.post("/catalog-categories/sync", dependencies=[Depends(require_heavy_admin)])
+def category_sync():
+    from app.services.catalog_categories import sync_categories
+    result = sync_categories()
+    if result["status"] == "busy":
+        raise HTTPException(409, "Синхронизация уже выполняется")
+    return result
+
 
 @router.get("/meta", response_model=MetaOut)
 def get_meta(db: Session = Depends(get_db)):
@@ -852,7 +943,7 @@ def warehouse_codes(db: Session = Depends(get_db)):
     codes = [code for code, in db.query(Stock.warehouse).filter(Stock.warehouse.isnot(None)).distinct().order_by(Stock.warehouse).all()]
     return {"codes": codes}
 
-@router.post("/warehouses", response_model=WarehouseSettingOut)
+@router.post("/warehouses", response_model=WarehouseSettingOut, dependencies=[Depends(require_admin)])
 def create_warehouse(payload: WarehouseSettingIn, db: Session = Depends(get_db)):
     code = payload.code.strip()
     name = payload.name.strip()
@@ -866,7 +957,7 @@ def create_warehouse(payload: WarehouseSettingIn, db: Session = Depends(get_db))
     db.refresh(warehouse)
     return warehouse
 
-@router.put("/warehouses/{warehouse_id}", response_model=WarehouseSettingOut)
+@router.put("/warehouses/{warehouse_id}", response_model=WarehouseSettingOut, dependencies=[Depends(require_admin)])
 def update_warehouse(warehouse_id: int, payload: WarehouseSettingIn, db: Session = Depends(get_db)):
     warehouse = db.get(WarehouseSetting, warehouse_id)
     if not warehouse:
@@ -884,7 +975,7 @@ def update_warehouse(warehouse_id: int, payload: WarehouseSettingIn, db: Session
     db.refresh(warehouse)
     return warehouse
 
-@router.delete("/warehouses/{warehouse_id}")
+@router.delete("/warehouses/{warehouse_id}", dependencies=[Depends(require_admin)])
 def delete_warehouse(warehouse_id: int, db: Session = Depends(get_db)):
     warehouse = db.get(WarehouseSetting, warehouse_id)
     if not warehouse:
@@ -903,7 +994,7 @@ def product_type_codes(db: Session = Depends(get_db)):
     codes = [code for code, in db.query(Product.product_type).filter(Product.product_type.isnot(None)).distinct().order_by(Product.product_type).all()]
     return {"codes": codes}
 
-@router.post("/product-types", response_model=ProductTypeSettingOut)
+@router.post("/product-types", response_model=ProductTypeSettingOut, dependencies=[Depends(require_admin)])
 def create_product_type(payload: ProductTypeSettingIn, db: Session = Depends(get_db)):
     code = payload.code.strip()
     name = payload.name.strip()
@@ -917,7 +1008,7 @@ def create_product_type(payload: ProductTypeSettingIn, db: Session = Depends(get
     db.refresh(item)
     return item
 
-@router.put("/product-types/{product_type_id}", response_model=ProductTypeSettingOut)
+@router.put("/product-types/{product_type_id}", response_model=ProductTypeSettingOut, dependencies=[Depends(require_admin)])
 def update_product_type(product_type_id: int, payload: ProductTypeSettingIn, db: Session = Depends(get_db)):
     item = db.get(ProductTypeSetting, product_type_id)
     if not item:
@@ -935,7 +1026,7 @@ def update_product_type(product_type_id: int, payload: ProductTypeSettingIn, db:
     db.refresh(item)
     return item
 
-@router.delete("/product-types/{product_type_id}")
+@router.delete("/product-types/{product_type_id}", dependencies=[Depends(require_admin)])
 def delete_product_type(product_type_id: int, db: Session = Depends(get_db)):
     item = db.get(ProductTypeSetting, product_type_id)
     if not item:
@@ -971,7 +1062,7 @@ def notification_read(notification_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True}
 
-@router.get("/logs", response_model=list[ServiceLogOut])
+@router.get("/logs", response_model=list[ServiceLogOut], dependencies=[Depends(require_admin)])
 def logs(db: Session = Depends(get_db)):
     return (
         db.query(ServiceLog)
@@ -1031,14 +1122,15 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
             logger.info("Экспорт %s завершён: обработано=%s, ожидалось=%s, время=%.1f сек., RSS=%s МБ", job_id, processed, product_count, time.monotonic() - started_at, current_rss_mb())
         with export_jobs_lock:
             export_jobs[job_id].update(status="ready", path=path, filename=filename, media_type=media_type)
-    except Exception as exc:
+    except Exception:
+        logger.exception("Ошибка формирования Excel export job_id=%s", job_id)
         if path:
             Path(path).unlink(missing_ok=True)
         with export_jobs_lock:
-            export_jobs[job_id].update(status="error", error=str(exc) or "Не удалось сформировать Excel")
+            export_jobs[job_id].update(status="error", error="Не удалось сформировать Excel")
 
 
-@router.post("/exports/xlsx")
+@router.post("/exports/xlsx", dependencies=[Depends(require_heavy_admin)])
 def start_xlsx_export(
     search: Annotated[str | None, Query(max_length=255)] = None,
     id: Annotated[int | None, Query(ge=1)] = None,
@@ -1047,6 +1139,7 @@ def start_xlsx_export(
     article: Annotated[str | None, Query(max_length=2000)] = None,
     barcode: Annotated[str | None, Query(max_length=2000)] = None,
     section: Annotated[str | None, Query(max_length=2000)] = None,
+    category: Annotated[str | None, Query(max_length=2000)] = None,
     manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
     brand: Annotated[str | None, Query(max_length=2000)] = None,
     manager: Annotated[str | None, Query(max_length=2000)] = None,
@@ -1079,7 +1172,7 @@ def start_xlsx_export(
         properties.setdefault(property_name.strip(), []).append(value.strip())
     params = {
         "search": search, "id": id, "name": name, "code": code, "article": article,
-        "barcode": barcode, "section": section, "manufacturer": manufacturer, "brand": brand,
+        "barcode": barcode, "section": section, "category": category, "manufacturer": manufacturer, "brand": brand,
         "manager": manager, "country": country, "material": material, "color": color,
         "product_type": product_type, "warehouse": warehouse, "availability": availability,
         "in_stock_only": in_stock_only, "exclude_yyy": exclude_yyy, "only_new": only_new,
@@ -1160,7 +1253,7 @@ def download_xlsx_export_chunk(job_id: str, offset: Annotated[int, Query(ge=0)] 
 
 
 @router.get("/export.xlsx")
-def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):
+def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, category: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):
     params = locals(); params.pop("db"); columns = params.pop("column")
     add_log(db, "export_xlsx", f"Экспорт Excel; поиск: {search or ''}")
     db.commit()

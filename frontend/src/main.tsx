@@ -1,5 +1,19 @@
+import { SectionTree } from "./components/SectionTree";
+import { CategoryNode } from "./categoryTree";
+import { CategorySettings } from "./components/CategorySettings";
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/vr/catalog/sw.js", {
+      scope: "/vr/catalog/",
+    }).catch((error) => {
+      console.error("VR Catalog service worker registration failed:", error);
+    });
+  });
+}
+
 import {
   alpha,
   AppBar,
@@ -112,9 +126,6 @@ const theme = createTheme({
   },
 });
 
-const SETTINGS_PASSWORD = "8852285";
-const DELETE_PASSWORD = "8852285";
-
 const exportMainColumns = [
   ["photo", "Фото"],
   ["article", "Артикул"],
@@ -133,6 +144,7 @@ const exportPriceColumns = ["ЦенаОптовая", "ЦенаКорпорат�
 const defaultExportColumns = ["code", "name", "section"];
 
 const labels: Record<string, string> = {
+  category: "Категория1",
   section: "Раздел",
   manufacturer: "Производитель",
   brand: "Бренд",
@@ -242,6 +254,7 @@ function App() {
   };
   const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ code: p.get("code") ?? "", article: p.get("article") ?? "", name: p.get("name") ?? "", inStockOnly: p.get("inStockOnly") ?? "true", excludeYyy: p.get("excludeYyy") ?? "true", onlyNew: p.get("onlyNew") ?? "false", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
   const [search, setSearch] = useState(initialParams.get("search") ?? "");
+  const [sectionTree, setSectionTree] = useState<CategoryNode[]>([]);
   const [filters, setFilters] = useState<Record<string, string[]>>({});
   const [propertyOptions, setPropertyOptions] = useState<Record<string, string[]>>({});
   const filterLabels = useMemo(() => Object.keys(filters).reduce<Record<string, string>>((result, key) => {
@@ -269,8 +282,6 @@ function App() {
   const [openSettingsGroups, setOpenSettingsGroups] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [deletePassword, setDeletePassword] = useState("");
-  const [deletePasswordError, setDeletePasswordError] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportColumns, setExportColumns] = useState<string[]>(defaultExportColumns);
   const [exportWarehouses, setExportWarehouses] = useState<Warehouse[]>([]);
@@ -375,7 +386,20 @@ function App() {
     finally { setLoading(false); }
   };
   useEffect(() => { reload(); }, [params.toString()]);
-  useEffect(() => { Promise.all([api.meta(), api.filters()]).then(([m, f]) => { setMeta(m); setFilters(f); setPropertyOptions(f); }); }, []);
+  useEffect(() => { Promise.all([api.meta(), api.categoryFilters()]).then(([m, f]) => { setMeta(m); setFilters(f.filters); setPropertyOptions(f.filters); setSectionTree(f.section_tree); }); }, []);
+  useEffect(() => {
+    if (!filtersOpen) return;
+    let cancelled = false;
+    api.categoryFilters().then((result) => {
+      if (cancelled) return;
+      setFilters(result.filters);
+      setPropertyOptions(result.filters);
+      setSectionTree(result.section_tree);
+    }).catch((error) => {
+      if (!cancelled) setCatalogError(error instanceof Error ? error.message : "Не удалось обновить разделы");
+    });
+    return () => { cancelled = true; };
+  }, [filtersOpen]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const normalized = search.trim();
@@ -398,6 +422,14 @@ function App() {
     };
     window.addEventListener("popstate", restore); return () => window.removeEventListener("popstate", restore);
   }, []);
+  useEffect(() => {
+    const expired = () => {
+      setSettingsUnlocked(false);
+      if (tab === "settings") setSettingsPasswordOpen(true);
+    };
+    window.addEventListener("vrcatalog-admin-expired", expired);
+    return () => window.removeEventListener("vrcatalog-admin-expired", expired);
+  }, [tab]);
   useEffect(() => {
     if (tab === "settings" && settingsTab === "settings") {
       openGeneralSettings();
@@ -426,14 +458,15 @@ function App() {
     setSettingsPasswordError(false);
   };
   const openSettings = () => {
-    if (settingsUnlocked) {
-      setTab("settings");
-      return;
-    }
-    setSettingsPasswordOpen(true);
+    void api.adminSession().then((authenticated) => {
+      if (authenticated) { setSettingsUnlocked(true); setTab("settings"); }
+      else { setSettingsUnlocked(false); setSettingsPasswordOpen(true); }
+    });
   };
-  const unlockSettings = () => {
-    if (settingsPassword !== SETTINGS_PASSWORD) {
+  const unlockSettings = async () => {
+    try {
+      await api.adminLogin(settingsPassword);
+    } catch {
       setSettingsPasswordError(true);
       return;
     }
@@ -531,6 +564,7 @@ function App() {
         dependentParams.set(key === "product_type" ? "productType" : key, serializeFilterValues(values));
       }
     });
+    if (draftActive.category?.length) dependentParams.set("category", serializeFilterValues(draftActive.category));
     setPropertyOptions(await api.filters(dependentParams));
     setPropertyPickerOpen(true);
   };
@@ -582,7 +616,8 @@ function App() {
     pushCatalogParams(next);
   };
   const clickableDetailFilters: Record<string, string> = {
-    Раздел: "section",
+    Категория: "category",
+    Подкатегория: "section",
     "Вид товара": "product_type",
     Производитель: "manufacturer",
     Менеджер: "manager",
@@ -590,16 +625,16 @@ function App() {
     "Код маркировки": "property:Код маркировки",
     Коллекция: "property:Коллекция",
   };
-  const renderDetailValue = (label: string, value: string, propertyFilter?: string) => {
+  const renderDetailValue = (label: string, value: string, propertyFilter?: string, filterValue = value) => {
     const filterKey = propertyFilter ?? clickableDetailFilters[label];
     if (!filterKey) return value;
     return (
       <Box
         component="a"
-        href={catalogFilterUrl(filterKey, value)}
+        href={catalogFilterUrl(filterKey, filterValue)}
         onClick={(event) => {
           event.preventDefault();
-          openCatalogFilter(filterKey, value);
+          openCatalogFilter(filterKey, filterValue);
         }}
         sx={{
           color: "primary.main",
@@ -625,15 +660,9 @@ function App() {
     setSelectedIds(allSelected ? [] : products.map((product) => product.id));
   const closeDeleteDialog = () => {
     setDeleteDialogOpen(false);
-    setDeletePassword("");
-    setDeletePasswordError(false);
   };
   const deleteSelected = async () => {
     if (!selectedIds.length) return;
-    if (deletePassword !== DELETE_PASSWORD) {
-      setDeletePasswordError(true);
-      return;
-    }
     await api.deleteProducts(selectedIds);
     closeDeleteDialog();
     reload();
@@ -946,7 +975,10 @@ function App() {
             color="error"
             variant="contained"
             startIcon={<DeleteIcon />}
-            onClick={() => setDeleteDialogOpen(true)}
+            onClick={async () => {
+              if (await api.adminSession()) setDeleteDialogOpen(true);
+              else setSettingsPasswordOpen(true);
+            }}
             sx={{ position: "fixed", top: 16, right: 24, zIndex: (muiTheme) => muiTheme.zIndex.modal - 1 }}
           >
             Удалить выбранные ({selectedIds.length})
@@ -1006,20 +1038,20 @@ function App() {
                 label="Пароль"
                 value={settingsPassword}
                 error={settingsPasswordError}
-                helperText={settingsPasswordError ? "Неверный пароль" : "Введите пароль для доступа к вкладке"}
+                helperText={settingsPasswordError ? "Неверные учетные данные или слишком много попыток" : "Введите пароль администратора"}
                 onChange={(event) => {
                   setSettingsPassword(event.target.value);
                   setSettingsPasswordError(false);
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") unlockSettings();
+                  if (event.key === "Enter") void unlockSettings();
                 }}
                 sx={{ mt: 1 }}
               />
             </DialogContent>
             <DialogActions>
               <Button onClick={closeSettingsPassword}>Отмена</Button>
-              <Button variant="contained" onClick={unlockSettings}>Войти</Button>
+              <Button variant="contained" onClick={() => void unlockSettings()}>Войти</Button>
             </DialogActions>
           </Dialog>
 
@@ -1061,22 +1093,7 @@ function App() {
               <Typography sx={{ mb: 2 }}>
                 Вы действительно хотите удалить выбранные товары ({selectedIds.length})? Это действие нельзя отменить.
               </Typography>
-              <TextField
-                autoFocus
-                fullWidth
-                type="password"
-                label="Пароль"
-                value={deletePassword}
-                error={deletePasswordError}
-                helperText={deletePasswordError ? "Неверный пароль" : "Введите пароль для подтверждения удаления"}
-                onChange={(event) => {
-                  setDeletePassword(event.target.value);
-                  setDeletePasswordError(false);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") deleteSelected();
-                }}
-              />
+              <Typography color="text.secondary">Операция будет выполнена от имени текущей административной сессии.</Typography>
             </DialogContent>
             <DialogActions>
               <Button onClick={closeDeleteDialog}>Отмена</Button>
@@ -1313,6 +1330,7 @@ function App() {
                           <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
                         </Button>
                         <Collapse in={!!openFilterGroups[key]} unmountOnExit>
+                          {key === "section" ? <SectionTree tree={sectionTree} categories={draftActive.category ?? []} sections={draftActive.section ?? []} onChange={(selection) => setDraftActive((current) => ({ ...current, ...selection }))} /> : <>
                           {searchableFilterLabels.has(label) && (
                             <TextField fullWidth size="small" label={`Поиск: ${label}`} value={filterValueSearch[key] ?? ""} onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))} sx={{ mt: 1 }} />
                           )}
@@ -1322,6 +1340,7 @@ function App() {
                             ))}
                             {visibleFilterValues(key).length === 0 && <Typography variant="body2" color="text.secondary">Значения не найдены</Typography>}
                           </Stack>
+                          </>}
                         </Collapse>
                       </Box>
                     ))}
@@ -1370,9 +1389,13 @@ function App() {
                   <Tab value="history" label={'История цен "Акция месяца"'} />
                   <Tab value="logs" label="Логи" />
                 </Tabs>
+                <Button size="small" onClick={async () => { await api.adminLogout(); setSettingsUnlocked(false); setTab("catalog"); }} sx={{ mb: 2 }}>
+                  Выйти из режима администратора
+                </Button>
                 {settingsTab === "settings" && (
                   <Box>
                     <Typography variant="h6">Настройки</Typography>
+                    <CategorySettings onSynced={async () => { const result = await api.categoryFilters(); setFilters(result.filters); setPropertyOptions(result.filters); setSectionTree(result.section_tree); reload(); }} />
                     <Button
                       variant="contained"
                       startIcon={<UploadFileIcon />}
@@ -1454,9 +1477,9 @@ function App() {
                           }
                         />
                         <TextField
-                          label="Пароль"
+                          label={xmlServerForm.password_configured ? "Новый пароль (оставьте пустым, чтобы не менять)" : "Пароль"}
                           type="password"
-                          value={xmlServerForm.password}
+                          value={xmlServerForm.password ?? ""}
                           onChange={(e) =>
                             setXmlServerForm({ ...xmlServerForm, password: e.target.value })
                           }
@@ -1951,7 +1974,7 @@ function App() {
                   <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
                     <Typography variant="body2" fontWeight={700}>Активные условия:</Typography>
                     {Object.entries(active).flatMap(([key, values]) => values.map((value) => (
-                      <Chip key={`${key}-${value}`} label={`${filterLabel(key)}: ${value}`} onDelete={() => removeFilter(key, value)} />
+                      <Chip key={`${key}-${value}`} label={`${filterLabel(key)}: ${key === "category" ? sectionTree.find((node) => (node.id === null ? "uncategorized" : String(node.id)) === value)?.name ?? value : value}`} onDelete={() => removeFilter(key, value)} />
                     )))}
                     {Object.entries(filterFields).filter(isActiveFilterField).map(([key, value]) => (
                       <Chip key={key} label={`${filterFieldLabels[key as keyof FilterFields]}: ${value === "in_stock" ? "В наличии" : value === "out_of_stock" ? "Нет в наличии" : value === "true" ? "Да" : value}`} onDelete={() => removeFilter(key)} />
@@ -2165,7 +2188,8 @@ function App() {
                   {[
                     ["Код", detail.code],
                     ["Артикул", detail.article],
-                    ["Раздел", detail.section],
+                    ["Категория", detail.category1?.trim() || "Без категории", "category", detail.category_id == null ? "uncategorized" : String(detail.category_id)],
+                    ["Подкатегория", detail.section],
                     ["Вид товара", detail.product_type_name ?? detail.product_type],
                     ["Производитель", detail.manufacturer],
                     ["Менеджер", detail.manager],
@@ -2178,14 +2202,14 @@ function App() {
                     ["Штрихкоды", detail.barcodes.map((b) => b.value).join(", ")],
                   ]
                     .filter(([, value]) => value)
-                    .map(([label, value, propertyFilter]) => {
+                    .map(([label, value, propertyFilter, filterValue]) => {
                       const characteristicLabel = String(label);
                       return (
                         <Typography key={characteristicLabel}>
                           <Box component="span" fontWeight={800}>
                             {characteristicLabel}:
                           </Box>{" "}
-                          {renderDetailValue(characteristicLabel, String(value), propertyFilter)}
+                          {renderDetailValue(characteristicLabel, String(value), propertyFilter, filterValue)}
                         </Typography>
                       );
                     })}

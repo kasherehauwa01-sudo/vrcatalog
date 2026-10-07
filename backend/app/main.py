@@ -23,11 +23,17 @@ Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 app = FastAPI(
     title=settings.app_name,
     root_path=settings.normalized_base_path,
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json",
+    docs_url="/api/docs" if settings.enable_api_docs else None,
+    redoc_url="/api/redoc" if settings.enable_api_docs else None,
+    openapi_url="/api/openapi.json" if settings.enable_api_docs else None,
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.parsed_cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Internal-Token", "X-CSRF-Token"],
+)
 app.include_router(router, prefix="/api")
 app.include_router(internal_router, prefix="/api")
 app.include_router(history_router, prefix="/api")

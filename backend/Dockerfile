@@ -17,4 +17,11 @@ RUN python -c "from app.api.routes import router"
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
 
+RUN groupadd --gid 10001 vrcatalog \
+    && useradd --uid 10001 --gid vrcatalog --no-create-home --shell /usr/sbin/nologin vrcatalog \
+    && mkdir -p /app/uploads \
+    && chown -R vrcatalog:vrcatalog /app /app/uploads
+
+USER vrcatalog
+
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

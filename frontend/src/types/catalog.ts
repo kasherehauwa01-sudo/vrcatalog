@@ -4,6 +4,8 @@ export type Product = {
   name: string;
   article?: string;
   section?: string;
+  category1?: string | null;
+  category_id?: number | null;
   product_type?: string;
   product_type_name?: string;
   quantity: number;
@@ -134,7 +136,8 @@ export type XmlServerSetting = {
   host: string;
   port: number;
   username: string;
-  password: string;
+  password?: string;
+  password_configured: boolean;
   xml_dir: string;
   connection_attempts: number;
   retry_delay_seconds: number;
