@@ -1,5 +1,16 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/vr/catalog/sw.js", {
+      scope: "/vr/catalog/",
+    }).catch((error) => {
+      console.error("VR Catalog service worker registration failed:", error);
+    });
+  });
+}
+
 import {
   alpha,
   AppBar,
