@@ -616,7 +616,8 @@ function App() {
     pushCatalogParams(next);
   };
   const clickableDetailFilters: Record<string, string> = {
-    Раздел: "section",
+    Категория: "category",
+    Подкатегория: "section",
     "Вид товара": "product_type",
     Производитель: "manufacturer",
     Менеджер: "manager",
@@ -624,16 +625,16 @@ function App() {
     "Код маркировки": "property:Код маркировки",
     Коллекция: "property:Коллекция",
   };
-  const renderDetailValue = (label: string, value: string, propertyFilter?: string) => {
+  const renderDetailValue = (label: string, value: string, propertyFilter?: string, filterValue = value) => {
     const filterKey = propertyFilter ?? clickableDetailFilters[label];
     if (!filterKey) return value;
     return (
       <Box
         component="a"
-        href={catalogFilterUrl(filterKey, value)}
+        href={catalogFilterUrl(filterKey, filterValue)}
         onClick={(event) => {
           event.preventDefault();
-          openCatalogFilter(filterKey, value);
+          openCatalogFilter(filterKey, filterValue);
         }}
         sx={{
           color: "primary.main",
@@ -2187,8 +2188,8 @@ function App() {
                   {[
                     ["Код", detail.code],
                     ["Артикул", detail.article],
-                    ["Категория1", detail.category1?.trim() || "Без категории"],
-                    ["Раздел", detail.section],
+                    ["Категория", detail.category1?.trim() || "Без категории", "category", detail.category_id == null ? "uncategorized" : String(detail.category_id)],
+                    ["Подкатегория", detail.section],
                     ["Вид товара", detail.product_type_name ?? detail.product_type],
                     ["Производитель", detail.manufacturer],
                     ["Менеджер", detail.manager],
@@ -2201,14 +2202,14 @@ function App() {
                     ["Штрихкоды", detail.barcodes.map((b) => b.value).join(", ")],
                   ]
                     .filter(([, value]) => value)
-                    .map(([label, value, propertyFilter]) => {
+                    .map(([label, value, propertyFilter, filterValue]) => {
                       const characteristicLabel = String(label);
                       return (
                         <Typography key={characteristicLabel}>
                           <Box component="span" fontWeight={800}>
                             {characteristicLabel}:
                           </Box>{" "}
-                          {renderDetailValue(characteristicLabel, String(value), propertyFilter)}
+                          {renderDetailValue(characteristicLabel, String(value), propertyFilter, filterValue)}
                         </Typography>
                       );
                     })}
