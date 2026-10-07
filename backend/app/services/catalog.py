@@ -302,6 +302,48 @@ def integration_filter_options(
     return [row.value for row in rows], total
 
 
+def integration_catalog_tree(db: Session) -> list[dict]:
+    """Возвращает реальные разделы каталога без выдумывания отсутствующей иерархии."""
+    section = func.trim(Product.section)
+    rows = (
+        db.query(section.label("name"))
+        .filter(Product.section.isnot(None), section != "")
+        .distinct()
+        .order_by(func.lower(section), section)
+        .all()
+    )
+    return [
+        {"id": row.name, "code": row.name, "name": row.name, "parent_id": None, "children": []}
+        for row in rows
+    ]
+
+
+def integration_brands(
+    db: Session,
+    search: str,
+    page: int,
+    page_size: int,
+) -> tuple[list[str], int]:
+    """Ищет нормализованные уникальные бренды на уровне БД."""
+    value = func.trim(Product.brand)
+    normalized = func.lower(value)
+    grouped = (
+        db.query(normalized.label("normalized"), func.min(value).label("value"))
+        .filter(Product.brand.isnot(None), value != "")
+        .group_by(normalized)
+    )
+    if search.strip():
+        grouped = grouped.filter(normalized.ilike(f"%{search.strip().casefold()}%"))
+    total = grouped.count()
+    rows = (
+        grouped.order_by(normalized, func.min(value))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return [row.value for row in rows], total
+
+
 def integration_product_search(db: Session, request):
     """Фильтрует товары в БД: OR внутри фильтра, AND между фильтрами."""
     query = db.query(Product).options(
@@ -321,7 +363,8 @@ def integration_product_search(db: Session, request):
     for key, values in request.filters.items():
         if key in INTEGRATION_FILTER_LABELS:
             column = getattr(Product, key)
-            option_queries.append(select(literal(key).label("key"), column.label("value")).where(column.in_(values)))
+            normalized_column = func.trim(column)
+            option_queries.append(select(literal(key).label("key"), normalized_column.label("value")).where(normalized_column.in_(values)))
         elif key.startswith("property:") and key.removeprefix("property:").strip():
             property_name = key.removeprefix("property:")
             option_queries.append(
@@ -352,7 +395,7 @@ def integration_product_search(db: Session, request):
 
     for key, values in request.filters.items():
         if key in INTEGRATION_FILTER_LABELS:
-            query = query.filter(getattr(Product, key).in_(values))
+            query = query.filter(func.trim(getattr(Product, key)).in_(values))
         elif key.startswith("property:") and key.removeprefix("property:").strip():
             property_name = key.removeprefix("property:")
             query = query.filter(Product.properties.any(and_(
