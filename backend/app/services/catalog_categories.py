@@ -28,10 +28,12 @@ class CatalogParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.links = {}
+        self._link = None
 
     def handle_starttag(self, tag, attrs):
         if tag != "a":
             return
+        self._finish_link()
         attrs = dict(attrs)
         url = urlsplit(attrs.get("href") or "")
         if url.scheme not in {"", "http", "https"} or url.netloc not in {"", "volgorost.ru", "www.volgorost.ru"} or url.query or url.fragment:
@@ -40,18 +42,39 @@ class CatalogParser(HTMLParser):
         match = re.fullmatch(r"/catalog/([a-z0-9_-]+)/(?:([a-z0-9_-]+)/)?", url.path)
         if not match or any(part in {"ves-katalog", "compare", "search", "filter", "favorites", "cart"} for part in match.groups()):
             return
-        name = " ".join((attrs.get("title") or "").split())
+        self._link = {"path": url.path, "title": attrs.get("title"), "text": []}
+
+    def handle_data(self, data):
+        if self._link is not None:
+            self._link["text"].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a":
+            self._finish_link()
+
+    def close(self):
+        super().close()
+        self._finish_link()
+
+    def _finish_link(self):
+        link, self._link = self._link, None
+        if link is None:
+            return
+        name = " ".join((link["title"] or "").split())
+        if not name:
+            name = " ".join("".join(link["text"]).split())
         if not name or len(name) > 255:
             return
-        previous = self.links.get(url.path)
+        previous = self.links.get(link["path"])
         if previous and previous != name:
-            raise ValueError(f"Противоречивые названия: {url.path}")
-        self.links[url.path] = name
+            raise ValueError(f"Противоречивые названия: {link['path']}")
+        self.links[link["path"]] = name
 
 
 def parse_catalog(html):
     parser = CatalogParser()
     parser.feed(html)
+    parser.close()
     categories = []
     sections = []
     for path, name in parser.links.items():

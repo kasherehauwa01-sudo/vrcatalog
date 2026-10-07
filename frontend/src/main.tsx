@@ -388,6 +388,19 @@ function App() {
   useEffect(() => { reload(); }, [params.toString()]);
   useEffect(() => { Promise.all([api.meta(), api.categoryFilters()]).then(([m, f]) => { setMeta(m); setFilters(f.filters); setPropertyOptions(f.filters); setSectionTree(f.section_tree); }); }, []);
   useEffect(() => {
+    if (!filtersOpen) return;
+    let cancelled = false;
+    api.categoryFilters().then((result) => {
+      if (cancelled) return;
+      setFilters(result.filters);
+      setPropertyOptions(result.filters);
+      setSectionTree(result.section_tree);
+    }).catch((error) => {
+      if (!cancelled) setCatalogError(error instanceof Error ? error.message : "Не удалось обновить разделы");
+    });
+    return () => { cancelled = true; };
+  }, [filtersOpen]);
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       const normalized = search.trim();
       const currentSearch = new URLSearchParams(window.location.search).get("search") ?? "";
@@ -2174,7 +2187,7 @@ function App() {
                   {[
                     ["Код", detail.code],
                     ["Артикул", detail.article],
-                    ["Категория1", detail.category1 ?? undefined],
+                    ["Категория1", detail.category1?.trim() || "Без категории"],
                     ["Раздел", detail.section],
                     ["Вид товара", detail.product_type_name ?? detail.product_type],
                     ["Производитель", detail.manufacturer],
