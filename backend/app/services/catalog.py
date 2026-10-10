@@ -1,12 +1,16 @@
 from math import ceil
 from datetime import datetime, timedelta
 import csv
+import logging
 import re
+import time
 
 from sqlalchemy import String, and_, case, cast, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.catalog import Barcode, ImportRun, Price, Product, ProductImage, ProductProperty, Stock, WarehouseSetting, ProductTypeSetting
+
+logger = logging.getLogger(__name__)
 
 FILTER_FIELDS = ["section", "manufacturer", "brand", "manager", "country", "material", "color"]
 WAREHOUSE_ORDER = [
@@ -431,112 +435,189 @@ def integration_product_search(db: Session, request):
 
 def integration_batch_product_info(db: Session, requested_products):
     """Пакетно сопоставляет товары и загружает связанные данные пятью запросами."""
-    codes = {item.code.casefold() for item in requested_products if item.code}
-    articles = {item.article.casefold() for item in requested_products if item.article}
-    normalized_code = func.lower(func.trim(Product.code))
-    normalized_article = func.lower(func.trim(Product.article))
-    lookup_conditions = []
-    if codes:
-        lookup_conditions.append(normalized_code.in_(codes))
-    if articles:
-        lookup_conditions.append(normalized_article.in_(articles))
-    candidates = db.query(Product).filter(or_(*lookup_conditions)).order_by(Product.id).all()
-
-    by_code = {}
-    by_article = {}
-    for product in candidates:
-        by_code.setdefault(product.code.strip().casefold(), product)
-        if product.article and product.article.strip():
-            by_article.setdefault(product.article.strip().casefold(), product)
-
-    matched_products = []
-    seen_product_ids = set()
-    for requested in requested_products:
-        product = by_code.get(requested.code.casefold()) if requested.code else None
-        if product is None and requested.article:
-            product = by_article.get(requested.article.casefold())
-        if product is not None and product.id not in seen_product_ids:
-            seen_product_ids.add(product.id)
-            matched_products.append(product)
-
-    product_ids = [product.id for product in matched_products]
-    details = {
-        product_id: {"properties": [], "stocks": [], "prices": [], "image_url": None}
-        for product_id in product_ids
+    started = time.perf_counter()
+    stage_started = started
+    # Only request-local timings and counts; never retain or log product data.
+    metrics = {
+        "status": "error",
+        "requested": len(requested_products),
+        "candidates": 0,
+        "matched": 0,
+        "properties_rows": 0,
+        "images_rows": 0,
+        "stocks_rows": 0,
+        "prices_rows": 0,
+        "search_ms": 0.0,
+        "matching_ms": 0.0,
+        "properties_sql_ms": 0.0,
+        "properties_processing_ms": 0.0,
+        "images_sql_ms": 0.0,
+        "images_processing_ms": 0.0,
+        "stocks_sql_ms": 0.0,
+        "stocks_processing_ms": 0.0,
+        "prices_sql_ms": 0.0,
+        "prices_processing_ms": 0.0,
     }
-    if not product_ids:
+    try:
+        codes = {item.code.casefold() for item in requested_products if item.code}
+        articles = {item.article.casefold() for item in requested_products if item.article}
+        normalized_code = func.lower(func.trim(Product.code))
+        normalized_article = func.lower(func.trim(Product.article))
+        lookup_conditions = []
+        if codes:
+            lookup_conditions.append(normalized_code.in_(codes))
+        if articles:
+            lookup_conditions.append(normalized_article.in_(articles))
+        candidates = db.query(Product).filter(or_(*lookup_conditions)).order_by(Product.id).all()
+
+        finished = time.perf_counter()
+        metrics["search_ms"] = (finished - stage_started) * 1000
+        metrics["candidates"] = len(candidates)
+        stage_started = finished
+        by_code = {}
+        by_article = {}
+        for product in candidates:
+            by_code.setdefault(product.code.strip().casefold(), product)
+            if product.article and product.article.strip():
+                by_article.setdefault(product.article.strip().casefold(), product)
+
+        matched_products = []
+        seen_product_ids = set()
+        for requested in requested_products:
+            product = by_code.get(requested.code.casefold()) if requested.code else None
+            if product is None and requested.article:
+                product = by_article.get(requested.article.casefold())
+            if product is not None and product.id not in seen_product_ids:
+                seen_product_ids.add(product.id)
+                matched_products.append(product)
+
+        product_ids = [product.id for product in matched_products]
+        details = {
+            product_id: {"properties": [], "stocks": [], "prices": [], "image_url": None}
+            for product_id in product_ids
+        }
+        finished = time.perf_counter()
+        metrics["matching_ms"] = (finished - stage_started) * 1000
+        metrics["matched"] = len(matched_products)
+        stage_started = finished
+        if not product_ids:
+            metrics["status"] = "ok"
+            return matched_products, details
+
+        property_rows = (
+            db.query(ProductProperty.product_id, ProductProperty.name, ProductProperty.value)
+            .filter(ProductProperty.product_id.in_(product_ids))
+            .order_by(ProductProperty.product_id, ProductProperty.name, ProductProperty.value, ProductProperty.id)
+            .all()
+        )
+        finished = time.perf_counter()
+        metrics["properties_sql_ms"] = (finished - stage_started) * 1000
+        metrics["properties_rows"] = len(property_rows)
+        stage_started = finished
+        seen_properties = {product_id: set() for product_id in product_ids}
+        for product_id, raw_name, raw_value in property_rows:
+            name = (raw_name or "").strip()
+            value = (raw_value or "").strip()
+            pair = (name, value)
+            if not name or not value or pair in seen_properties[product_id]:
+                continue
+            seen_properties[product_id].add(pair)
+            details[product_id]["properties"].append({"name": name, "value": value})
+        for product_id in product_ids:
+            details[product_id]["properties"].sort(
+                key=lambda item: (item["name"].casefold(), item["value"].casefold())
+            )
+
+        finished = time.perf_counter()
+        metrics["properties_processing_ms"] = (finished - stage_started) * 1000
+        stage_started = finished
+        first_orders = (
+            db.query(
+                ProductImage.product_id.label("product_id"),
+                func.min(ProductImage.image_order).label("image_order"),
+            )
+            .filter(ProductImage.product_id.in_(product_ids))
+            .group_by(ProductImage.product_id)
+            .subquery()
+        )
+        image_rows = (
+            db.query(ProductImage.product_id, ProductImage.image_url)
+            .join(
+                first_orders,
+                and_(
+                    ProductImage.product_id == first_orders.c.product_id,
+                    ProductImage.image_order == first_orders.c.image_order,
+                ),
+            )
+            .all()
+        )
+        finished = time.perf_counter()
+        metrics["images_sql_ms"] = (finished - stage_started) * 1000
+        metrics["images_rows"] = len(image_rows)
+        stage_started = finished
+        for product_id, image_url in image_rows:
+            details[product_id]["image_url"] = image_url
+
+        finished = time.perf_counter()
+        metrics["images_processing_ms"] = (finished - stage_started) * 1000
+        stage_started = finished
+        warehouse_name = func.coalesce(WarehouseSetting.name, Stock.warehouse)
+        stock_rows = (
+            db.query(
+                Stock.product_id,
+                warehouse_name.label("warehouse_name"),
+                func.sum(Stock.quantity).label("quantity"),
+            )
+            .outerjoin(WarehouseSetting, WarehouseSetting.code == Stock.warehouse)
+            .filter(Stock.product_id.in_(product_ids))
+            .group_by(Stock.product_id, Stock.warehouse, WarehouseSetting.name)
+            .order_by(Stock.product_id, warehouse_name)
+            .all()
+        )
+        finished = time.perf_counter()
+        metrics["stocks_sql_ms"] = (finished - stage_started) * 1000
+        metrics["stocks_rows"] = len(stock_rows)
+        stage_started = finished
+        for product_id, name, quantity in stock_rows:
+            details[product_id]["stocks"].append({"warehouse": name, "quantity": quantity})
+
+        finished = time.perf_counter()
+        metrics["stocks_processing_ms"] = (finished - stage_started) * 1000
+        stage_started = finished
+        price_rows = (
+            db.query(Price.product_id, Price.price_type, Price.price_value)
+            .filter(Price.product_id.in_(product_ids))
+            .order_by(Price.product_id, Price.price_type, Price.price_value, Price.id)
+            .all()
+        )
+        finished = time.perf_counter()
+        metrics["prices_sql_ms"] = (finished - stage_started) * 1000
+        metrics["prices_rows"] = len(price_rows)
+        stage_started = finished
+        for product_id, name, value in price_rows:
+            normalized_name = (name or "").strip()
+            if normalized_name:
+                details[product_id]["prices"].append({"name": normalized_name, "value": value, "currency": "RUB"})
+        metrics["prices_processing_ms"] = (time.perf_counter() - stage_started) * 1000
+        metrics["status"] = "ok"
         return matched_products, details
-
-    property_rows = (
-        db.query(ProductProperty.product_id, ProductProperty.name, ProductProperty.value)
-        .filter(ProductProperty.product_id.in_(product_ids))
-        .order_by(ProductProperty.product_id, ProductProperty.name, ProductProperty.value, ProductProperty.id)
-        .all()
-    )
-    seen_properties = {product_id: set() for product_id in product_ids}
-    for product_id, raw_name, raw_value in property_rows:
-        name = (raw_name or "").strip()
-        value = (raw_value or "").strip()
-        pair = (name, value)
-        if not name or not value or pair in seen_properties[product_id]:
-            continue
-        seen_properties[product_id].add(pair)
-        details[product_id]["properties"].append({"name": name, "value": value})
-    for product_id in product_ids:
-        details[product_id]["properties"].sort(
-            key=lambda item: (item["name"].casefold(), item["value"].casefold())
+    finally:
+        metrics["total_ms"] = (time.perf_counter() - started) * 1000
+        # INFO propagates to the backend's existing root StreamHandler.
+        # No exception text/traceback: SQL errors can contain identifiers or credentials.
+        logger.info(
+            "batch_info_perf status=%(status)s requested=%(requested)d "
+            "matched=%(matched)d candidates=%(candidates)d total_ms=%(total_ms).3f "
+            "search_ms=%(search_ms).3f matching_ms=%(matching_ms).3f "
+            "properties_sql_ms=%(properties_sql_ms).3f "
+            "properties_processing_ms=%(properties_processing_ms).3f "
+            "images_sql_ms=%(images_sql_ms).3f images_processing_ms=%(images_processing_ms).3f "
+            "stocks_sql_ms=%(stocks_sql_ms).3f stocks_processing_ms=%(stocks_processing_ms).3f "
+            "prices_sql_ms=%(prices_sql_ms).3f prices_processing_ms=%(prices_processing_ms).3f "
+            "properties_rows=%(properties_rows)d images_rows=%(images_rows)d "
+            "stocks_rows=%(stocks_rows)d prices_rows=%(prices_rows)d",
+            metrics,
         )
-
-    first_orders = (
-        db.query(
-            ProductImage.product_id.label("product_id"),
-            func.min(ProductImage.image_order).label("image_order"),
-        )
-        .filter(ProductImage.product_id.in_(product_ids))
-        .group_by(ProductImage.product_id)
-        .subquery()
-    )
-    image_rows = (
-        db.query(ProductImage.product_id, ProductImage.image_url)
-        .join(
-            first_orders,
-            and_(
-                ProductImage.product_id == first_orders.c.product_id,
-                ProductImage.image_order == first_orders.c.image_order,
-            ),
-        )
-        .all()
-    )
-    for product_id, image_url in image_rows:
-        details[product_id]["image_url"] = image_url
-
-    warehouse_name = func.coalesce(WarehouseSetting.name, Stock.warehouse)
-    stock_rows = (
-        db.query(
-            Stock.product_id,
-            warehouse_name.label("warehouse_name"),
-            func.sum(Stock.quantity).label("quantity"),
-        )
-        .outerjoin(WarehouseSetting, WarehouseSetting.code == Stock.warehouse)
-        .filter(Stock.product_id.in_(product_ids))
-        .group_by(Stock.product_id, Stock.warehouse, WarehouseSetting.name)
-        .order_by(Stock.product_id, warehouse_name)
-        .all()
-    )
-    for product_id, name, quantity in stock_rows:
-        details[product_id]["stocks"].append({"warehouse": name, "quantity": quantity})
-
-    price_rows = (
-        db.query(Price.product_id, Price.price_type, Price.price_value)
-        .filter(Price.product_id.in_(product_ids))
-        .order_by(Price.product_id, Price.price_type, Price.price_value, Price.id)
-        .all()
-    )
-    for product_id, name, value in price_rows:
-        normalized_name = (name or "").strip()
-        if normalized_name:
-            details[product_id]["prices"].append({"name": normalized_name, "value": value, "currency": "RUB"})
-    return matched_products, details
 
 
 def integration_product_category_map(db: Session, requested_products):
