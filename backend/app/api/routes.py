@@ -39,6 +39,10 @@ from app.core.config import settings
 from app.core.admin_auth import COOKIE_NAME, check_login_rate_limit, create_admin_session, require_admin, require_heavy_admin, rotate_csrf, verify_admin_password
 from app.importer.xml_importer import XMLCatalogImporter, public_image_url
 from app.models.catalog import Favorite, HistorySnapshot, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
+from app.models.catalog import AdminSession
+from app.schemas.catalog import AdminLoginIn
+from app.schemas.analytics_lookup import AnalyticsLookupRequest, AnalyticsLookupResponse
+from app.services.analytics_lookup import analytics_product_lookup
 from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, HistorySettingOut, HistorySettingUpdateIn, HistorySnapshotDetailOut, HistorySnapshotPreviewOut, HistorySnapshotSummaryOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationBrandsResponse, IntegrationCatalogNode, IntegrationCategoryMapResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, PhotoReportDownloadIn, PhotoReportPageOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
 from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_brands, integration_catalog_tree, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
@@ -301,6 +305,20 @@ def integration_products_batch_info(
             for product in products
         ]
     }
+
+
+@router.post("/integration/products/analytics/lookup", response_model=AnalyticsLookupResponse)
+def integration_products_analytics_lookup(
+    request: AnalyticsLookupRequest,
+    db: Session = Depends(get_db),
+    authorization: Annotated[str | None, Header()] = None,
+):
+    require_integration_token(authorization)
+    try:
+        return analytics_product_lookup(db, request.items)
+    except Exception:
+        # The service logs only counters/timings. Never expose SQL, values or a traceback.
+        raise HTTPException(500, "Не удалось получить характеристики товаров") from None
 
 
 @router.post("/integration/products/category-map", response_model=IntegrationCategoryMapResponse)
