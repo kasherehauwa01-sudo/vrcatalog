@@ -44,6 +44,7 @@ class AnalyticsProductOut(BaseModel):
     material: str | None
     horeca: bool
     updated_at: datetime
+    image_url: str | None = None
 
     @field_serializer("updated_at")
     def utc_timestamp(self, value: datetime) -> str:

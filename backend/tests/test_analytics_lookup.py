@@ -143,6 +143,7 @@ class AnalyticsLookupTests(unittest.TestCase):
             'manufacturer': 'Прямой производитель', 'brand': 'Прямой бренд', 'material': 'Фарфор',
             'category_id': 7, 'category': 'Посуда', 'subcategory': 'Тарелки', 'legacy_category': 'Тарелки',
             'horeca': True, 'updated_at': '2026-10-10T08:00:00.123456Z',
+            'image_url': 'https://example.test/private.jpg',
         })
 
     def test_fallbacks_match_old_batch_info(self):
@@ -207,20 +208,66 @@ class AnalyticsLookupTests(unittest.TestCase):
         self.assertEqual([item['request_index'] for item in items], list(range(250)))
         self.assertEqual([item['status'] for item in items], ['matched', 'ambiguous', 'not_found', 'matched'] * 62 + ['matched', 'ambiguous'])
         self.assertEqual(items[0]['product'], items[4]['product'])
-        self.assertEqual(len(self.statements), 3)
+        self.assertEqual(len(self.statements), 4)
         self.statements.clear()
         self.one({'code': '001234'})
-        self.assertEqual(len(self.statements), 3)
+        self.assertEqual(len(self.statements), 4)
 
-    def test_250_distinct_products_use_three_queries(self):
+    def test_250_distinct_products_use_four_queries(self):
         with Session(self.engine) as db:
-            db.add_all(Product(code=f'NEW-{index}', name='Товар', article=f'ART-{index}') for index in range(250))
+            db.add_all(Product(code=f'NEW-{index}', name='Товар', article=f'ART-{index}',
+                               images=[ProductImage(image_order=9, image_url='later.jpg'),
+                                       ProductImage(image_order=2, image_url=f'{index}.jpg')])
+                       for index in range(250))
             db.commit()
         self.statements.clear()
         response = self.lookup([{'code': f'NEW-{index}'} for index in range(250)])
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(sum(item['status'] == 'matched' for item in response.json()['items']), 250)
-        self.assertEqual(len(self.statements), 3)
+        self.assertEqual(len(self.statements), 4)
+        self.assertEqual([item['product']['image_url'] for item in response.json()['items']],
+                         [f'https://volgorost.ru/upload/import_images/images/{index}.jpg' for index in range(250)])
+        self.assertEqual(sum('product_images' in sql.lower() for sql in self.statements), 1)
+
+    def test_primary_image_uses_minimum_order_and_public_urls(self):
+        with Session(self.engine) as db:
+            db.get(Product, 1).images = [
+                ProductImage(image_order=8, image_url='https://example.test/later.jpg'),
+                ProductImage(image_order=3, image_url='/images/folder/главная фото.jpg'),
+            ]
+            db.get(Product, 2).images = [ProductImage(
+                image_order=4, image_url='https://cdn.example.test/photo name.jpg?size=large#preview')]
+            db.commit()
+        self.statements.clear()
+        response = self.lookup([{'product_id': 1}, {'product_id': 2}, {'product_id': 1}, {'product_id': 5}])
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data['schema_version'], 1)
+        images = [item['product']['image_url'] for item in data['items']]
+        self.assertEqual(images[0], 'https://volgorost.ru/upload/import_images/images/folder/%D0%B3%D0%BB%D0%B0%D0%B2%D0%BD%D0%B0%D1%8F%20%D1%84%D0%BE%D1%82%D0%BE.jpg')
+        self.assertEqual(images[1], 'https://cdn.example.test/photo%20name.jpg?size=large')
+        self.assertEqual(images[2], images[0])
+        self.assertIsNone(images[3])
+        self.assertEqual(len(self.statements), 4)
+        image_sql = [sql.lower() for sql in self.statements if 'product_images' in sql.lower()]
+        self.assertEqual(len(image_sql), 1)
+        self.assertIn('min(product_images.image_order)', image_sql[0])
+        self.assertIn('product_images.product_id in', image_sql[0])
+        self.assertNotIn('product_images.created_at', image_sql[0])
+
+    def test_no_image_query_without_unique_matches(self):
+        response = self.lookup([{'code': 'missing'}, {'article': 'dup'}])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['product'] for item in response.json()['items']], [None, None])
+        self.assertEqual(len(self.statements), 1)
+        self.assertNotIn('product_images', self.statements[0].lower())
+
+    def test_empty_primary_image_is_null_without_falling_back(self):
+        with Session(self.engine) as db:
+            db.get(Product, 5).images = [ProductImage(image_order=2, image_url='  '),
+                                       ProductImage(image_order=7, image_url='later.jpg')]
+            db.commit()
+        self.assertIsNone(self.one({'product_id': 5})['product']['image_url'])
 
     def test_candidate_aggregation_is_bounded_for_duplicate_articles(self):
         with Session(self.engine) as db:
@@ -234,9 +281,9 @@ class AnalyticsLookupTests(unittest.TestCase):
     def test_projection_and_selective_properties_never_read_heavy_tables(self):
         with self.assertLogs(service.logger, 'INFO') as logs:
             self.one({'product_id': 1})
-        self.assertEqual(len(self.statements), 3)
+        self.assertEqual(len(self.statements), 4)
         sql = '\n'.join(self.statements).lower()
-        for table in ('product_images', 'stocks', 'prices', 'service_logs'):
+        for table in ('stocks', 'prices', 'service_logs'):
             self.assertNotIn(table, sql)
         for column in ('products.description', 'products.search_text', 'products.quantity', 'products.name'):
             self.assertNotIn(column, sql)
@@ -252,7 +299,7 @@ class AnalyticsLookupTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         # One HoReCa row for the direct product, four fallback rows for the empty one.
         self.assertIn('properties_rows=5', logs.output[0])
-        self.assertEqual(len(self.statements), 3)
+        self.assertEqual(len(self.statements), 4)
 
     def test_validation_rejects_bad_input_before_sql(self):
         invalid = [[], [{}], [{'code': ' '}], [{'product_id': 0}], [{'product_id': True}],
@@ -280,7 +327,7 @@ class AnalyticsLookupTests(unittest.TestCase):
         # The best value is in the second fetch chunk (raw name SQL ordering).
         self.assertEqual(product['brand'], 'first')
         self.assertIn('properties_rows=261', logs.output[0])
-        self.assertEqual(len(self.statements), 3)
+        self.assertEqual(len(self.statements), 4)
 
     def test_matched_product_disappearing_before_projection_is_not_found(self):
         with Session(self.engine) as db:
@@ -312,7 +359,7 @@ class AnalyticsLookupTests(unittest.TestCase):
         self.assertEqual(self.statements, [])
 
     def test_failure_is_sanitized_and_logs_only_metrics(self):
-        for failing_query in (1, 2, 3):
+        for failing_query in (1, 2, 3, 4):
             with self.subTest(failing_query=failing_query):
                 count = 0
                 def fail(*args):
