@@ -67,6 +67,7 @@ put the token into the URL, checked-in examples, or diagnostic output.
         "legacy_category": "Тарелки",
         "material": "Фарфор",
         "horeca": false,
+        "image_url": "https://volgorost.ru/upload/import_images/images/example.jpg",
         "updated_at": "2026-10-10T08:00:00.123456Z"
       }
     },
@@ -97,6 +98,7 @@ product ID for duplicate articles; this new endpoint deliberately reports them.
 | `legacy_category` | string/null | Trimmed `products.section`, then the fallback used by `batch-info.category` |
 | `material` | string/null | Trimmed `products.material`, then legacy fallback |
 | `horeca` | boolean | True iff a property name AND its value, after trim/casefold, equal `horeca` |
+| `image_url` | string/null | Main image URL, converted by the existing `public_image_url()` helper; null if absent/blank |
 | `updated_at` | UTC ISO 8601 string | Stored `products.updated_at`, preserving microseconds |
 
 Fallback aliases are exactly those used in `batch-info`:
@@ -129,7 +131,7 @@ The raw `Subcategory` property is not the source of the hierarchy field.
 
 ## Bounded SQL and memory
 
-At most three SELECT statements per valid request:
+At most four SELECT statements per valid request:
 
 1. Identify unique matches using the primary key and existing normalized
    code/article indexes. Per-key `min(id)`/`max(id)` detect ambiguity without
@@ -141,8 +143,18 @@ At most three SELECT statements per valid request:
    read in chunks of 250 rows; only the best fallback per product/field is retained.
    Sorting is scoped to these selected rows to preserve legacy tie behavior.
 
+4. Select only product IDs and main image URLs for the matched products using
+   grouped minimum `image_order`, as in `batch-info`. The existing unique
+   `(product_id, image_order)` constraint limits the result to at most 250 rows.
+   No image collections, downloads or external URL checks are performed.
+
+`image_url` is an additive optional field; `schema_version` remains 1. Relative
+paths become absolute public URLs; existing absolute URLs are normalized by the
+shared helper. A blank first image yields null, without choosing a later image.
+Image query/conversion time is included in `total_ms`.
+
 If there are no unique matches, only statement 1 runs. Duplicate inputs reuse the
-same projection. No ProductImage, Stock, Price, other property names, writes,
+same projection. No Stock, Price, other property names, writes,
 service-log INSERTs, caches, background tasks or external calls are involved.
 A service logger writes a single INFO line. The new code has no runtime activity
 until the endpoint is called. No schema changes, new indexes or dependencies.

@@ -5,7 +5,8 @@ import time
 from sqlalchemy import String, and_, cast, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
-from app.models.catalog import Product, ProductProperty
+from app.importer.xml_importer import public_image_url
+from app.models.catalog import Product, ProductImage, ProductProperty
 from app.schemas.analytics_lookup import (
     AnalyticsLookupItemIn,
     AnalyticsLookupItemOut,
@@ -119,6 +120,29 @@ def _load_properties(db, products, metrics):
         result.close()
 
 
+def _load_primary_images(db, products):
+    first_orders = (
+        select(
+            ProductImage.product_id,
+            func.min(ProductImage.image_order).label("image_order"),
+        )
+        .where(ProductImage.product_id.in_(products))
+        .group_by(ProductImage.product_id)
+        .subquery()
+    )
+    # The unique (product_id, image_order) constraint bounds this to one row
+    # per matched product. Only IDs and URLs are loaded, never ORM collections.
+    query = select(ProductImage.product_id, ProductImage.image_url).join(
+        first_orders,
+        and_(
+            ProductImage.product_id == first_orders.c.product_id,
+            ProductImage.image_order == first_orders.c.image_order,
+        ),
+    )
+    for product_id, image_url in db.execute(query):
+        products[product_id]["image_url"] = public_image_url(image_url)
+
+
 def analytics_product_lookup(db: Session, items: list[AnalyticsLookupItemIn]) -> AnalyticsLookupResponse:
     started = time.perf_counter()
     metrics = dict(
@@ -151,6 +175,7 @@ def analytics_product_lookup(db: Session, items: list[AnalyticsLookupItemIn]) ->
                 )
             if products:
                 _load_properties(db, products, metrics)
+                _load_primary_images(db, products)
         validated = {product_id: AnalyticsProductOut(**product) for product_id, product in products.items()}
         result = []
         for index, (status, matched_by, product_id) in enumerate(resolved):
