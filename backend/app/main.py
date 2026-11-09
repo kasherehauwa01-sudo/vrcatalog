@@ -40,6 +40,11 @@ app.include_router(history_router, prefix="/api")
 
 @app.on_event("startup")
 def start_xml_auto_import() -> None:
+    import os
+
+    if os.environ.get("VR_BACKGROUND_JOBS_ENABLED", "0") != "1":
+        return
+
     with SessionLocal() as db:
         monthly_promotion.initialize_promotion_snapshot(db)
     start_worker()
