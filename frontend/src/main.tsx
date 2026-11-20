@@ -1,3 +1,4 @@
+import { FolderTree } from "./components/FolderTree";
 import { SectionTree } from "./components/SectionTree";
 import { CategoryNode } from "./categoryTree";
 import { CategorySettings } from "./components/CategorySettings";
@@ -146,6 +147,7 @@ const defaultExportColumns = ["code", "name", "section"];
 const labels: Record<string, string> = {
   category: "Категория1",
   section: "Раздел",
+  folder: "Поиск по папке",
   manufacturer: "Производитель",
   brand: "Бренд",
   manager: "Менеджер",
@@ -157,7 +159,7 @@ const labels: Record<string, string> = {
   warehouse: "Склады",
 };
 const mainFilterOrder = [
-  "Раздел", "Бренд", "Вид товара", "Склады", "Коллекция", "Менеджер",
+  "Раздел", "Поиск по папке", "Бренд", "Вид товара", "Склады", "Коллекция", "Менеджер",
   "Производитель", "Страна", "Комната", "Праздник", "Тематика",
   "HoReCa", "Выгружать на сайт", "Штрихкод",
 ];
@@ -242,6 +244,11 @@ function App() {
   const initialParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const multiFromUrl = (p: URLSearchParams) => {
     const result = Object.keys(labels).reduce<Record<string, string[]>>((values, key) => {
+      if (key === "folder") {
+        const folders = p.getAll(key).filter((folder) => folder.trim());
+        if (folders.length) values[key] = [...new Set(folders)];
+        return values;
+      }
       const value = p.get(key === "product_type" ? "productType" : key);
       if (value) values[key] = parseFilterValues(value);
       return values;
@@ -498,6 +505,11 @@ function App() {
         (draftActive[key] ?? []).forEach((value) => next.append("property", `${key.slice(9)}:${value}`));
         return;
       }
+      if (key === "folder") {
+        next.delete(key);
+        (draftActive[key] ?? []).forEach((value) => next.append(key, value));
+        return;
+      }
       const parameter = key === "product_type" ? "productType" : key;
       const values = draftActive[key] ?? [];
       if (values.length) next.set(parameter, serializeFilterValues(values)); else next.delete(parameter);
@@ -528,6 +540,12 @@ function App() {
         const next = new URLSearchParams(window.location.search); next.delete("property");
         Object.entries(updated).filter(([activeKey]) => activeKey.startsWith("property:")).forEach(([activeKey, activeValues]) => activeValues.forEach((item) => next.append("property", `${activeKey.slice(9)}:${item}`)));
         next.delete("page"); replaceCatalogParams(next);
+      } else if (key === "folder") {
+        const next = new URLSearchParams(window.location.search);
+        next.delete(key);
+        values.forEach((item) => next.append(key, item));
+        next.delete("page");
+        replaceCatalogParams(next);
       } else updateParams({ [key === "product_type" ? "productType" : key]: serializeFilterValues(values) });
     } else {
       const resetValue = key === "availability" ? "all" : ["inStockOnly", "excludeYyy", "onlyNew"].includes(key) ? "false" : "";
@@ -550,7 +568,7 @@ function App() {
       return match ? [match] : [];
     });
   };
-  const mainFilterEntries = entriesForOrder(filters, mainFilterOrder);
+  const mainFilterEntries = entriesForOrder({ ...filters, folder: [] }, mainFilterOrder);
   const propertyFilterEntries = entriesForOrder(propertyOptions, propertyFilterOrder);
   const openPropertyPicker = async () => {
     const dependentParams = new URLSearchParams();
@@ -560,6 +578,8 @@ function App() {
       if (!values.length) return;
       if (key.startsWith("property:")) {
         values.forEach((value) => dependentParams.append("property", `${key.slice("property:".length)}:${value}`));
+      } else if (key === "folder") {
+        values.forEach((value) => dependentParams.append(key, value));
       } else {
         dependentParams.set(key === "product_type" ? "productType" : key, serializeFilterValues(values));
       }
@@ -1330,7 +1350,9 @@ function App() {
                           <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
                         </Button>
                         <Collapse in={!!openFilterGroups[key]} unmountOnExit>
-                          {key === "section" ? <SectionTree tree={sectionTree} categories={draftActive.category ?? []} sections={draftActive.section ?? []} onChange={(selection) => setDraftActive((current) => ({ ...current, ...selection }))} /> : <>
+                          {key === "section" ? <SectionTree tree={sectionTree} categories={draftActive.category ?? []} sections={draftActive.section ?? []} onChange={(selection) => setDraftActive((current) => ({ ...current, ...selection }))} /> : key === "folder" ? (
+                            <FolderTree selected={draftActive.folder ?? []} onToggle={(path) => toggleFilter("folder", path)} />
+                          ) : <>
                           {searchableFilterLabels.has(label) && (
                             <TextField fullWidth size="small" label={`Поиск: ${label}`} value={filterValueSearch[key] ?? ""} onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))} sx={{ mt: 1 }} />
                           )}
@@ -1974,7 +1996,7 @@ function App() {
                   <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
                     <Typography variant="body2" fontWeight={700}>Активные условия:</Typography>
                     {Object.entries(active).flatMap(([key, values]) => values.map((value) => (
-                      <Chip key={`${key}-${value}`} label={`${filterLabel(key)}: ${key === "category" ? sectionTree.find((node) => (node.id === null ? "uncategorized" : String(node.id)) === value)?.name ?? value : value}`} onDelete={() => removeFilter(key, value)} />
+                      <Chip key={`${key}-${value}`} label={`${filterLabel(key)}: ${key === "category" ? sectionTree.find((node) => (node.id === null ? "uncategorized" : String(node.id)) === value)?.name ?? value : key === "folder" ? value.split("|").map((part) => part.trim()).join(" / ") : value}`} onDelete={() => removeFilter(key, value)} />
                     )))}
                     {Object.entries(filterFields).filter(isActiveFilterField).map(([key, value]) => (
                       <Chip key={key} label={`${filterFieldLabels[key as keyof FilterFields]}: ${value === "in_stock" ? "В наличии" : value === "out_of_stock" ? "Нет в наличии" : value === "true" ? "Да" : value}`} onDelete={() => removeFilter(key)} />

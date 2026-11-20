@@ -17,6 +17,7 @@ WAREHOUSE_ORDER = [
     "Авиаторов", "Козловская", "Цитрус", "Привоз", "Бахтурова", "Ахтубинск",
     "СтройГрад", "Европа", "Парк Хаус", "ЦУМ", "Простор", "Универ",
 ]
+FOLDER_PATH_PROPERTY = "Полныйпуть"
 EXCLUDED_PROPERTY_FILTERS = {
     "ID",
     "АкцияДоллар",
@@ -90,6 +91,34 @@ def _values(value):
     return [item.strip() for item in next(csv.reader([str(value)]), []) if item.strip()]
 
 
+def folder_paths(db: Session) -> list[str]:
+    paths: set[str] = set()
+    values = db.query(ProductProperty.value).filter(
+        ProductProperty.name == FOLDER_PATH_PROPERTY,
+        ProductProperty.value.isnot(None),
+    )
+    for value, in values.yield_per(1000):
+        parts = value.strip(" ").split("|")
+        if len(parts) < 2 or any(not part.strip() for part in parts):
+            continue
+        paths.add("|".join(parts[:-1]))
+    return sorted(paths, key=lambda path: (path.casefold(), path))
+
+
+def apply_folder_filter(query, params):
+    prefixes = [folder + "|" for folder in dict.fromkeys(params.get("folder") or []) if folder.strip()]
+    if not prefixes:
+        return query
+    path = func.trim(ProductProperty.value)
+    return query.filter(Product.properties.any(and_(
+        ProductProperty.name == FOLDER_PATH_PROPERTY,
+        or_(*(and_(
+            func.substr(path, 1, len(prefix)) == prefix,
+            func.length(path) > len(prefix),
+        ) for prefix in prefixes)),
+    )))
+
+
 def _search_values(value) -> list[str]:
     """Разделяет коды и артикулы по запятым либо любым пробельным символам."""
     return [item for item in re.split(r"[,\s]+", str(value or "").strip()) if item]
@@ -126,6 +155,7 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
         q = q.filter(Product.barcodes.any(Barcode.value.in_(barcode_values)))
 
     q = apply_category_filter(q, params)
+    q = apply_folder_filter(q, params)
     for field in FILTER_FIELDS:
         if field == "section":
             continue
@@ -742,6 +772,7 @@ def product_query(db: Session, params, eager_load: bool = True):
             )
         )
     q = apply_category_filter(q, params)
+    q = apply_folder_filter(q, params)
     for field in FILTER_FIELDS:
         if field == "section":
             continue
@@ -816,7 +847,7 @@ def list_filters(db: Session, params=None):
         property_query = property_query.filter(Product.id.in_(select(base_ids.c.id)))
     property_rows = (
         property_query
-        .filter(ProductProperty.value.isnot(None))
+        .filter(ProductProperty.value.isnot(None), ProductProperty.name != FOLDER_PATH_PROPERTY)
         .distinct()
         .order_by(ProductProperty.name, ProductProperty.value)
         .all()
