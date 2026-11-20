@@ -45,7 +45,7 @@ from app.schemas.analytics_lookup import AnalyticsLookupRequest, AnalyticsLookup
 from app.services.analytics_lookup import analytics_product_lookup
 from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSettingOut, AutoImportStateOut, DynamicAnalogOut, FtpConnectionTestOut, HistorySettingOut, HistorySettingUpdateIn, HistorySnapshotDetailOut, HistorySnapshotPreviewOut, HistorySnapshotSummaryOut, IntegrationBatchProductsRequest, IntegrationBatchProductsResponse, IntegrationBrandsResponse, IntegrationCatalogNode, IntegrationCategoryMapResponse, IntegrationFiltersResponse, IntegrationProductSearchRequest, IntegrationProductSearchResponse, MailSettingIn, MailSettingOut, MetaOut, NotificationHistoryOut, NotificationOut, PhotoReportDownloadIn, PhotoReportPageOut, ProductDetailOut, ProductListOut, ProductPageOut, ProductTypeUpdateIn, ScenarioRunOut, ScenarioSettingIn, ScenarioSettingOut, ScenarioSummaryOut, ServiceLogOut, TestMailIn, WarehouseSettingIn, WarehouseSettingOut, ProductTypeSettingIn, ProductTypeSettingOut, XmlServerSettingIn, XmlServerSettingOut
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
-from app.services.catalog import catalog_product_query, decorate, integration_batch_product_info, integration_brands, integration_catalog_tree, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
+from app.services.catalog import catalog_product_query, decorate, folder_paths, integration_batch_product_info, integration_brands, integration_catalog_tree, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
@@ -429,7 +429,7 @@ def upload_xml(file: UploadFile = File(...), db: Session = Depends(get_db)):
     return meta(db)
 
 @router.get("/products", response_model=list[ProductListOut], response_model_exclude_none=True)
-def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le=10000)] = 60, offset: Annotated[int, Query(ge=0)] = 0, search: str | None = None, section: str | None = None, category: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False, property: str | None = None, property_value: str | None = None, authorization: Annotated[str | None, Header()] = None, x_internal_token: Annotated[str | None, Header()] = None):
+def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le=10000)] = 60, offset: Annotated[int, Query(ge=0)] = 0, search: str | None = None, section: str | None = None, category: str | None = None, folder: Annotated[list[str] | None, Query()] = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False, property: str | None = None, property_value: str | None = None, authorization: Annotated[str | None, Header()] = None, x_internal_token: Annotated[str | None, Header()] = None):
     if (property is None) != (property_value is None):
         raise HTTPException(422, "Параметры property и property_value должны передаваться вместе")
     if property is not None:
@@ -447,7 +447,7 @@ def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le
         if not secrets.compare_digest(provided_token, configured_token):
             raise HTTPException(403, "Недостаточно прав для доступа")
     params = {
-        "search": search, "section": section, "category": category, "manufacturer": manufacturer,
+        "search": search, "section": section, "category": category, "folder": folder, "manufacturer": manufacturer,
         "brand": brand, "manager": manager, "country": country,
         "material": material, "color": color, "in_stock": in_stock,
         "price_min": price_min, "price_max": price_max,
@@ -480,7 +480,7 @@ def products(db: Session = Depends(get_db), limit: Annotated[int, Query(ge=1, le
 
 
 @router.get("/products/count")
-def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, category: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False):
+def products_count(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, category: str | None = None, folder: Annotated[list[str] | None, Query()] = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, only_new: Annotated[bool, Query(alias="onlyNew")] = False):
     params = locals(); params.pop("db")
     return {"count": product_query(db, params).count()}
 
@@ -496,6 +496,7 @@ def search_products(
     barcode: Annotated[str | None, Query(max_length=2000)] = None,
     section: Annotated[str | None, Query(max_length=2000)] = None,
     category: Annotated[str | None, Query(max_length=2000)] = None,
+    folder: Annotated[list[str] | None, Query()] = None,
     manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
     brand: Annotated[str | None, Query(max_length=2000)] = None,
     manager: Annotated[str | None, Query(max_length=2000)] = None,
@@ -537,7 +538,7 @@ def search_products(
         "code": code,
         "article": article,
         "barcode": barcode,
-        "section": section, "category": category,
+        "section": section, "category": category, "folder": folder,
         "manufacturer": manufacturer,
         "brand": brand,
         "manager": manager,
@@ -576,6 +577,7 @@ def report_photos(
     barcode: Annotated[str | None, Query(max_length=2000)] = None,
     section: Annotated[str | None, Query(max_length=2000)] = None,
     category: Annotated[str | None, Query(max_length=2000)] = None,
+    folder: Annotated[list[str] | None, Query()] = None,
     manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
     brand: Annotated[str | None, Query(max_length=2000)] = None,
     manager: Annotated[str | None, Query(max_length=2000)] = None,
@@ -608,7 +610,7 @@ def report_photos(
         properties.setdefault(property_name.strip(), []).append(value.strip())
     params = {
         "search": search, "id": id, "name": name, "code": code, "article": article,
-        "barcode": barcode, "section": section, "category": category, "manufacturer": manufacturer,
+        "barcode": barcode, "section": section, "category": category, "folder": folder, "manufacturer": manufacturer,
         "brand": brand, "manager": manager, "country": country, "material": material,
         "color": color, "product_type": product_type, "warehouse": warehouse,
         "availability": availability, "in_stock_only": in_stock_only,
@@ -889,6 +891,7 @@ def filters(
     tree: bool = False,
     section: str | None = None,
     category: str | None = None,
+    folder: Annotated[list[str] | None, Query()] = None,
     brand: str | None = None,
     manager: str | None = None,
     manufacturer: str | None = None,
@@ -906,7 +909,7 @@ def filters(
         if separator and property_name.strip() and value.strip():
             properties.setdefault(property_name.strip(), []).append(value.strip())
     data = list_filters(db, {
-        "section": section, "category": category,
+        "section": section, "category": category, "folder": folder,
         "brand": brand,
         "manager": manager,
         "manufacturer": manufacturer,
@@ -923,6 +926,11 @@ def filters(
         from app.services.catalog_categories import category_tree
         return {"filters": data, "section_tree": category_tree(db)}
     return data
+
+
+@router.get("/filters/folders", response_model=list[str])
+def catalog_folders(db: Session = Depends(get_db)):
+    return folder_paths(db)
 
 
 @router.get("/catalog-categories/status", dependencies=[Depends(require_admin)])
@@ -1158,6 +1166,7 @@ def start_xlsx_export(
     barcode: Annotated[str | None, Query(max_length=2000)] = None,
     section: Annotated[str | None, Query(max_length=2000)] = None,
     category: Annotated[str | None, Query(max_length=2000)] = None,
+    folder: Annotated[list[str] | None, Query()] = None,
     manufacturer: Annotated[str | None, Query(max_length=2000)] = None,
     brand: Annotated[str | None, Query(max_length=2000)] = None,
     manager: Annotated[str | None, Query(max_length=2000)] = None,
@@ -1190,7 +1199,7 @@ def start_xlsx_export(
         properties.setdefault(property_name.strip(), []).append(value.strip())
     params = {
         "search": search, "id": id, "name": name, "code": code, "article": article,
-        "barcode": barcode, "section": section, "category": category, "manufacturer": manufacturer, "brand": brand,
+        "barcode": barcode, "section": section, "category": category, "folder": folder, "manufacturer": manufacturer, "brand": brand,
         "manager": manager, "country": country, "material": material, "color": color,
         "product_type": product_type, "warehouse": warehouse, "availability": availability,
         "in_stock_only": in_stock_only, "exclude_yyy": exclude_yyy, "only_new": only_new,
@@ -1271,7 +1280,7 @@ def download_xlsx_export_chunk(job_id: str, offset: Annotated[int, Query(ge=0)] 
 
 
 @router.get("/export.xlsx")
-def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, category: str | None = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):
+def export_xlsx(db: Session = Depends(get_db), search: str | None = None, section: str | None = None, category: str | None = None, folder: Annotated[list[str] | None, Query()] = None, manufacturer: str | None = None, brand: str | None = None, manager: str | None = None, country: str | None = None, material: str | None = None, color: str | None = None, in_stock: str | None = None, price_min: str | None = None, price_max: str | None = None, stock_min: str | None = None, stock_max: str | None = None, warehouse: str | None = None, product_type: str | None = None, exclude_yyy: bool = Query(True, alias="excludeYyy"), column: Annotated[list[str] | None, Query()] = None):
     params = locals(); params.pop("db"); columns = params.pop("column")
     add_log(db, "export_xlsx", f"Экспорт Excel; поиск: {search or ''}")
     db.commit()

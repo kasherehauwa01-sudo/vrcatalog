@@ -24,7 +24,7 @@ from app.models.catalog import (
     WarehouseSetting,
 )
 from app.api.routes import build_export_workbook, download_export_images, normalize_image_url, write_export_workbook_streaming
-from app.services.catalog import catalog_product_query, list_filters, paginated_products, product_type_name
+from app.services.catalog import catalog_product_query, folder_paths, list_filters, paginated_products, product_type_name
 from app.services.logging import add_log
 from app.schemas.catalog import ProductDetailOut
 
@@ -74,6 +74,26 @@ class CatalogProductQueryTests(unittest.TestCase):
 
     def tearDown(self):
         self.db.close()
+
+    def test_folder_paths_and_filtering(self):
+        for product, path in zip(self.products, [
+            "ПЛАСТМАССА|ЭЛЛАСТИК-ПЛАСТ|Вазы|Ваза",
+            "ПЛАСТМАССА|Поднос",
+            "ПЛАСТМАССА для дома|ЭЛЛАСТИК-ПЛАСТ|Стол",
+        ]):
+            product.properties.append(ProductProperty(name="Полныйпуть", value=path))
+        self.db.add(Product(code="NO-PATH", name="Без пути", quantity=1, search_text="без пути"))
+        self.db.flush()
+
+        self.assertCountEqual(folder_paths(self.db), [
+            "ПЛАСТМАССА|ЭЛЛАСТИК-ПЛАСТ|Вазы", "ПЛАСТМАССА",
+            "ПЛАСТМАССА для дома|ЭЛЛАСТИК-ПЛАСТ",
+        ])
+        self.assertNotIn("property:Полныйпуть", list_filters(self.db))
+        self.assertEqual(self.query(folder=["ПЛАСТМАССА"]), self.products[:2])
+        self.assertEqual(self.query(folder=["ПЛАСТМАССА|ЭЛЛАСТИК-ПЛАСТ"]), self.products[:1])
+        self.assertEqual(self.query(folder=["ПЛАСТМАССА", "ПЛАСТМАССА для дома"], brand="Alpha"),
+                         [self.products[0], self.products[2]])
 
     def query(self, **params):
         return catalog_product_query(self.db, params).order_by(Product.id).all()

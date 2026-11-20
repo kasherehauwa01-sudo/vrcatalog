@@ -68,6 +68,9 @@ export const api = {
   async categoryFilters(): Promise<{ filters: Record<string, string[]>; section_tree: CategoryNode[] }> {
     return request(`${API}/filters?tree=true`);
   },
+  async folders(): Promise<string[]> {
+    return request<string[]>(`${API}/filters/folders`);
+  },
   async categoryStatus(): Promise<CategorySyncStatus> { return request(`${API}/catalog-categories/status`); },
   async syncCategories(): Promise<CategorySyncStatus> { return request(`${API}/catalog-categories/sync`, { method: "POST" }); },
   async filters(params?: URLSearchParams): Promise<Record<string, string[]>> {
