@@ -4,7 +4,7 @@ ARG VITE_BASE_PATH=/vr/catalog/
 ENV VITE_BASE_PATH=$VITE_BASE_PATH
 COPY package*.json ./
 COPY types ./types
-RUN npm ci
+RUN npm ci && npm install --no-save @rollup/rollup-linux-x64-musl@4.62.2
 COPY . .
 RUN npm run build
 
