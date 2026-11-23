@@ -440,3 +440,10 @@ class CatalogSyncState(Base):
     category_count: Mapped[int] = mapped_column(Integer, default=0)
     section_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class UnneededFolderSnapshot(Base):
+    """Membership at the last successful digest (or initial enable)."""
+    __tablename__ = "unneeded_folder_snapshot"
+
+    product_code: Mapped[str] = mapped_column(String(128), primary_key=True)

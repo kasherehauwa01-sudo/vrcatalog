@@ -900,6 +900,9 @@ function App() {
   };
   const openScenarioCard = async (code: string) => {
     setSelectedScenario(code);
+    setScenarioForm(null);
+    setScenarioResult(null);
+    if (code === "unneeded_folder") setScenarioForm(await api.unneededFolderScenario());
     if (code === "monthly_promotion") setScenarioForm(await api.monthlyPromotionScenario());
   };
   const loadHistory = async (search = historySearch, status = historyStatus) => {
@@ -1640,6 +1643,26 @@ function App() {
                         </Stack>
                       </Paper>
                     ))}
+                    {selectedScenario === "unneeded_folder" && scenarioForm && <>
+                      <Button onClick={() => { setSelectedScenario(null); setScenarioForm(null); }}>← К списку сценариев</Button>
+                      <Typography variant="h6">Добавление товара в папку НЕНУЖНОЕ</Typography>
+                      <Typography color="text.secondary">Ежедневное письмо с кодом, наименованием и менеджером новых товаров. XLS содержит коды с ячейки A2. Время московское (UTC+3). При включении текущие товары принимаются за исходный список без рассылки.</Typography>
+                      <FormControlLabel label="Сценарий включён" control={<Switch checked={scenarioForm.enabled} onChange={(event) => setScenarioForm({ ...scenarioForm, enabled: event.target.checked })} />} />
+                      <TextField label="Время отправки" type="time" value={scenarioForm.send_time} onChange={(event) => setScenarioForm({ ...scenarioForm, send_time: event.target.value })} InputLabelProps={{ shrink: true }} />
+                      <TextField label="Email адреса" multiline minRows={3} helperText="Каждый адрес с новой строки" value={scenarioForm.recipients.join("\n")} onChange={(event) => setScenarioForm({ ...scenarioForm, recipients: event.target.value.split("\n") })} />
+                      <Stack direction="row" gap={1} flexWrap="wrap">
+                        <Button variant="contained" onClick={async () => {
+                          try {
+                            const updated = await api.updateUnneededFolderScenario(scenarioForm);
+                            setScenarioForm(updated);
+                            setScenarioList((current) => current.map((item) => item.code === updated.code ? { ...item, enabled: updated.enabled } : item));
+                            setScenarioResult({ status: "Настройки сохранены", changes: 0, sent: 0, recipients: updated.recipients, html: "" });
+                          } catch { setScenarioResult({ status: "Не удалось сохранить. Проверьте время и email адреса", changes: 0, sent: 0, recipients: [], html: "" }); }
+                        }}>Сохранить</Button>
+                        <Button onClick={async () => { setHistoryOpen(true); await loadHistory(); }}>История уведомлений</Button>
+                      </Stack>
+                      {scenarioResult && <Typography role="status">{scenarioResult.status}</Typography>}
+                    </>}
                     {selectedScenario === "monthly_promotion" && scenarioForm && <>
                       <Button onClick={() => { setSelectedScenario(null); setScenarioForm(null); }}>← К списку сценариев</Button>
                       <Typography variant="h6">Акция месяца</Typography>

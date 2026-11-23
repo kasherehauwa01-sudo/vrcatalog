@@ -267,6 +267,12 @@ export const api = {
   async sendTestMail(email: string): Promise<{ success: boolean; message: string }> {
     return request<{ success: boolean; message: string }>(`${API}/mail-settings/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
   },
+  async unneededFolderScenario(): Promise<NotificationScenario> {
+    return request<NotificationScenario>(`${API}/notification-scenarios/unneeded-folder`);
+  },
+  async updateUnneededFolderScenario(payload: NotificationScenario): Promise<NotificationScenario> {
+    return request<NotificationScenario>(`${API}/notification-scenarios/unneeded-folder`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  },
   async monthlyPromotionScenario(): Promise<NotificationScenario> {
     return request<NotificationScenario>(`${API}/notification-scenarios/monthly-promotion`);
   },

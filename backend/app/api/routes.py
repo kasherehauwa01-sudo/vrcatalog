@@ -1,6 +1,7 @@
 import csv
 import hashlib
 import json
+import re
 import logging
 from math import ceil
 import secrets
@@ -49,6 +50,7 @@ from app.services.catalog import catalog_product_query, decorate, folder_paths, 
 from app.services.logging import add_log
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
+from app.services import unneeded_folder
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
 from app.services.photo_report import create_photo_archive, photo_report_page
 from app.services.product_history import SNAPSHOT_TYPE, create_snapshot, get_history_setting, list_snapshots, manual_period, snapshot_by_period, snapshot_preview
@@ -800,6 +802,26 @@ def send_test_mail(payload: TestMailIn, db: Session = Depends(get_db)):
         return {"success": False, "message": "Не удалось отправить тестовое письмо."}
 
 
+@router.get("/notification-scenarios/unneeded-folder", response_model=ScenarioSettingOut, dependencies=[Depends(require_admin)])
+def unneeded_folder_settings(db: Session = Depends(get_db)):
+    item = unneeded_folder.get_setting(db)
+    db.commit()
+    return {"code": item.code, "enabled": item.enabled, "send_time": item.send_time, "recipients": scenario_recipients(item)}
+
+
+@router.put("/notification-scenarios/unneeded-folder", response_model=ScenarioSettingOut, dependencies=[Depends(require_admin)])
+def update_unneeded_folder_settings(payload: ScenarioSettingIn, db: Session = Depends(get_db)):
+    targets = list(dict.fromkeys(email.strip() for email in payload.recipients if email.strip()))
+    if any(not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) for email in targets):
+        raise HTTPException(422, "Укажите корректные email адреса")
+    item = unneeded_folder.get_setting(db)
+    unneeded_folder.set_enabled(db, item, payload.enabled)
+    item.send_time = payload.send_time
+    item.recipients_json = json.dumps(targets, ensure_ascii=False)
+    db.commit()
+    return {"code": item.code, "enabled": item.enabled, "send_time": item.send_time, "recipients": targets}
+
+
 @router.get("/notification-scenarios/monthly-promotion", response_model=ScenarioSettingOut, dependencies=[Depends(require_admin)])
 def monthly_promotion_settings(db: Session = Depends(get_db)):
     item = get_scenario_setting(db)
@@ -809,11 +831,19 @@ def monthly_promotion_settings(db: Session = Depends(get_db)):
 @router.get("/notification-scenarios", response_model=list[ScenarioSummaryOut], dependencies=[Depends(require_admin)])
 def notification_scenarios(db: Session = Depends(get_db)):
     item = get_scenario_setting(db)
-    return [{"code": item.code, "name": "Акция месяца", "enabled": item.enabled}]
+    extra = unneeded_folder.get_setting(db)
+    db.commit()
+    return [{"code": item.code, "name": "Акция месяца", "enabled": item.enabled},
+            {"code": extra.code, "name": unneeded_folder.NAME, "enabled": extra.enabled}]
 
 
 @router.patch("/notification-scenarios/{code}/enabled", response_model=ScenarioSummaryOut, dependencies=[Depends(require_admin)])
 def toggle_notification_scenario(code: str, enabled: bool = Body(embed=True), db: Session = Depends(get_db)):
+    if code == unneeded_folder.CODE:
+        item = unneeded_folder.get_setting(db)
+        unneeded_folder.set_enabled(db, item, enabled)
+        db.commit()
+        return {"code": item.code, "name": unneeded_folder.NAME, "enabled": item.enabled}
     if code != "monthly_promotion":
         raise HTTPException(404, "Сценарий не найден")
     item = get_scenario_setting(db)
