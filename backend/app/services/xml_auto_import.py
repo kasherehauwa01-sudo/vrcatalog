@@ -456,6 +456,8 @@ def start_worker() -> None:
             from app.services.monthly_promotion import run_scheduled_if_due
             from app.services.product_history import run_history_snapshot_if_due
             run_scheduled_if_due()
+            from app.services.unneeded_folder import run_scheduled_if_due as run_unneeded_folder
+            run_unneeded_folder()
             run_history_snapshot_if_due()
             time.sleep(CHECK_INTERVAL_SECONDS)
 

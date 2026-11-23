@@ -8,6 +8,8 @@ import time
 from sqlalchemy import String, and_, case, cast, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session, selectinload
 
+from app.services.catalog_folders import FOLDER_PATH_PROPERTIES, folder_path
+
 from app.models.catalog import Barcode, ImportRun, Price, Product, ProductImage, ProductProperty, Stock, WarehouseSetting, ProductTypeSetting
 
 logger = logging.getLogger(__name__)
@@ -17,7 +19,6 @@ WAREHOUSE_ORDER = [
     "Авиаторов", "Козловская", "Цитрус", "Привоз", "Бахтурова", "Ахтубинск",
     "СтройГрад", "Европа", "Парк Хаус", "ЦУМ", "Простор", "Универ",
 ]
-FOLDER_PATH_PROPERTY = "Полныйпуть"
 EXCLUDED_PROPERTY_FILTERS = {
     "ID",
     "АкцияДоллар",
@@ -93,15 +94,11 @@ def _values(value):
 
 def folder_paths(db: Session) -> list[str]:
     paths: set[str] = set()
-    values = db.query(ProductProperty.value).filter(
-        ProductProperty.name == FOLDER_PATH_PROPERTY,
-        ProductProperty.value.isnot(None),
-    )
+    values = db.query(ProductProperty.value).filter(ProductProperty.name.in_(FOLDER_PATH_PROPERTIES))
     for value, in values.yield_per(1000):
-        parts = value.strip(" ").split("|")
-        if len(parts) < 2 or any(not part.strip() for part in parts):
-            continue
-        paths.add("|".join(parts[:-1]))
+        path = folder_path(value)
+        if path:
+            paths.add(path)
     return sorted(paths, key=lambda path: (path.casefold(), path))
 
 
@@ -111,7 +108,7 @@ def apply_folder_filter(query, params):
         return query
     path = func.trim(ProductProperty.value)
     return query.filter(Product.properties.any(and_(
-        ProductProperty.name == FOLDER_PATH_PROPERTY,
+        ProductProperty.name.in_(FOLDER_PATH_PROPERTIES),
         or_(*(and_(
             func.substr(path, 1, len(prefix)) == prefix,
             func.length(path) > len(prefix),
@@ -847,7 +844,7 @@ def list_filters(db: Session, params=None):
         property_query = property_query.filter(Product.id.in_(select(base_ids.c.id)))
     property_rows = (
         property_query
-        .filter(ProductProperty.value.isnot(None), ProductProperty.name != FOLDER_PATH_PROPERTY)
+        .filter(ProductProperty.value.isnot(None), ProductProperty.name.notin_(FOLDER_PATH_PROPERTIES))
         .distinct()
         .order_by(ProductProperty.name, ProductProperty.value)
         .all()
