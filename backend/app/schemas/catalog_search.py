@@ -1,5 +1,6 @@
 """Optional body transport for long code lists; other filters stay in query parameters."""
 import re
+from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -14,3 +15,10 @@ class CatalogCodeBatch(BaseModel):
         if not codes or len(codes) > 1000 or any(len(code) > 128 for code in codes):
             raise ValueError("Укажите до 1000 кодов длиной не более 128 символов")
         return value
+
+
+class CatalogExportSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    product_ids: list[Annotated[int, Field(strict=True, ge=1, le=2147483647)]] = Field(
+        min_length=1, max_length=1000,
+    )

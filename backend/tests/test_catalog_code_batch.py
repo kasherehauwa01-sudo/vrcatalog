@@ -1,7 +1,10 @@
 import unittest
+from io import BytesIO
+from pathlib import Path
 from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -100,3 +103,53 @@ class CatalogCodeBatchTests(unittest.TestCase):
             submit.assert_called_once()
             self.assertEqual(submit.call_args.args[2]['code'], payload['code'])
             self.assertEqual(submit.call_args.args[3], ['code'])
+
+    def test_xlsx_contains_checked_ids_or_all_filtered_rows_without_pagination(self):
+        from app.api import routes
+        from app.core.admin_auth import require_heavy_admin
+
+        selected_codes = {self.codes[2], self.codes[7]}
+        with Session(self.engine) as db:
+            selected_ids = [row.id for row in db.query(Product.id).filter(Product.code.in_(selected_codes))]
+        with (
+            patch.object(routes.export_executor, 'submit', side_effect=lambda task, *args: task(*args)),
+            patch.object(routes, 'SessionLocal', side_effect=lambda: Session(self.engine)),
+            patch.dict(routes.export_jobs, {}, clear=True),
+        ):
+            self.assertEqual(self.client.post('/api/exports/xlsx', json={'product_ids': selected_ids}).status_code, 401)
+            self.app.dependency_overrides[require_heavy_admin] = lambda: object()
+            for params, body, expected in (
+                ({'column': 'code'}, {'product_ids': selected_ids + selected_ids}, selected_codes),
+                ({'column': 'code'}, {'product_ids': [2147483647]}, set()),
+                ({**self.query, 'column': 'code', 'page': 2, 'pageSize': 1},
+                 {'code': ' '.join(self.codes[:3])}, set(self.codes[:3])),
+            ):
+                with self.subTest(params=params, body=body):
+                    response = self.client.post('/api/exports/xlsx', params=params, json=body)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    job_id = response.json()['job_id']
+                    status = self.client.get(f'/api/exports/xlsx/{job_id}').json()
+                    self.assertEqual(status['status'], 'ready', status)
+                    self.addCleanup(Path(routes.export_jobs[job_id]['path']).unlink, missing_ok=True)
+                    self.assertEqual(status['total'], len(expected))
+                    download = self.client.get(f'/api/exports/xlsx/{job_id}/download')
+                    self.assertEqual(download.status_code, 200, download.text if not download.is_success else '')
+                    workbook = load_workbook(BytesIO(download.content), read_only=True)
+                    try:
+                        rows = list(workbook.active.values)[1:]
+                        self.assertCountEqual([row[0] for row in rows], expected)
+                    finally:
+                        workbook.close()
+
+    def test_invalid_xlsx_selection_does_not_start_an_export_job(self):
+        from app.api import routes
+        from app.core.admin_auth import require_heavy_admin
+
+        self.app.dependency_overrides[require_heavy_admin] = lambda: object()
+        with patch.object(routes.export_executor, 'submit') as submit:
+            for body in ({'product_ids': []}, {'product_ids': [0]}, {'product_ids': [True]},
+                         {'product_ids': [1], 'code': 'CODE-000001'}):
+                with self.subTest(body=body):
+                    response = self.client.post('/api/exports/xlsx', json=body)
+                    self.assertEqual(response.status_code, 422, response.text)
+            submit.assert_not_called()
