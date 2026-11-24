@@ -817,7 +817,7 @@ def product_query(db: Session, params, eager_load: bool = True):
         if params.get("stock_max"): q = q.filter(Stock.quantity <= float(params["stock_max"]))
     return q.distinct()
 
-def list_filters(db: Session, params=None):
+def list_filters(db: Session, params=None, filter_key: str | None = None):
     base_ids = None
     if params:
         base_ids = catalog_product_query(db, params, eager_load=False).with_entities(Product.id).subquery()
@@ -827,44 +827,63 @@ def list_filters(db: Session, params=None):
     data = {
         field: [v[0] for v in product_scope(db.query(getattr(Product, field))).filter(getattr(Product, field).isnot(None)).distinct().order_by(getattr(Product, field)).all()]
         for field in FILTER_FIELDS
+        if filter_key is None or filter_key == field
     }
-    type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
-    type_codes = [code for code, in product_scope(db.query(Product.product_type)).filter(Product.product_type.isnot(None)).distinct().order_by(Product.product_type).all()]
-    configured_types = list(dict.fromkeys(type_names[code] for code in type_codes if code in type_names))
-    data["product_type"] = [NEW_PRODUCT_TYPE_FILTER, *configured_types]
-    warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
-    warehouse_query = db.query(Stock.warehouse).join(Product, Product.id == Stock.product_id)
-    if base_ids is not None:
-        warehouse_query = warehouse_query.filter(Product.id.in_(select(base_ids.c.id)))
-    warehouse_codes = [code for code, in warehouse_query.filter(Stock.warehouse.isnot(None), Stock.quantity > 0).distinct().order_by(Stock.warehouse).all()]
-    warehouse_values = [warehouse_names.get(code, code) for code in warehouse_codes]
-    warehouse_rank = {name: index for index, name in enumerate(WAREHOUSE_ORDER)}
-    data["warehouse"] = sorted(
-        warehouse_values,
-        key=lambda name: (warehouse_rank.get(name, len(WAREHOUSE_ORDER)), name.casefold()),
-    )
-    data["availability"] = ["В наличии", "Нет в наличии"]
-    property_query = db.query(ProductProperty.name, ProductProperty.value).join(Product)
-    if base_ids is not None:
-        property_query = property_query.filter(Product.id.in_(select(base_ids.c.id)))
-    property_rows = (
-        property_query
-        .filter(ProductProperty.value.isnot(None), ProductProperty.name.notin_(FOLDER_PATH_PROPERTIES))
-        .distinct()
-        .order_by(ProductProperty.name, ProductProperty.value)
-        .all()
-    )
-    for property_name, value in property_rows:
-        normalized_name = property_name.strip().casefold()
-        if property_name.strip() in EXCLUDED_PROPERTY_FILTERS or normalized_name in {"производитель", "страна", "бренд", "менеджер", "материал", "цвет"}:
-            continue
-        key = f"property:{property_name}"
-        if len(data.setdefault(key, [])) < 100:
-            data[key].append(value)
-    barcode_query = db.query(Barcode.value).join(Product)
-    if base_ids is not None:
-        barcode_query = barcode_query.filter(Product.id.in_(select(base_ids.c.id)))
-    data["barcode"] = [value for value, in barcode_query.distinct().order_by(Barcode.value).limit(100).all()]
+    if filter_key is None or filter_key == "product_type":
+        type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
+        type_codes = [code for code, in product_scope(db.query(Product.product_type)).filter(Product.product_type.isnot(None)).distinct().order_by(Product.product_type).all()]
+        configured_types = list(dict.fromkeys(type_names[code] for code in type_codes if code in type_names))
+        data["product_type"] = [NEW_PRODUCT_TYPE_FILTER, *configured_types]
+    if filter_key is None or filter_key == "warehouse":
+        warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
+        warehouse_query = db.query(Stock.warehouse).join(Product, Product.id == Stock.product_id)
+        if base_ids is not None:
+            warehouse_query = warehouse_query.filter(Product.id.in_(select(base_ids.c.id)))
+        warehouse_codes = [code for code, in warehouse_query.filter(Stock.warehouse.isnot(None), Stock.quantity > 0).distinct().order_by(Stock.warehouse).all()]
+        warehouse_values = [warehouse_names.get(code, code) for code in warehouse_codes]
+        warehouse_rank = {name: index for index, name in enumerate(WAREHOUSE_ORDER)}
+        data["warehouse"] = sorted(
+            warehouse_values,
+            key=lambda name: (warehouse_rank.get(name, len(WAREHOUSE_ORDER)), name.casefold()),
+        )
+    if filter_key is None or filter_key == "availability":
+        data["availability"] = ["В наличии", "Нет в наличии"]
+    if filter_key is None or filter_key.startswith("property:"):
+        property_query = db.query(ProductProperty.name, ProductProperty.value).join(Product)
+        if base_ids is not None:
+            property_query = property_query.filter(Product.id.in_(select(base_ids.c.id)))
+        if filter_key is not None:
+            property_name = filter_key.removeprefix("property:").strip()
+            normalized_name = func.lower(func.trim(ProductProperty.name))
+            if db.get_bind().dialect.name == "postgresql":
+                property_query = property_query.filter(
+                    func.md5(normalized_name) == func.md5(property_name.lower()),
+                    normalized_name == property_name.lower(),
+                )
+            else:
+                property_query = property_query.filter(or_(
+                    ProductProperty.name == property_name,
+                    normalized_name == property_name.lower(),
+                ))
+        property_rows = (
+            property_query
+            .filter(ProductProperty.value.isnot(None), ProductProperty.name.notin_(FOLDER_PATH_PROPERTIES))
+            .distinct()
+            .order_by(ProductProperty.name, ProductProperty.value)
+            .all()
+        )
+        for property_name, value in property_rows:
+            normalized_name = property_name.strip().casefold()
+            if property_name.strip() in EXCLUDED_PROPERTY_FILTERS or normalized_name in {"производитель", "страна", "бренд", "менеджер", "материал", "цвет"}:
+                continue
+            key = f"property:{property_name}"
+            if len(data.setdefault(key, [])) < 100:
+                data[key].append(value)
+    if filter_key is None or filter_key == "barcode":
+        barcode_query = db.query(Barcode.value).join(Product)
+        if base_ids is not None:
+            barcode_query = barcode_query.filter(Product.id.in_(select(base_ids.c.id)))
+        data["barcode"] = [value for value, in barcode_query.distinct().order_by(Barcode.value).limit(100).all()]
     return data
 
 def meta(db: Session):

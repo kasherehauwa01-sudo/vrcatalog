@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes import router
 from app.db.session import Base, get_db
-from app.models.catalog import Product
+from app.models.catalog import Product, ProductProperty
 from app.services.catalog import catalog_product_query
 
 
@@ -153,3 +153,33 @@ class CatalogCodeBatchTests(unittest.TestCase):
                     response = self.client.post('/api/exports/xlsx', json=body)
                     self.assertEqual(response.status_code, 422, response.text)
             submit.assert_not_called()
+
+    def test_filter_options_query_only_the_requested_field_and_preserve_scope(self):
+        with Session(self.engine) as db:
+            for index, brand in enumerate(("Амфора", "Другой")):
+                product = db.query(Product).filter_by(code=self.codes[index]).one()
+                product.brand = brand
+                product.section = "Посуда"
+                product.properties.append(ProductProperty(name="Коллекция", value=f"Серия {index}"))
+            db.commit()
+
+        self.sql.clear()
+        response = self.client.get('/api/filters', params={**self.query, 'filterKey': 'brand'})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {'brand': ['Амфора', 'Другой']})
+        self.assertEqual(len(self.sql), 1)
+        self.assertNotIn('product_properties', self.sql[0])
+
+        self.sql.clear()
+        response = self.client.get('/api/filters', params={
+            **self.query, 'filterKey': 'property:Коллекция', 'brand': 'Амфора',
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {'property:Коллекция': ['Серия 0']})
+        self.assertEqual(len(self.sql), 1)
+        sections = self.client.get('/api/filters/sections')
+        self.assertEqual(sections.status_code, 200, sections.text)
+        combined = self.client.get('/api/filters', params={**self.query, 'tree': 'true'})
+        self.assertEqual(combined.status_code, 200, combined.text)
+        self.assertEqual(combined.json()['section_tree'], sections.json())
+        self.assertEqual(combined.json()['filters']['brand'], ['Амфора', 'Другой'])

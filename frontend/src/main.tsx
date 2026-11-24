@@ -1,4 +1,5 @@
 import { readCatalogParams, catalogUrl, codeList } from "./catalogQuery";
+import { CatalogFilterOptions } from "./components/CatalogFilterOptions";
 import { FolderTree } from "./components/FolderTree";
 import { SectionTree } from "./components/SectionTree";
 import { CategoryNode } from "./categoryTree";
@@ -174,6 +175,14 @@ const propertyFilterOrder = [
   "Серия", "Символ года", "ТВ товары", "Теги скидок", "Форм-фактор",
   "Форма", "Цифра",
 ];
+const filterEntries = (order: string[]) => order.map((label) => ({
+  label,
+  key: Object.entries(labels).find(([, value]) => value === label)?.[0] ?? `property:${label}`,
+}));
+const mainFilterEntries = filterEntries(mainFilterOrder);
+const propertyFilterEntries = filterEntries(propertyFilterOrder);
+const normalizeFilterKey = (key: string) => key.trim().toLocaleLowerCase("ru-RU");
+
 type FilterFields = {
   code: string;
   article: string;
@@ -263,15 +272,8 @@ function App() {
   const fieldsFromUrl = (p: URLSearchParams): FilterFields => ({ code: p.get("code") ?? "", article: p.get("article") ?? "", name: p.get("name") ?? "", inStockOnly: p.get("inStockOnly") ?? "true", excludeYyy: p.get("excludeYyy") ?? "true", onlyNew: p.get("onlyNew") ?? "false", availability: p.get("availability") ?? "all", quantityFrom: p.get("quantityFrom") ?? "", quantityTo: p.get("quantityTo") ?? "", priceFrom: p.get("priceFrom") ?? "", priceTo: p.get("priceTo") ?? "" });
   const [search, setSearch] = useState(initialParams.get("search") ?? "");
   const [sectionTree, setSectionTree] = useState<CategoryNode[]>([]);
-  const [filters, setFilters] = useState<Record<string, string[]>>({});
-  const [propertyOptions, setPropertyOptions] = useState<Record<string, string[]>>({});
-  const filterLabels = useMemo(() => Object.keys(filters).reduce<Record<string, string>>((result, key) => {
-    if (labels[key]) result[key] = labels[key];
-    else if (key.startsWith("property:")) result[key] = key.slice("property:".length);
-    return result;
-  }, { ...labels }), [filters]);
   const filterLabel = (key: string) =>
-    filterLabels[key] ?? (key.startsWith("property:") ? key.slice("property:".length) : key);
+    labels[key] ?? (key.startsWith("property:") ? key.slice("property:".length) : key);
   const [active, setActive] = useState<Record<string, string[]>>(() => multiFromUrl(initialParams));
   const [draftActive, setDraftActive] = useState<Record<string, string[]>>(() => multiFromUrl(initialParams));
   const [filterFields, setFilterFields] = useState(() => fieldsFromUrl(initialParams));
@@ -318,6 +320,7 @@ function App() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [draftSearch, setDraftSearch] = useState("");
   const [propertyPickerOpen, setPropertyPickerOpen] = useState(false);
+  const [propertyScope, setPropertyScope] = useState("");
   const [openCharacteristicGroups, setOpenCharacteristicGroups] = useState<Record<string, boolean>>({});
   const [openFilterGroups, setOpenFilterGroups] = useState<Record<string, boolean>>({});
   const [filterValueSearch, setFilterValueSearch] = useState<Record<string, string>>({});
@@ -393,20 +396,9 @@ function App() {
     finally { setLoading(false); }
   };
   useEffect(() => { reload(); }, [params.toString()]);
-  useEffect(() => { Promise.all([api.meta(), api.categoryFilters()]).then(([m, f]) => { setMeta(m); setFilters(f.filters); setPropertyOptions(f.filters); setSectionTree(f.section_tree); }); }, []);
   useEffect(() => {
-    if (!filtersOpen) return;
-    let cancelled = false;
-    api.categoryFilters().then((result) => {
-      if (cancelled) return;
-      setFilters(result.filters);
-      setPropertyOptions(result.filters);
-      setSectionTree(result.section_tree);
-    }).catch((error) => {
-      if (!cancelled) setCatalogError(error instanceof Error ? error.message : "Не удалось обновить разделы");
-    });
-    return () => { cancelled = true; };
-  }, [filtersOpen]);
+    api.meta().then(setMeta).catch(() => setCatalogError("Не удалось загрузить информацию о каталоге"));
+  }, []);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const normalized = search.trim();
@@ -501,6 +493,7 @@ function App() {
     setDraftActive(active);
     setDraftFields(filterFields);
     setDraftSearch(search);
+    setOpenFilterGroups({});
     setFiltersOpen(true);
   };
   const draftCodes = codeList(draftFields.code);
@@ -511,7 +504,7 @@ function App() {
     if (draftSearch.trim()) next.set("search", draftSearch.trim()); else next.delete("search");
     setSearch(draftSearch.trim());
     next.delete("property");
-    Object.keys(filterLabels).forEach((key) => {
+    new Set([...Object.keys(labels), ...Object.keys(draftActive)]).forEach((key) => {
       if (key.startsWith("property:")) {
         (draftActive[key] ?? []).forEach((value) => next.append("property", `${key.slice(9)}:${value}`));
         return;
@@ -545,7 +538,7 @@ function App() {
     next.delete("page"); replaceCatalogParams(next);
   };
   const removeFilter = (key: string, value?: string) => {
-    if (key in filterLabels) {
+    if (key in labels || key.startsWith("property:")) {
       const values = (active[key] ?? []).filter((item) => item !== value);
       const updated = { ...active, [key]: values }; setActive(updated); setDraftActive(updated);
       if (key.startsWith("property:")) {
@@ -569,42 +562,55 @@ function App() {
     Boolean(value && value !== "all" && !(["inStockOnly", "excludeYyy", "onlyNew"].includes(key) && value === "false"));
   const activeConditionCount = Object.values(active).reduce((sum, values) => sum + values.length, 0) + Object.entries(filterFields).filter(isActiveFilterField).length;
   const searchableFilterLabels = new Set(["Раздел", "Производитель", "Бренд", "Материал", "Коллекция", "Штрихкод"]);
-  const entriesForOrder = (options: Record<string, string[]>, order: string[]) => {
-    const entries = Object.entries(options).map(([key, values]) => ({
-      key,
-      values,
-      label: labels[key] ?? (key.startsWith("property:") ? key.slice("property:".length) : key),
-    }));
-    return order.flatMap((wantedLabel) => {
-      const match = entries.find(({ label }) => label.toLocaleLowerCase("ru-RU") === wantedLabel.toLocaleLowerCase("ru-RU"));
-      return match ? [match] : [];
+  const openPropertyPicker = () => {
+    const dependentParams = new URLSearchParams({
+      inStockOnly: draftFields.inStockOnly,
+      excludeYyy: draftFields.excludeYyy,
     });
-  };
-  const mainFilterEntries = entriesForOrder({ ...filters, folder: [] }, mainFilterOrder);
-  const propertyFilterEntries = entriesForOrder(propertyOptions, propertyFilterOrder);
-  const openPropertyPicker = async () => {
-    const dependentParams = new URLSearchParams();
-    dependentParams.set("inStockOnly", draftFields.inStockOnly);
     mainFilterEntries.forEach(({ key }) => {
-      const values = draftActive[key] ?? [];
-      if (!values.length) return;
-      if (key.startsWith("property:")) {
-        values.forEach((value) => dependentParams.append("property", `${key.slice("property:".length)}:${value}`));
-      } else if (key === "folder") {
-        values.forEach((value) => dependentParams.append(key, value));
-      } else {
-        dependentParams.set(key === "product_type" ? "productType" : key, serializeFilterValues(values));
+      const selected = Object.entries(draftActive)
+        .filter(([activeKey]) => normalizeFilterKey(activeKey) === normalizeFilterKey(key));
+      for (const [activeKey, values] of selected) {
+        if (!values.length) continue;
+        if (activeKey.startsWith("property:")) {
+          values.forEach((value) => dependentParams.append("property", `${activeKey.slice("property:".length)}:${value}`));
+        } else if (activeKey === "folder") {
+          values.forEach((value) => dependentParams.append(activeKey, value));
+        } else {
+          dependentParams.set(activeKey === "product_type" ? "productType" : activeKey, serializeFilterValues(values));
+        }
       }
     });
     if (draftActive.category?.length) dependentParams.set("category", serializeFilterValues(draftActive.category));
-    setPropertyOptions(await api.filters(dependentParams));
+    setPropertyScope(dependentParams.toString());
+    setOpenCharacteristicGroups({});
     setPropertyPickerOpen(true);
   };
-  const visibleFilterValues = (key: string, options = filters) => {
+  const selectedFilterCount = (key: string) => Object.entries(draftActive)
+    .filter(([activeKey]) => normalizeFilterKey(activeKey) === normalizeFilterKey(key))
+    .reduce((count, [, values]) => count + values.length, 0);
+  const renderFilterValues = (key: string, label: string, options: Record<string, string[]>) => {
     const searchValue = (filterValueSearch[key] ?? "").trim().toLocaleLowerCase("ru-RU");
-    return (options[key] ?? [])
-      .filter((value) => !searchValue || value.toLocaleLowerCase("ru-RU").includes(searchValue))
-      .slice(0, 100);
+    const matchesGroup = (optionKey: string) => normalizeFilterKey(optionKey) === normalizeFilterKey(key);
+    const keys = [...new Set([...Object.keys(options), ...Object.keys(draftActive)].filter(matchesGroup))];
+    const visible = keys.flatMap((optionKey) => {
+      const selected = draftActive[optionKey] ?? [];
+      return [...new Set([...selected, ...(options[optionKey] ?? [])])]
+        .filter((value) => !searchValue || value.toLocaleLowerCase("ru-RU").includes(searchValue))
+        .slice(0, 100)
+        .map((value) => ({ optionKey, value, selected: selected.includes(value) }));
+    }).slice(0, 100);
+    return <>
+      {searchableFilterLabels.has(label) && (
+        <TextField fullWidth size="small" label={`Поиск: ${label}`} value={filterValueSearch[key] ?? ""} onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))} sx={{ mt: 1 }} />
+      )}
+      <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
+        {visible.map(({ optionKey, value, selected }) => (
+          <Chip key={`${optionKey}:${value}`} clickable label={value} color={selected ? "primary" : "default"} variant={selected ? "filled" : "outlined"} onClick={() => toggleFilter(optionKey, value)} />
+        ))}
+        {visible.length === 0 && <Typography variant="body2" color="text.secondary">Значения не найдены</Typography>}
+      </Stack>
+    </>;
   };
   const productProperty = (product: ProductDetail, names: string[]) => {
     const normalizeName = (name: string) =>
@@ -1363,23 +1369,19 @@ function App() {
                     {mainFilterEntries.map(({ key, label }) => (
                       <Paper variant="outlined" key={key} sx={{ p: 1.5, minWidth: 0 }}>
                         <Button fullWidth aria-expanded={!!openFilterGroups[key]} aria-controls={`filter-group-${key}`} onClick={() => toggleFilterGroup(key)} sx={{ justifyContent: "space-between", minHeight: 44 }}>
-                          {label}{(draftActive[key]?.length ?? 0) > 0 ? ` · ${draftActive[key].length}` : ""}
+                          {label}{selectedFilterCount(key) > 0 ? ` · ${selectedFilterCount(key)}` : ""}
                           <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
                         </Button>
-                        <Collapse id={`filter-group-${key}`} in={!!openFilterGroups[key]} unmountOnExit>
-                          {key === "section" ? <SectionTree tree={sectionTree} categories={draftActive.category ?? []} sections={draftActive.section ?? []} onChange={(selection) => setDraftActive((current) => ({ ...current, ...selection }))} /> : key === "folder" ? (
+                        <Collapse id={`filter-group-${key}`} in={!!openFilterGroups[key]} mountOnEnter>
+                          {key === "folder" ? (
                             <FolderTree selected={draftActive.folder ?? []} onToggle={(path) => toggleFilter("folder", path)} />
-                          ) : <>
-                          {searchableFilterLabels.has(label) && (
-                            <TextField fullWidth size="small" label={`Поиск: ${label}`} value={filterValueSearch[key] ?? ""} onChange={(event) => setFilterValueSearch((current) => ({ ...current, [key]: event.target.value }))} sx={{ mt: 1 }} />
+                          ) : (
+                            <CatalogFilterOptions filterKey={key} onSectionTree={setSectionTree}>
+                              {({ tree, values }) => key === "section"
+                                ? <SectionTree tree={tree} categories={draftActive.category ?? []} sections={draftActive.section ?? []} onChange={(selection) => setDraftActive((current) => ({ ...current, ...selection }))} />
+                                : renderFilterValues(key, label, values)}
+                            </CatalogFilterOptions>
                           )}
-                          <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                            {visibleFilterValues(key).map((value) => (
-                              <Chip key={value} clickable label={value} color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"} variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"} onClick={() => toggleFilter(key, value)} />
-                            ))}
-                            {visibleFilterValues(key).length === 0 && <Typography variant="body2" color="text.secondary">Значения не найдены</Typography>}
-                          </Stack>
-                          </>}
                         </Collapse>
                       </Paper>
                     ))}
@@ -1438,7 +1440,7 @@ function App() {
                 {settingsTab === "settings" && (
                   <Box>
                     <Typography variant="h6">Настройки</Typography>
-                    <CategorySettings onSynced={async () => { const result = await api.categoryFilters(); setFilters(result.filters); setPropertyOptions(result.filters); setSectionTree(result.section_tree); reload(); }} />
+                    <CategorySettings onSynced={async () => { setSectionTree([]); await reload(); }} />
                     <Button
                       variant="contained"
                       startIcon={<UploadFileIcon />}
@@ -2116,15 +2118,11 @@ function App() {
           <DialogTitle>Подобрать по характеристикам</DialogTitle>
           <DialogContent>
             <Stack spacing={2} sx={{ mt: 1 }}>
-              {propertyFilterEntries.length === 0 && (
-                <Typography color="text.secondary">
-                  Для товаров, выбранных основными фильтрами, дополнительные свойства не найдены.
-                </Typography>
-              )}
               {propertyFilterEntries.map(({ key, label }) => (
                 <Box key={key}>
                   <Button
                     fullWidth
+                    aria-expanded={!!openCharacteristicGroups[key]}
                     onClick={() => setOpenCharacteristicGroups((current) => ({
                       ...current,
                       [key]: !current[key],
@@ -2136,19 +2134,10 @@ function App() {
                       {openCharacteristicGroups[key] ? "−" : "+"}
                     </Box>
                   </Button>
-                  <Collapse in={!!openCharacteristicGroups[key]} unmountOnExit>
-                    <Stack direction="row" flexWrap="wrap" gap={1} sx={{ py: 1 }}>
-                      {visibleFilterValues(key, propertyOptions).map((value) => (
-                        <Chip
-                          key={value}
-                          clickable
-                          label={value}
-                          color={(draftActive[key] ?? []).includes(value) ? "primary" : "default"}
-                          variant={(draftActive[key] ?? []).includes(value) ? "filled" : "outlined"}
-                          onClick={() => toggleFilter(key, value)}
-                        />
-                      ))}
-                    </Stack>
+                  <Collapse in={!!openCharacteristicGroups[key]} mountOnEnter>
+                    <CatalogFilterOptions filterKey={key} scope={propertyScope}>
+                      {({ values }) => renderFilterValues(key, label, values)}
+                    </CatalogFilterOptions>
                   </Collapse>
                 </Box>
               ))}

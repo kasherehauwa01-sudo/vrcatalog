@@ -107,8 +107,8 @@ export const api = {
   async meta(): Promise<Meta> {
     return request<Meta>(`${API}/meta`);
   },
-  async categoryFilters(): Promise<{ filters: Record<string, string[]>; section_tree: CategoryNode[] }> {
-    return request(`${API}/filters?tree=true`);
+  async categoryTree(): Promise<CategoryNode[]> {
+    return request(`${API}/filters/sections`);
   },
   async folders(): Promise<string[]> {
     return request<string[]>(`${API}/filters/folders`);
