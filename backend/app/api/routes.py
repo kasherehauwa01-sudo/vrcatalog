@@ -934,6 +934,7 @@ def run_auto_import_now():
 def filters(
     db: Session = Depends(get_db),
     tree: bool = False,
+    filter_key: Annotated[str | None, Query(alias="filterKey", max_length=255)] = None,
     section: str | None = None,
     category: str | None = None,
     folder: Annotated[list[str] | None, Query()] = None,
@@ -944,6 +945,8 @@ def filters(
     product_type: str | None = Query(None, alias="productType"),
     warehouse: str | None = None,
     barcode: str | None = None,
+    material: str | None = None,
+    color: str | None = None,
     in_stock_only: bool = Query(True, alias="inStockOnly"),
     exclude_yyy: bool = Query(True, alias="excludeYyy"),
     property: list[str] | None = Query(None),
@@ -961,16 +964,22 @@ def filters(
         "country": country,
         "product_type": product_type,
         "warehouse": warehouse,
-        "barcode": barcode,
+        "barcode": barcode, "material": material, "color": color,
         "in_stock_only": in_stock_only,
         "exclude_yyy": exclude_yyy,
         "properties": properties,
-    })
+    }, filter_key)
 
     if tree:
         from app.services.catalog_categories import category_tree
         return {"filters": data, "section_tree": category_tree(db)}
     return data
+
+
+@router.get("/filters/sections")
+def catalog_sections(db: Session = Depends(get_db)):
+    from app.services.catalog_categories import category_tree
+    return category_tree(db)
 
 
 @router.get("/filters/folders", response_model=list[str])

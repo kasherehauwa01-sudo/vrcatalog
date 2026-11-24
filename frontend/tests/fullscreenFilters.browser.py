@@ -2,7 +2,7 @@
 import json
 import os
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from playwright.sync_api import sync_playwright, expect
 
 base = os.environ.get('CATALOG_TEST_URL', 'http://localhost:5173/vr/catalog/')
@@ -15,14 +15,25 @@ with sync_playwright() as p:
         context = browser.new_context(viewport={'width': width, 'height': height}, service_workers='block')
         page = context.new_page()
         searches = []
+        filter_requests = []
+        pending_brand = []
         errors = []
         page.on('pageerror', lambda error: (errors.append(str(error)), print(str(error), flush=True)))
         def api(route):
-            path = urlsplit(route.request.url).path
+            url = urlsplit(route.request.url)
+            path = url.path
+            if '/api/filters' in path:
+                filter_requests.append((path, parse_qs(url.query)))
             if path.endswith('/meta'):
                 result = {'product_count': 300}
             elif path.endswith('/filters'):
-                result = {'filters': {'section': ['Посуда'], 'brand': ['Амфора', 'Бренд'], 'manager': ['Менеджер'], 'manufacturer': ['Производитель'], 'warehouse': ['Основной'], 'product_type': ['Обычный']}, 'section_tree': []}
+                key = parse_qs(url.query)['filterKey'][0]
+                if key == 'brand' and not pending_brand:
+                    pending_brand.append(route)
+                    return
+                result = {'brand': ['Амфора']} if key == 'brand' else {'material': ['Стекло']}
+            elif path.endswith('/filters/sections'):
+                result = []
             elif path.endswith('/filters/folders'):
                 result = ['МЕТАЛЛ|ПОСУДА для ПРИГОТОВЛЕНИЯ|АМФОРА (тандыры)']
             elif path.endswith('/products/search'):
@@ -37,6 +48,43 @@ with sync_playwright() as p:
         trigger.click()
         dialog = page.get_by_role('dialog', name='Поиск и фильтры')
         expect(dialog).to_be_visible()
+        entry = page.get_by_label('Код или список кодов', exact=True)
+        expect(entry).to_be_focused()
+        brand = dialog.get_by_role('button', name='Бренд', exact=True)
+        expect(brand).to_be_visible()
+        expect(dialog.get_by_role('button', name='Раздел', exact=True)).to_be_visible()
+        expect(dialog.get_by_role('button', name='Коллекция', exact=True)).to_be_visible()
+        assert filter_requests == []
+        brand.click()
+        expect(dialog.get_by_text('Загружаем значения…')).to_be_visible()
+        assert [query['filterKey'] for _, query in filter_requests] == [['brand']]
+        pending_brand[0].fulfill(status=503, json={})
+        expect(dialog.get_by_role('alert')).to_have_text('Не удалось загрузить значения')
+        dialog.get_by_role('button', name='Повторить').click()
+        expect(dialog.get_by_role('button', name='Амфора')).to_be_visible()
+        brand.click()
+        brand.click()
+        expect(dialog.get_by_role('button', name='Амфора')).to_be_visible()
+        assert len(filter_requests) == 2
+        dialog.get_by_role('button', name='Амфора').click()
+        dialog.get_by_role('button', name='Подобрать по характеристикам').click()
+        characteristics = page.get_by_role('dialog').filter(has=page.get_by_role('heading', name='Подобрать по характеристикам'))
+        material = characteristics.get_by_role('button', name='Материал', exact=True)
+        expect(material).to_be_visible()
+        assert len(filter_requests) == 2
+        material.click()
+        expect(characteristics.get_by_role('button', name='Стекло')).to_be_visible()
+        assert filter_requests[-1][1]['filterKey'] == ['material']
+        assert filter_requests[-1][1]['brand'] == ['Амфора']
+        characteristics.get_by_role('button', name='Готово').click()
+        dialog.get_by_role('button', name='Раздел', exact=True).click()
+        expect(dialog.get_by_label('Найти раздел...')).to_be_visible()
+        assert filter_requests[-1][0].endswith('/filters/sections')
+        dialog.get_by_role('button', name='Поиск по папке', exact=True).click()
+        expect(dialog.get_by_text('МЕТАЛЛ', exact=True)).to_be_visible()
+        assert filter_requests[-1][0].endswith('/filters/folders')
+        assert len(filter_requests) == 5
+        entry.focus()
         box = dialog.bounding_box()
         assert box['width'] == width and box['height'] == height, box
         entry = page.get_by_label('Код или список кодов', exact=True)
@@ -77,4 +125,4 @@ with sync_playwright() as p:
         assert not errors, errors
         context.close()
     browser.close()
-print('Desktop/mobile: fullscreen, focus, 300-code paste, Enter, cancel, apply, POST, reload, reset and Escape passed')
+print('Desktop/mobile: lazy filter requests, loading, retry, caching, dependent characteristics, fullscreen, focus, 300-code paste, Enter, cancel, apply, POST, reload, reset and Escape passed')
