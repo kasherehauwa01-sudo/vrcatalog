@@ -1,3 +1,4 @@
+import { readCatalogParams, catalogUrl, codeList } from "./catalogQuery";
 import { FolderTree } from "./components/FolderTree";
 import { SectionTree } from "./components/SectionTree";
 import { CategoryNode } from "./categoryTree";
@@ -241,7 +242,7 @@ const serializeFilterValues = (values: string[]) =>
     .join(",");
 
 function App() {
-  const initialParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const initialParams = useMemo(() => readCatalogParams(), []);
   const multiFromUrl = (p: URLSearchParams) => {
     const result = Object.keys(labels).reduce<Record<string, string[]>>((values, key) => {
       if (key === "folder") {
@@ -315,6 +316,7 @@ function App() {
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({ page: Number(initialParams.get("page")) || 1, pageSize: Number(initialParams.get("pageSize")) || 100, totalItems: 0, totalPages: 0 });
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [draftSearch, setDraftSearch] = useState("");
   const [propertyPickerOpen, setPropertyPickerOpen] = useState(false);
   const [openCharacteristicGroups, setOpenCharacteristicGroups] = useState<Record<string, boolean>>({});
   const [openFilterGroups, setOpenFilterGroups] = useState<Record<string, boolean>>({});
@@ -355,28 +357,26 @@ function App() {
   const [catalogBackAvailable, setCatalogBackAvailable] = useState(
     () => Boolean(window.history.state?.catalogBack),
   );
-  const params = useMemo(() => new URLSearchParams(window.location.search), [queryVersion]);
+  const params = useMemo(() => readCatalogParams(), [queryVersion]);
   const replaceCatalogParams = (next: URLSearchParams) => {
-    const query = next.toString();
     window.history.replaceState(
       window.history.state,
       "",
-      `${window.location.pathname}${query ? `?${query}` : ""}`,
+      catalogUrl(window.location.pathname, next),
     );
     setQueryVersion((value) => value + 1);
   };
   const pushCatalogParams = (next: URLSearchParams) => {
-    const query = next.toString();
     window.history.pushState(
       { ...window.history.state, catalogBack: true },
       "",
-      `${window.location.pathname}${query ? `?${query}` : ""}`,
+      catalogUrl(window.location.pathname, next),
     );
     setCatalogBackAvailable(true);
     setQueryVersion((value) => value + 1);
   };
   const updateParams = (changes: Record<string, string | number | null>, resetPage = true) => {
-    const next = new URLSearchParams(window.location.search);
+    const next = readCatalogParams();
     Object.entries(changes).forEach(([key, value]) => {
       const normalized = String(value ?? "").trim();
       if (normalized && normalized !== "all") next.set(key, normalized); else next.delete(key);
@@ -410,14 +410,14 @@ function App() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const normalized = search.trim();
-      const currentSearch = new URLSearchParams(window.location.search).get("search") ?? "";
+      const currentSearch = readCatalogParams().get("search") ?? "";
       if (normalized !== currentSearch) updateParams({ search: normalized });
     }, 400);
     return () => window.clearTimeout(timer);
   }, [search]);
   useEffect(() => {
     const restore = () => {
-      const restored = new URLSearchParams(window.location.search);
+      const restored = readCatalogParams();
       const restoredActive = multiFromUrl(restored); const restoredFields = fieldsFromUrl(restored);
       setSearch(restored.get("search") ?? "");
       setActive(restoredActive);
@@ -497,8 +497,19 @@ function App() {
           : [...values, value],
       };
     });
+  const openFilters = () => {
+    setDraftActive(active);
+    setDraftFields(filterFields);
+    setDraftSearch(search);
+    setFiltersOpen(true);
+  };
+  const draftCodes = codeList(draftFields.code);
+  const codeError = draftCodes.length > 1000 || draftCodes.some((code) => code.length > 128) || draftFields.code.length > 128999;
   const applyFilters = () => {
-    const next = new URLSearchParams(window.location.search);
+    if (codeError) return;
+    const next = readCatalogParams();
+    if (draftSearch.trim()) next.set("search", draftSearch.trim()); else next.delete("search");
+    setSearch(draftSearch.trim());
     next.delete("property");
     Object.keys(filterLabels).forEach((key) => {
       if (key.startsWith("property:")) {
@@ -521,15 +532,16 @@ function App() {
     setActive(draftActive); setFilterFields(draftFields); replaceCatalogParams(next); setFiltersOpen(false);
   };
   const applyFiltersOnEnter = (event: React.KeyboardEvent) => {
-    if (event.key !== "Enter") return;
+    if (event.key !== "Enter" || (event.target instanceof HTMLTextAreaElement && !event.ctrlKey && !event.metaKey)) return;
     event.preventDefault();
     applyFilters();
   };
   const resetFilters = () => {
-    const emptyFields = fieldsFromUrl(new URLSearchParams());
+    const emptyFields = { ...fieldsFromUrl(new URLSearchParams()), inStockOnly: "false", excludeYyy: "false" };
+    setSearch(""); setDraftSearch("");
     setDraftActive({}); setActive({}); setDraftFields(emptyFields); setFilterFields(emptyFields);
-    const next = new URLSearchParams(window.location.search);
-    [...Object.keys(labels), "productType", "property", ...Object.keys(emptyFields)].forEach((key) => next.delete(key));
+    const next = readCatalogParams();
+    ["search", ...Object.keys(labels), "productType", "property", ...Object.keys(emptyFields)].forEach((key) => next.delete(key));
     next.delete("page"); replaceCatalogParams(next);
   };
   const removeFilter = (key: string, value?: string) => {
@@ -537,11 +549,11 @@ function App() {
       const values = (active[key] ?? []).filter((item) => item !== value);
       const updated = { ...active, [key]: values }; setActive(updated); setDraftActive(updated);
       if (key.startsWith("property:")) {
-        const next = new URLSearchParams(window.location.search); next.delete("property");
+        const next = readCatalogParams(); next.delete("property");
         Object.entries(updated).filter(([activeKey]) => activeKey.startsWith("property:")).forEach(([activeKey, activeValues]) => activeValues.forEach((item) => next.append("property", `${activeKey.slice(9)}:${item}`)));
         next.delete("page"); replaceCatalogParams(next);
       } else if (key === "folder") {
-        const next = new URLSearchParams(window.location.search);
+        const next = readCatalogParams();
         next.delete(key);
         values.forEach((item) => next.append(key, item));
         next.delete("page");
@@ -620,8 +632,7 @@ function App() {
   };
   const catalogFilterUrl = (key: string, value: string) => {
     const next = paramsForDetailFilter(key, value);
-    const query = next.toString();
-    return `${window.location.pathname}${query ? `?${query}` : ""}`;
+    return catalogUrl(window.location.pathname, next);
   };
   const openCatalogFilter = (key: string, value: string) => {
     const next = paramsForDetailFilter(key, value);
@@ -1283,27 +1294,22 @@ function App() {
                 spacing={1}
                 alignItems="stretch"
               >
-                {!filtersOpen && (
                   <TextField
                     fullWidth
                     size="small"
                     placeholder="Поиск по названию, коду, артикулу, бренду, штрихкодам и тегам"
                     value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    onClick={() => {
-                      setDraftActive(active);
-                      setDraftFields(filterFields);
-                      setFiltersOpen(true);
-                    }}
+                    onClick={openFilters}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter") updateParams({ search: search.trim() });
+                      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openFilters(); }
                     }}
                     aria-label="Поиск товаров"
                     InputProps={{
+                      readOnly: true,
                       startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />,
                       endAdornment: search ? (
                         <InputAdornment position="end">
-                          <IconButton aria-label="Очистить поиск" onClick={() => { setSearch(""); updateParams({ search: null }); }}>
+                          <IconButton aria-label="Очистить поиск" onClick={(event) => { event.stopPropagation(); setSearch(""); updateParams({ search: null }); }}>
                             <CloseIcon />
                           </IconButton>
                         </InputAdornment>
@@ -1317,25 +1323,29 @@ function App() {
                       },
                     }}
                   />
-                )}
               </Stack>
-              <Collapse in={filtersOpen} unmountOnExit>
-                <Paper
-                  variant="outlined"
-                  sx={{ mt: 1, p: { xs: 1.5, sm: 2 }, maxHeight: "70vh", overflowY: "auto" }}
-                >
-                  <Stack spacing={2} role="form" aria-label="Расширенный фильтр товаров">
-                    <Stack direction="row" justifyContent="space-between" alignItems="center">
-                      <Typography variant="h6">Фильтр товаров</Typography>
-                      <IconButton aria-label="Закрыть фильтр" onClick={() => setFiltersOpen(false)}>
-                        <CloseIcon />
-                      </IconButton>
-                    </Stack>
-                    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(3, 1fr)" }, gap: 1.5 }}>
-                      <TextField autoFocus label="Поиск по коду" value={draftFields.code} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })} />
-                      <TextField label="Поиск по артикулу" value={draftFields.article} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })} />
-                      <TextField label="Поиск по наименованию" value={draftFields.name} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })} />
-                    </Box>
+              <Dialog fullScreen open={filtersOpen} onClose={() => setFiltersOpen(false)} aria-labelledby="catalog-filters-title" PaperProps={{ sx: { bgcolor: "#f4f8fb", borderRadius: 0 } }}>
+                <DialogTitle component="div" sx={{ bgcolor: "white", borderBottom: "1px solid", borderColor: "divider" }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ maxWidth: 1200, mx: "auto" }}>
+                    <Box><Typography id="catalog-filters-title" component="h2" variant="h5" fontWeight={800}>Поиск и фильтры</Typography><Typography variant="body2" color="text.secondary">Настройте условия и нажмите «Показать товары»</Typography></Box>
+                    <IconButton aria-label="Закрыть фильтры без применения" onClick={() => setFiltersOpen(false)}><CloseIcon /></IconButton>
+                  </Stack>
+                </DialogTitle>
+                <DialogContent sx={{ p: { xs: 2, md: 3 } }}>
+                  <Stack spacing={2.5} sx={{ maxWidth: 1200, mx: "auto", py: 1 }} role="form" aria-label="Расширенный фильтр товаров">
+                    <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
+                      <Typography variant="h6" sx={{ mb: 2 }}>Найти товары</Typography>
+                      <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "1.2fr 1fr" }, gap: 2 }}>
+                        <TextField autoFocus fullWidth multiline minRows={5} maxRows={9} label="Код или список кодов" placeholder="001234 005678 009012" value={draftFields.code} error={codeError} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, code: event.target.value })} helperText={codeError ? "Не более 1000 кодов, до 128 символов каждый" : draftCodes.length > 1 ? `Кодов: ${draftCodes.length} · уникальных: ${new Set(draftCodes.map((code) => code.toLowerCase())).size}. Только точные совпадения.` : "Разделяйте пробелами, запятыми или новой строкой. Один код — поиск по части; список — точные совпадения."} />
+                        <Stack spacing={2}>
+                          <TextField label="Артикул" value={draftFields.article} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, article: event.target.value })} />
+                          <TextField label="Наименование" value={draftFields.name} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftFields({ ...draftFields, name: event.target.value })} />
+                          <TextField label="Общий поиск" value={draftSearch} onKeyDown={applyFiltersOnEnter} onChange={(event) => setDraftSearch(event.target.value)} helperText="Название, код, артикул, бренд, штрихкод или тег" />
+                        </Stack>
+                      </Box>
+                    </Paper>
+                    <Paper variant="outlined" sx={{ p: 2 }}>
+                    <Typography fontWeight={700}>Наличие и видимость</Typography>
                     <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
                       <FormControlLabel
                         control={<Switch checked={draftFields.inStockOnly !== "false"} onChange={(event) => setDraftFields({ ...draftFields, inStockOnly: event.target.checked ? "true" : "false" })} />}
@@ -1346,13 +1356,17 @@ function App() {
                         label="Исключить категорию ЯЯЯ"
                       />
                     </Stack>
+                    <Typography variant="body2" color="text.secondary">Эти условия действуют и при поиске по списку кодов.</Typography>
+                    </Paper>
+                    <Typography variant="h6">Уточнить выбор</Typography>
+                    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" }, gap: 2, alignItems: "start" }}>
                     {mainFilterEntries.map(({ key, label }) => (
-                      <Box key={key}>
-                        <Button fullWidth onClick={() => toggleFilterGroup(key)} sx={{ justifyContent: "space-between" }}>
-                          {label}
+                      <Paper variant="outlined" key={key} sx={{ p: 1.5, minWidth: 0 }}>
+                        <Button fullWidth aria-expanded={!!openFilterGroups[key]} aria-controls={`filter-group-${key}`} onClick={() => toggleFilterGroup(key)} sx={{ justifyContent: "space-between", minHeight: 44 }}>
+                          {label}{(draftActive[key]?.length ?? 0) > 0 ? ` · ${draftActive[key].length}` : ""}
                           <Box component="span" aria-hidden>{openFilterGroups[key] ? "−" : "+"}</Box>
                         </Button>
-                        <Collapse in={!!openFilterGroups[key]} unmountOnExit>
+                        <Collapse id={`filter-group-${key}`} in={!!openFilterGroups[key]} unmountOnExit>
                           {key === "section" ? <SectionTree tree={sectionTree} categories={draftActive.category ?? []} sections={draftActive.section ?? []} onChange={(selection) => setDraftActive((current) => ({ ...current, ...selection }))} /> : key === "folder" ? (
                             <FolderTree selected={draftActive.folder ?? []} onToggle={(path) => toggleFilter("folder", path)} />
                           ) : <>
@@ -1367,18 +1381,22 @@ function App() {
                           </Stack>
                           </>}
                         </Collapse>
-                      </Box>
+                      </Paper>
                     ))}
+                    </Box>
                     <Button variant="outlined" onClick={openPropertyPicker}>Подобрать по характеристикам</Button>
-                    {meta.errors && <Typography color="error">Ошибки импорта: {meta.errors}</Typography>}
-                    <Stack direction="row" spacing={1} flexWrap="wrap">
-                      <Button variant="contained" onClick={applyFilters}>Применить</Button>
-                      <Button onClick={resetFilters}>Сбросить</Button>
-                      <Button onClick={() => setFiltersOpen(false)}>Закрыть</Button>
+                  </Stack>
+                </DialogContent>
+                <DialogActions sx={{ bgcolor: "white", borderTop: "1px solid", borderColor: "divider", p: 2 }}>
+                  <Stack direction={{ xs: "column", sm: "row" }} gap={1.5} alignItems={{ sm: "center" }} sx={{ width: "100%", maxWidth: 1200, mx: "auto" }}>
+                    <Button sx={{ mr: { sm: "auto" } }} onClick={() => { setDraftActive({}); setDraftSearch(""); setDraftFields({ ...fieldsFromUrl(new URLSearchParams()), inStockOnly: "false", excludeYyy: "false" }); }}>Сбросить всё</Button>
+                    <Stack direction="row" spacing={1}>
+                      <Button fullWidth variant="outlined" onClick={() => setFiltersOpen(false)}>Отмена</Button>
+                      <Button fullWidth variant="contained" disabled={codeError} onClick={applyFilters} sx={{ whiteSpace: "nowrap", minWidth: 180 }}>Показать товары</Button>
                     </Stack>
                   </Stack>
-                </Paper>
-              </Collapse>
+                </DialogActions>
+              </Dialog>
             </Paper>
           )}
 
@@ -2022,7 +2040,7 @@ function App() {
                       <Chip key={`${key}-${value}`} label={`${filterLabel(key)}: ${key === "category" ? sectionTree.find((node) => (node.id === null ? "uncategorized" : String(node.id)) === value)?.name ?? value : key === "folder" ? value.split("|").map((part) => part.trim()).join(" / ") : value}`} onDelete={() => removeFilter(key, value)} />
                     )))}
                     {Object.entries(filterFields).filter(isActiveFilterField).map(([key, value]) => (
-                      <Chip key={key} label={`${filterFieldLabels[key as keyof FilterFields]}: ${value === "in_stock" ? "В наличии" : value === "out_of_stock" ? "Нет в наличии" : value === "true" ? "Да" : value}`} onDelete={() => removeFilter(key)} />
+                      <Chip key={key} label={`${filterFieldLabels[key as keyof FilterFields]}: ${key === "code" && codeList(value).length > 1 ? `${new Set(codeList(value).map((code) => code.toLowerCase())).size} кодов` : value === "in_stock" ? "В наличии" : value === "out_of_stock" ? "Нет в наличии" : value === "true" ? "Да" : value}`} onDelete={() => removeFilter(key)} />
                     ))}
                     <Button size="small" onClick={resetFilters}>Очистить все</Button>
                   </Stack>
