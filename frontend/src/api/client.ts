@@ -342,7 +342,16 @@ export const api = {
   exportUrl(kind: "csv" | "xlsx", params: URLSearchParams) {
     return `${API}/export.${kind}?${params}`;
   },
-  async startExcelExport(params: URLSearchParams): Promise<{ job_id: string; status: string }> {
+  async startExcelExport(params: URLSearchParams, selectedIds: readonly number[] = []): Promise<{ job_id: string; status: string }> {
+    if (selectedIds.length) {
+      const query = new URLSearchParams();
+      params.getAll("column").forEach((column) => query.append("column", column));
+      return adminRequest<{ job_id: string; status: string }>(`${API}/exports/xlsx?${query}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product_ids: selectedIds }),
+      }, true);
+    }
     const { query, init } = codeRequest(params);
     return adminRequest<{ job_id: string; status: string }>(`${API}/exports/xlsx?${query}`, init ?? { method: "POST" }, true);
   },

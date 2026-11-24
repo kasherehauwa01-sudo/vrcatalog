@@ -50,7 +50,7 @@ from app.services.catalog import catalog_product_query, decorate, folder_paths, 
 from app.services.logging import add_log
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
-from app.schemas.catalog_search import CatalogCodeBatch
+from app.schemas.catalog_search import CatalogCodeBatch, CatalogExportSelection
 from app.services import unneeded_folder
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
 from app.services.photo_report import create_photo_archive, photo_report_page
@@ -75,7 +75,9 @@ EXPORT_PAGINATION_KEYS = {"page", "page_size", "pageSize", "limit", "offset", "s
 
 
 def filtered_product_ids_subquery(db: Session, params: dict):
-    """Возвращает единый запрос уникальных ID со всеми фильтрами, но без пагинации UI."""
+    """Возвращает уникальные ID выбранных товаров или всей отфильтрованной выдачи."""
+    if (product_ids := params.get("product_ids")) is not None:
+        return db.query(Product.id.label("product_id")).filter(Product.id.in_(product_ids)).subquery()
     filter_params = {key: value for key, value in params.items() if key not in EXPORT_PAGINATION_KEYS}
     return (
         catalog_product_query(db, filter_params, eager_load=False)
@@ -1228,13 +1230,13 @@ def start_xlsx_export(
     price_to: Annotated[float | None, Query(alias="priceTo", ge=0)] = None,
     property: Annotated[list[str] | None, Query()] = None,
     column: Annotated[list[str] | None, Query()] = None,
-    code_batch: Annotated[CatalogCodeBatch | None, Body()] = None,
+    body: Annotated[CatalogCodeBatch | CatalogExportSelection | None, Body()] = None,
 ):
     """Запускает длительное формирование Excel и сразу возвращает идентификатор задания."""
-    if code_batch is not None:
+    if isinstance(body, CatalogCodeBatch):
         if code is not None:
             raise HTTPException(422, "Передайте коды либо в URL, либо в теле запроса")
-        code = code_batch.code
+        code = body.code
     if quantity_from is not None and quantity_to is not None and quantity_from > quantity_to:
         raise HTTPException(422, "Минимальное количество не может быть больше максимального")
     if price_from is not None and price_to is not None and price_from > price_to:
@@ -1254,6 +1256,8 @@ def start_xlsx_export(
         "quantity_from": quantity_from, "quantity_to": quantity_to,
         "price_from": price_from, "price_to": price_to, "properties": properties,
     }
+    if isinstance(body, CatalogExportSelection):
+        params = {"product_ids": body.product_ids}
     columns = column
     cleanup_export_jobs()
     job_id = uuid.uuid4().hex

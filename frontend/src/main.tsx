@@ -720,7 +720,7 @@ function App() {
     setExportProgress(null);
     setExportMessage("Формируем Excel. Не закрывайте это окно…");
     try {
-      const { job_id: jobId } = await api.startExcelExport(exportParams);
+      const { job_id: jobId } = await api.startExcelExport(exportParams, selectedIds);
       for (let attempt = 0; attempt < 900; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
         if (attempt === 59) setExportMessage("Большой Excel продолжает формироваться пакетами…");

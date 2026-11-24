@@ -48,7 +48,7 @@ for (const code of ['00123', codes]) {
     });
 
     const params = new URLSearchParams({ code, brand: 'Brand' });
-    assert.deepEqual(await api.startExcelExport(params), { job_id: 'job', status: 'processing' });
+    assert.deepEqual(await api.startExcelExport(params, []), { job_id: 'job', status: 'processing' });
     assert.deepEqual(calls.map(({ method, url }) => [method, url.pathname]), [
       ['GET', `${apiPath}/admin/session`],
       ['POST', `${apiPath}/exports/xlsx`],
@@ -150,4 +150,27 @@ test('protected operations share recovery and do not race with session rotation'
     ['GET', `${apiPath}/admin/session`],
     ['POST', `${apiPath}/admin/logout`],
   ]);
+});
+
+test('checked product IDs take precedence over catalog filters in Excel export', async (t) => {
+  const { api, calls } = await loadApi(t, (call) => {
+    if (call.url.pathname.endsWith('/admin/session')) {
+      return Response.json({ authenticated: true, csrf_token: 'restored-token' });
+    }
+    return Response.json({ job_id: 'job', status: 'processing' });
+  });
+  const params = new URLSearchParams({ code: codes, brand: 'Brand', page: '2' });
+  params.append('column', 'code');
+  params.append('column', 'name');
+
+  await api.startExcelExport(params, [12, 35]);
+
+  assert.equal(calls.length, 2);
+  const post = calls[1];
+  assert.equal(post.url.pathname, `${apiPath}/exports/xlsx`);
+  assert.deepEqual([...post.url.searchParams], [['column', 'code'], ['column', 'name']]);
+  assert.equal(post.method, 'POST');
+  assert.equal(post.headers.get('X-CSRF-Token'), 'restored-token');
+  assert.equal(post.headers.get('Content-Type'), 'application/json');
+  assert.deepEqual(JSON.parse(post.body), { product_ids: [12, 35] });
 });
