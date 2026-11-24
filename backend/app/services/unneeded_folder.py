@@ -39,7 +39,7 @@ def current_products(db):
                       .execution_options(yield_per=1000))
     products = {}
     for code, name, manager, value in rows:
-        path = folder_path(value)
+        path = folder_path(value, name)
         if path and any(part.strip().casefold() == "ненужное" for part in path.split("|")):
             products[code] = (code, name, manager)
     return products

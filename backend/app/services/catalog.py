@@ -94,9 +94,11 @@ def _values(value):
 
 def folder_paths(db: Session) -> list[str]:
     paths: set[str] = set()
-    values = db.query(ProductProperty.value).filter(ProductProperty.name.in_(FOLDER_PATH_PROPERTIES))
-    for value, in values.yield_per(1000):
-        path = folder_path(value)
+    values = db.query(ProductProperty.value, Product.name).join(
+        Product, Product.id == ProductProperty.product_id,
+    ).filter(ProductProperty.name.in_(FOLDER_PATH_PROPERTIES))
+    for value, name in values.yield_per(1000):
+        path = folder_path(value, name)
         if path:
             paths.add(path)
     return sorted(paths, key=lambda path: (path.casefold(), path))
