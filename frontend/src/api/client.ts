@@ -28,40 +28,81 @@ import type {
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 const API = `${basePath}/api`;
 let csrfToken = "";
+let adminOperations = Promise.resolve();
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const method = (init?.method ?? "GET").toUpperCase();
-  const headers = new Headers(init?.headers);
-  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) headers.set("X-CSRF-Token", csrfToken);
-  const response = await fetch(url, { ...init, headers, credentials: "same-origin" });
+// Session checks rotate the token on the server, so keep them ordered with admin writes.
+function runAdminOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = adminOperations.then(operation);
+  adminOperations = result.then(() => {}, () => {});
+  return result;
+}
+
+function expireAdminSession(): void {
+  csrfToken = "";
+  window.dispatchEvent(new Event("vrcatalog-admin-expired"));
+}
+
+async function fetchResponse(url: string, init?: RequestInit): Promise<Response> {
+  const response = await fetch(url, { ...init, credentials: "same-origin" });
   if (!response.ok) {
-    if (response.status === 401 && !url.endsWith("/admin/login")) {
-      csrfToken = "";
-      window.dispatchEvent(new Event("vrcatalog-admin-expired"));
-    }
+    if (response.status === 401 && !url.endsWith("/admin/login")) expireAdminSession();
     const payload = await response.json().catch(() => null);
     throw new Error(payload?.detail ?? `Ошибка API: ${response.status}`);
   }
+  return response;
+}
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetchResponse(url, init);
+  return response.json() as Promise<T>;
+}
+
+async function refreshAdminSession(): Promise<void> {
+  csrfToken = "";
+  const result = await request<{ authenticated: boolean; csrf_token: string }>(
+    `${API}/admin/session`, { cache: "no-store" },
+  );
+  if (!result.authenticated || !result.csrf_token) {
+    expireAdminSession();
+    throw new Error("Требуется вход администратора");
+  }
+  csrfToken = result.csrf_token;
+}
+
+async function fetchAdminResponse(url: string, init: RequestInit, refreshSession = false): Promise<Response> {
+  if (refreshSession || !csrfToken) await refreshAdminSession();
+  const headers = new Headers(init.headers);
+  headers.set("X-CSRF-Token", csrfToken);
+  return fetchResponse(url, { ...init, headers });
+}
+
+async function adminRequest<T>(url: string, init: RequestInit, refreshSession = false): Promise<T> {
+  const response = await runAdminOperation(() => fetchAdminResponse(url, init, refreshSession));
   return response.json() as Promise<T>;
 }
 
 export const api = {
   async adminLogin(password: string): Promise<void> {
-    const result = await request<{ authenticated: boolean; csrf_token: string }>(`${API}/admin/login`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }),
+    await runAdminOperation(async () => {
+      const result = await request<{ authenticated: boolean; csrf_token: string }>(`${API}/admin/login`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }),
+      });
+      csrfToken = result.csrf_token;
     });
-    csrfToken = result.csrf_token;
   },
   async adminSession(): Promise<boolean> {
     try {
-      const result = await request<{ authenticated: boolean; csrf_token: string }>(`${API}/admin/session`);
-      csrfToken = result.csrf_token;
-      return result.authenticated;
-    } catch { csrfToken = ""; return false; }
+      await runAdminOperation(refreshAdminSession);
+      return true;
+    } catch {
+      return false;
+    }
   },
   async adminLogout(): Promise<void> {
-    await request(`${API}/admin/logout`, { method: "POST" });
-    csrfToken = "";
+    await runAdminOperation(async () => {
+      await fetchAdminResponse(`${API}/admin/logout`, { method: "POST" });
+      csrfToken = "";
+    });
   },
   async meta(): Promise<Meta> {
     return request<Meta>(`${API}/meta`);
@@ -73,7 +114,7 @@ export const api = {
     return request<string[]>(`${API}/filters/folders`);
   },
   async categoryStatus(): Promise<CategorySyncStatus> { return request(`${API}/catalog-categories/status`); },
-  async syncCategories(): Promise<CategorySyncStatus> { return request(`${API}/catalog-categories/sync`, { method: "POST" }); },
+  async syncCategories(): Promise<CategorySyncStatus> { return adminRequest(`${API}/catalog-categories/sync`, { method: "POST" }); },
   async filters(params?: URLSearchParams): Promise<Record<string, string[]>> {
     const query = params?.toString();
     return request<Record<string, string[]>>(`${API}/filters${query ? `?${query}` : ""}`);
@@ -99,7 +140,7 @@ export const api = {
     return request<ProductHistorySetting>(`${API}/history/monthly-promotion/settings`);
   },
   async updateProductHistorySettings(payload: ProductHistorySetting): Promise<ProductHistorySetting> {
-    return request<ProductHistorySetting>(`${API}/history/monthly-promotion/settings`, {
+    return adminRequest<ProductHistorySetting>(`${API}/history/monthly-promotion/settings`, {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
     });
   },
@@ -108,7 +149,7 @@ export const api = {
     return request<ProductHistoryPreview>(`${API}/history/monthly-promotion/preview${query}`);
   },
   async createProductHistory(period: string): Promise<ProductHistorySummary> {
-    return request<ProductHistorySummary>(`${API}/history/monthly-promotion?period=${encodeURIComponent(period)}`, { method: "POST" });
+    return adminRequest<ProductHistorySummary>(`${API}/history/monthly-promotion?period=${encodeURIComponent(period)}`, { method: "POST" });
   },
   async productHistory(): Promise<ProductHistorySummary[]> {
     return request<ProductHistorySummary[]>(`${API}/history/monthly-promotion`);
@@ -118,16 +159,11 @@ export const api = {
     return request<ProductHistoryDetail>(`${API}/history/monthly-promotion/${encodeURIComponent(period.slice(0, 7))}${query}`);
   },
   async downloadReportPhotos(images: { product_id: number; image_id: number }[]): Promise<Blob> {
-    const response = await fetch(`${API}/reports/photos/download`, {
+    const response = await runAdminOperation(() => fetchAdminResponse(`${API}/reports/photos/download`, {
       method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ images }),
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => null);
-      throw new Error(payload?.detail ?? `Ошибка скачивания: ${response.status}`);
-    }
+    }));
     return response.blob();
   },
   async productAnalogs(id: number, showAll = false): Promise<DynamicAnalog[]> {
@@ -137,14 +173,14 @@ export const api = {
     return request<AnalogSelectionSetting>(`${API}/analog-selection-settings`);
   },
   async updateAnalogSelectionSettings(payload: AnalogSelectionSetting): Promise<AnalogSelectionSetting> {
-    return request<AnalogSelectionSetting>(`${API}/analog-selection-settings`, {
+    return adminRequest<AnalogSelectionSetting>(`${API}/analog-selection-settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
   },
   async deleteProducts(ids: number[]): Promise<{ deleted: number }> {
-    return request<{ deleted: number }>(`${API}/products`, {
+    return adminRequest<{ deleted: number }>(`${API}/products`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(ids),
@@ -179,7 +215,7 @@ export const api = {
     code: string;
     name: string;
   }): Promise<Warehouse> {
-    return request<Warehouse>(`${API}/warehouses`, {
+    return adminRequest<Warehouse>(`${API}/warehouses`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -189,14 +225,14 @@ export const api = {
     id: number,
     payload: { code: string; name: string },
   ): Promise<Warehouse> {
-    return request<Warehouse>(`${API}/warehouses/${id}`, {
+    return adminRequest<Warehouse>(`${API}/warehouses/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
   },
   async deleteWarehouse(id: number): Promise<{ deleted: boolean }> {
-    return request<{ deleted: boolean }>(`${API}/warehouses/${id}`, {
+    return adminRequest<{ deleted: boolean }>(`${API}/warehouses/${id}`, {
       method: "DELETE",
     });
   },
@@ -210,7 +246,7 @@ export const api = {
     code: string;
     name: string;
   }): Promise<ProductType> {
-    return request<ProductType>(`${API}/product-types`, {
+    return adminRequest<ProductType>(`${API}/product-types`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -220,14 +256,14 @@ export const api = {
     id: number,
     payload: { code: string; name: string },
   ): Promise<ProductType> {
-    return request<ProductType>(`${API}/product-types/${id}`, {
+    return adminRequest<ProductType>(`${API}/product-types/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
   },
   async deleteProductType(id: number): Promise<{ deleted: boolean }> {
-    return request<{ deleted: boolean }>(`${API}/product-types/${id}`, {
+    return adminRequest<{ deleted: boolean }>(`${API}/product-types/${id}`, {
       method: "DELETE",
     });
   },
@@ -242,14 +278,14 @@ export const api = {
     password?: string;
     xml_dir: string;
   }): Promise<XmlServerSetting> {
-    return request<XmlServerSetting>(`${API}/xml-server-settings`, {
+    return adminRequest<XmlServerSetting>(`${API}/xml-server-settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
   },
   async testXmlServerSettings(): Promise<{ success: boolean; message: string }> {
-    return request<{ success: boolean; message: string }>(`${API}/xml-server-settings/test`, {
+    return adminRequest<{ success: boolean; message: string }>(`${API}/xml-server-settings/test`, {
       method: "POST",
     });
   },
@@ -257,7 +293,7 @@ export const api = {
     return request<AutoImportState>(`${API}/auto-import-state`);
   },
   async runAutoImportNow(): Promise<{ started: boolean }> {
-    return request<{ started: boolean }>(`${API}/auto-import/run`, {
+    return adminRequest<{ started: boolean }>(`${API}/auto-import/run`, {
       method: "POST",
     });
   },
@@ -265,16 +301,16 @@ export const api = {
     return request<MailSetting>(`${API}/mail-settings`);
   },
   async updateMailSettings(payload: MailSetting): Promise<MailSetting> {
-    return request<MailSetting>(`${API}/mail-settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    return adminRequest<MailSetting>(`${API}/mail-settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   },
   async sendTestMail(email: string): Promise<{ success: boolean; message: string }> {
-    return request<{ success: boolean; message: string }>(`${API}/mail-settings/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+    return adminRequest<{ success: boolean; message: string }>(`${API}/mail-settings/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
   },
   async unneededFolderScenario(): Promise<NotificationScenario> {
     return request<NotificationScenario>(`${API}/notification-scenarios/unneeded-folder`);
   },
   async updateUnneededFolderScenario(payload: NotificationScenario): Promise<NotificationScenario> {
-    return request<NotificationScenario>(`${API}/notification-scenarios/unneeded-folder`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    return adminRequest<NotificationScenario>(`${API}/notification-scenarios/unneeded-folder`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   },
   async monthlyPromotionScenario(): Promise<NotificationScenario> {
     return request<NotificationScenario>(`${API}/notification-scenarios/monthly-promotion`);
@@ -283,17 +319,17 @@ export const api = {
     return request<ScenarioSummary[]>(`${API}/notification-scenarios`);
   },
   async toggleNotificationScenario(code: string, enabled: boolean): Promise<ScenarioSummary> {
-    return request<ScenarioSummary>(`${API}/notification-scenarios/${code}/enabled`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) });
+    return adminRequest<ScenarioSummary>(`${API}/notification-scenarios/${code}/enabled`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) });
   },
   async notificationHistory(code: string, search = "", status = "all"): Promise<NotificationHistory[]> {
     const params = new URLSearchParams({ search, status });
     return request<NotificationHistory[]>(`${API}/notification-scenarios/${code}/history?${params}`);
   },
   async updateMonthlyPromotionScenario(payload: NotificationScenario): Promise<NotificationScenario> {
-    return request<NotificationScenario>(`${API}/notification-scenarios/monthly-promotion`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    return adminRequest<NotificationScenario>(`${API}/notification-scenarios/monthly-promotion`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   },
   async runMonthlyPromotion(): Promise<ScenarioRun> {
-    return request<ScenarioRun>(`${API}/notification-scenarios/monthly-promotion/run`, { method: "POST" });
+    return adminRequest<ScenarioRun>(`${API}/notification-scenarios/monthly-promotion/run`, { method: "POST" });
   },
   async previewMonthlyPromotion(): Promise<ScenarioRun> {
     return request<ScenarioRun>(`${API}/notification-scenarios/monthly-promotion/preview`);
@@ -301,14 +337,14 @@ export const api = {
   async upload(file: File): Promise<Meta> {
     const form = new FormData();
     form.append("file", file);
-    return request<Meta>(`${API}/import`, { method: "POST", body: form });
+    return adminRequest<Meta>(`${API}/import`, { method: "POST", body: form });
   },
   exportUrl(kind: "csv" | "xlsx", params: URLSearchParams) {
     return `${API}/export.${kind}?${params}`;
   },
   async startExcelExport(params: URLSearchParams): Promise<{ job_id: string; status: string }> {
     const { query, init } = codeRequest(params);
-    return request<{ job_id: string; status: string }>(`${API}/exports/xlsx?${query}`, init ?? { method: "POST" });
+    return adminRequest<{ job_id: string; status: string }>(`${API}/exports/xlsx?${query}`, init ?? { method: "POST" }, true);
   },
   async excelExportStatus(jobId: string): Promise<{ status: "processing" | "ready" | "error"; error?: string; size?: number; filename?: string; media_type?: string; processed: number; total?: number; progress: number }> {
     return request<{ status: "processing" | "ready" | "error"; error?: string; size?: number; filename?: string; media_type?: string; processed: number; total?: number; progress: number }>(`${API}/exports/xlsx/${jobId}`);
