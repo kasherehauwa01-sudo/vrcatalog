@@ -19,6 +19,7 @@ services:
       context: ./backend
     environment:
       PYTHONPATH: /app
+      VR_BACKGROUND_JOBS_ENABLED: "1"
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
       EXPORT_IMAGE_CACHE_MAX_MB: ${EXPORT_IMAGE_CACHE_MAX_MB:-500}
