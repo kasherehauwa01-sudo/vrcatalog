@@ -11,12 +11,13 @@ import uuid
 import gc
 from datetime import date, datetime, timedelta
 from copy import copy
+from contextlib import suppress
 from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO, BytesIO
 from pathlib import Path
 from threading import Lock
 from urllib.parse import quote, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request as UrlRequest, urlopen
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from typing import Annotated, Any, Callable, Literal
@@ -30,7 +31,7 @@ from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.units import pixels_to_EMU
-from PIL import Image as PillowImage, UnidentifiedImageError
+from PIL import Image as PillowImage, ImageDraw
 import xlsxwriter
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
@@ -69,6 +70,7 @@ EXPORT_DOWNLOAD_CHUNK_SIZE = 2 * 1024 * 1024
 # защищает backend от OOM на больших каталогах; остальные фото остаются ссылками.
 MAX_EMBEDDED_EXPORT_IMAGES = 10_000
 EXPORT_PRODUCT_BATCH_SIZE = 100
+EXPORT_PHOTO_ROWS_PER_SHEET = 5000
 
 logger = logging.getLogger(__name__)
 EXPORT_PAGINATION_KEYS = {"page", "page_size", "pageSize", "limit", "offset", "skip", "sort", "order"}
@@ -1176,7 +1178,9 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
             with export_jobs_lock:
                 export_jobs[job_id].update(total=product_count, processed=0, progress=0)
             logger.info("Экспорт %s: начало, товаров=%s, фильтры=%s, фото=%s, RSS=%s МБ", job_id, product_count, safe_params, has_photos, current_rss_mb())
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as output:
+            export_dir = Path(settings.upload_dir) / "xlsx-exports"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=export_dir, delete=False, suffix=".xlsx") as output:
                 path = output.name
             processed = write_export_workbook_streaming(db, params, columns, path, job_id, product_count, filtered_ids)
             if has_photos:
@@ -1398,9 +1402,11 @@ def download_export_image(url: str) -> BytesIO | None:
         normalized_url = normalize_image_url(url)
         cache_path = export_image_cache_path(normalized_url)
         cache_dir = cache_path.parent
-        if cache_path.exists():
+        try:
             return BytesIO(cache_path.read_bytes())
-        request = Request(normalized_url, headers={
+        except OSError:
+            pass
+        request = UrlRequest(normalized_url, headers={
             "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
             "Referer": "https://volgorost.ru/",
             "User-Agent": "Mozilla/5.0 (compatible; VRCatalog Excel Export)",
@@ -1416,14 +1422,24 @@ def download_export_image(url: str) -> BytesIO | None:
             # JPEG значительно компактнее PNG для фотографий товаров. Это уменьшает
             # память при создании книги и итоговый размер выгрузки.
             image.convert("RGB").save(prepared, format="JPEG", quality=70, optimize=True)
-            prepared.seek(0)
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            temporary_cache_path = cache_path.with_suffix(".tmp")
-            temporary_cache_path.write_bytes(prepared.getvalue())
-            temporary_cache_path.replace(cache_path)
-            return prepared
-    except (OSError, ValueError, UnidentifiedImageError):
+    except (OSError, ValueError, PillowImage.DecompressionBombError):
         return None
+
+    temporary_cache_path = None
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=cache_dir, suffix=".tmp", delete=False) as temporary:
+            temporary_cache_path = Path(temporary.name)
+            temporary.write(prepared.getbuffer())
+        temporary_cache_path.replace(cache_path)
+    except OSError:
+        logger.debug("Не удалось сохранить миниатюру в кэш", exc_info=True)
+    finally:
+        if temporary_cache_path is not None:
+            with suppress(OSError):
+                temporary_cache_path.unlink(missing_ok=True)
+    prepared.seek(0)
+    return prepared
 
 
 def download_export_images(
@@ -1462,6 +1478,46 @@ def current_rss_mb() -> float | str:
         return round(rss_kb / 1024, 1)
     except (OSError, StopIteration, ValueError):
         return "н/д"
+
+
+def export_photo_placeholder(path: Path) -> None:
+    with PillowImage.new("RGB", (70, 70), "#F0F2F4") as image:
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((14, 17, 55, 52), outline="#788692", width=2)
+        draw.ellipse((23, 23, 30, 30), fill="#788692")
+        draw.line(((16, 46), (29, 34), (37, 41), (45, 32), (54, 43)), fill="#788692", width=2)
+        image.save(path, format="PNG")
+
+
+def insert_export_thumbnail(worksheet, row: int, column: int, content: bytes | None, directory: Path) -> None:
+    path = directory / "no-photo.png"
+    dimensions = (70, 70)
+    description = "Фото недоступно"
+    if content:
+        try:
+            with PillowImage.open(BytesIO(content)) as thumbnail:
+                image_dimensions = thumbnail.size
+                thumbnail.verify()
+        except (OSError, ValueError, PillowImage.DecompressionBombError):
+            pass
+        else:
+            dimensions = image_dimensions
+            thumbnail_path = directory / f"{hashlib.sha256(content).hexdigest()}.jpg"
+            if not thumbnail_path.exists():
+                thumbnail_path.write_bytes(content)
+            path = thumbnail_path
+            description = "Фото товара"
+
+    width, height = dimensions
+    scale = min(1, 70 / max(width, height))
+    worksheet.set_row(row, 60)
+    worksheet.insert_image(row, column, str(path), {
+        "x_scale": scale, "y_scale": scale,
+        "x_offset": max(2, round((98 - width * scale) / 2)),
+        "y_offset": max(2, round((80 - height * scale) / 2)),
+        "object_position": 1,
+        "description": description,
+    })
 
 
 def write_export_workbook_streaming(
@@ -1505,8 +1561,8 @@ def write_export_workbook_streaming(
     if needs_barcodes:
         relation_options.append(selectinload(Product.barcodes))
 
-    workbook = xlsxwriter.Workbook(path, {"constant_memory": True})
-    worksheet = workbook.add_worksheet("Товары")
+    export_dir = Path(path).parent
+    workbook = xlsxwriter.Workbook(path, {"constant_memory": True, "tmpdir": str(export_dir), "use_zip64": True})
     border = 1
     header_format = workbook.add_format({
         "bold": True, "bg_color": "#E7E9EC", "border": border,
@@ -1525,13 +1581,20 @@ def write_export_workbook_streaming(
         "product_type": 25, "manufacturer": 24, "manager": 20, "marking_code": 20,
         "material": 22, "certificate": 22, "barcodes": 22, "quantity": 14,
     }
-    for column_index, header in enumerate(headers):
-        column = selected_columns[column_index]
-        width = 16 if column.startswith("price:") else 14 if column.startswith("stock:") else column_widths.get(column, 24)
-        worksheet.write(0, column_index, header, header_format)
-        worksheet.set_column(column_index, column_index, width)
-    worksheet.set_row(0, 32)
-    worksheet.freeze_panes(1, 0)
+    def add_product_sheet(number: int):
+        name = "Товары" if number == 1 else f"Товары {number}"
+        sheet = workbook.add_worksheet(name)
+        for column_index, header in enumerate(headers):
+            column = selected_columns[column_index]
+            width = 16 if column.startswith("price:") else 14 if column.startswith("stock:") else column_widths.get(column, 24)
+            sheet.write(0, column_index, header, header_format)
+            sheet.set_column(column_index, column_index, width)
+        sheet.set_row(0, 32)
+        sheet.freeze_panes(1, 0)
+        return sheet
+
+    worksheet = add_product_sheet(1)
+    sheet_number = 1
     photo_column = selected_columns.index("photo") if needs_photos else None
     row_index = 1
     processed = 0
@@ -1539,7 +1602,12 @@ def write_export_workbook_streaming(
     batch_number = 0
     if filtered_ids is None:
         filtered_ids = filtered_product_ids_subquery(db, params)
+    thumbnail_spool = None
     try:
+        if photo_column is not None:
+            thumbnail_spool = tempfile.TemporaryDirectory(dir=export_dir)
+            thumbnail_dir = Path(thumbnail_spool.name)
+            export_photo_placeholder(thumbnail_dir / "no-photo.png")
         while True:
             batch_ids = [
                 product_id
@@ -1564,14 +1632,19 @@ def write_export_workbook_streaming(
                 "Экспорт %s: пакет=%s, min_id=%s, max_id=%s, batch_size=%s, processed=%s, total=%s, RSS=%s МБ",
                 job_id, batch_number, batch_ids[0], batch_ids[-1], len(batch_ids), processed, total, current_rss_mb(),
             )
-            if needs_photos:
-                download_export_images(
-                    [product.images[0].image_url for product in products if product.images],
-                    download_export_image,
-                    max_workers=32,
-                    timeout=15,
-                ).clear()
+            if photo_column is not None:
+                photo_urls = [product.images[0].image_url for product in products if product.images]
+                photos = download_export_images(photo_urls, download_export_image, max_workers=32)
+                missing_urls = [url for url in photo_urls if url not in photos]
+                if missing_urls:
+                    photos.update(download_export_images(missing_urls, download_export_image, max_workers=8))
             for product in products:
+                if photo_column is not None and row_index > EXPORT_PHOTO_ROWS_PER_SHEET:
+                    # XlsxWriter scans the preceding row heights for each drawing anchor.
+                    worksheet.autofilter(0, 0, row_index - 1, len(selected_columns) - 1)
+                    sheet_number += 1
+                    worksheet = add_product_sheet(sheet_number)
+                    row_index = 1
                 properties = {}
                 for item in (product.properties if needs_properties else ()):
                     value = (item.value or "").strip()
@@ -1602,29 +1675,9 @@ def write_export_workbook_streaming(
                     else:
                         cell_format = text_alt_format if alternate else text_format
                     worksheet.write(row_index, column_index, value, cell_format)
-                if needs_photos and product.images:
-                    photo_url = product.images[0].image_url
-                    try:
-                        cache_path = export_image_cache_path(photo_url)
-                        if cache_path.exists():
-                            with PillowImage.open(cache_path) as thumbnail:
-                                image_width, image_height = thumbnail.size
-                            scale = min(1, 70 / max(image_width, image_height))
-                            displayed_width = image_width * scale
-                            displayed_height = image_height * scale
-                            worksheet.set_row(row_index, 60)
-                            worksheet.insert_image(row_index, photo_column, str(cache_path), {
-                                "x_scale": scale, "y_scale": scale,
-                                "x_offset": max(2, round((98 - displayed_width) / 2)),
-                                "y_offset": max(2, round((80 - displayed_height) / 2)),
-                                "object_position": 1,
-                            })
-                        else:
-                            photo_format = center_alt_format if row_index % 2 == 0 else center_format
-                            worksheet.write_url(row_index, photo_column, photo_url, photo_format, "Открыть фото")
-                    except (OSError, ValueError, UnidentifiedImageError):
-                        photo_format = center_alt_format if row_index % 2 == 0 else center_format
-                        worksheet.write(row_index, photo_column, "Фото недоступно", photo_format)
+                if photo_column is not None:
+                    photo_url = product.images[0].image_url if product.images else None
+                    insert_export_thumbnail(worksheet, row_index, photo_column, photos.get(photo_url), thumbnail_dir)
                 row_index += 1
             last_id = batch_ids[-1]
             processed += len(products)
@@ -1641,7 +1694,11 @@ def write_export_workbook_streaming(
     finally:
         if row_index > 1 and selected_columns:
             worksheet.autofilter(0, 0, row_index - 1, len(selected_columns) - 1)
-        workbook.close()
+        try:
+            workbook.close()
+        finally:
+            if thumbnail_spool is not None:
+                thumbnail_spool.cleanup()
         del worksheet, workbook
         gc.collect()
     return processed

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from openpyxl import load_workbook
+from PIL import Image as PillowImage
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -23,7 +24,7 @@ from app.models.catalog import (
     Stock,
     WarehouseSetting,
 )
-from app.api.routes import build_export_workbook, download_export_images, normalize_image_url, write_export_workbook_streaming
+from app.api.routes import build_export_workbook, download_export_image, download_export_images, normalize_image_url, write_export_workbook_streaming
 from app.services.catalog import catalog_product_query, folder_paths, list_filters, paginated_products, product_type_name
 from app.services.logging import add_log
 from app.schemas.catalog import ProductDetailOut
@@ -396,13 +397,26 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.db.commit()
         png = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
 
+        attempts = {}
+
+        def load_images(urls, _loader, **_options):
+            photos = {}
+            for url in urls:
+                attempts[url] = attempts.get(url, 0) + 1
+                if url.endswith("/0.png"):
+                    continue
+                if url.endswith("/1.png") and attempts[url] == 1:
+                    continue
+                photos[url] = png
+            return photos
+
+        products[-1].images.clear()
+        self.db.commit()
         with tempfile.TemporaryDirectory() as directory:
-            image_path = Path(directory) / "thumbnail.png"
-            image_path.write_bytes(png)
             output_path = Path(directory) / "products.xlsx"
             with (
-                patch("app.api.routes.export_image_cache_path", return_value=image_path),
-                patch("app.api.routes.download_export_images", return_value={}),
+                patch("app.api.routes.download_export_images", side_effect=load_images),
+                patch("app.api.routes.EXPORT_PHOTO_ROWS_PER_SHEET", 110),
             ):
                 write_export_workbook_streaming(
                     self.db,
@@ -412,14 +426,22 @@ class CatalogProductQueryTests(unittest.TestCase):
                     "test-photo-export",
                     250,
                 )
+            self.assertEqual(list(Path(directory).iterdir()), [output_path])
             workbook = load_workbook(output_path, read_only=False)
-            worksheet = workbook.active
+            sheets = workbook.worksheets
 
-        self.assertEqual(worksheet.max_row, 251)
-        self.assertEqual(len(worksheet._images), 250)
-        self.assertLessEqual(worksheet._images[0].width, 70)
-        self.assertLessEqual(worksheet._images[0].height, 70)
-        self.assertEqual(worksheet.row_dimensions[2].height, 60)
+        self.assertEqual(attempts["https://example.test/0.png"], 2)
+        self.assertEqual(attempts["https://example.test/1.png"], 2)
+        self.assertEqual(attempts["https://example.test/2.png"], 1)
+        self.assertEqual([sheet.max_row for sheet in sheets], [111, 111, 31])
+        for sheet in sheets:
+            self.assertEqual([image.anchor._from.row for image in sheet._images], list(range(1, sheet.max_row)))
+            self.assertTrue(all(cell.hyperlink is None and cell.value is None for cell in sheet["A"][1:]))
+            self.assertEqual(sheet.auto_filter.ref, f"A1:C{sheet.max_row}")
+        self.assertEqual(sheets[0]._images[0].anchor.pic.nvPicPr.cNvPr.descr, "Фото недоступно")
+        self.assertEqual(sheets[0]._images[1].anchor.pic.nvPicPr.cNvPr.descr, "Фото товара")
+        self.assertEqual(sheets[-1]._images[-1].anchor.pic.nvPicPr.cNvPr.descr, "Фото недоступно")
+        self.assertEqual(sheets[0].row_dimensions[2].height, 60)
         workbook.close()
 
     def test_streaming_export_uses_the_same_filters_and_ignores_pagination(self):
@@ -551,6 +573,21 @@ class CatalogProductQueryTests(unittest.TestCase):
             normalize_image_url("https://volgorost.ru/images/Новая папка/Фото 1.jpg"),
             "https://volgorost.ru/images/%D0%9D%D0%BE%D0%B2%D0%B0%D1%8F%20%D0%BF%D0%B0%D0%BF%D0%BA%D0%B0/%D0%A4%D0%BE%D1%82%D0%BE%201.jpg",
         )
+
+    def test_thumbnail_is_returned_when_cache_write_fails(self):
+        png = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+        with tempfile.TemporaryDirectory() as directory:
+            blocked = Path(directory) / "not-a-directory"
+            blocked.touch()
+            with (
+                patch("app.api.routes.export_image_cache_path", return_value=blocked / "thumbnail.jpg"),
+                patch("app.api.routes.urlopen", return_value=BytesIO(png)),
+            ):
+                thumbnail = download_export_image("https://example.test/photo.png")
+            self.assertIsNotNone(thumbnail)
+            with PillowImage.open(thumbnail) as image:
+                self.assertEqual(image.format, "JPEG")
+                self.assertEqual(image.size, (1, 1))
 
     def test_excel_export_downloads_duplicate_photos_only_once(self):
         requested_urls = []
