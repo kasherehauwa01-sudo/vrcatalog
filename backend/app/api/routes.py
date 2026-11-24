@@ -50,6 +50,7 @@ from app.services.catalog import catalog_product_query, decorate, folder_paths, 
 from app.services.logging import add_log
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
+from app.schemas.catalog_search import CatalogCodeBatch
 from app.services import unneeded_folder
 from app.services.monthly_promotion import check_connection as check_mail_connection, encrypt_password, get_mail_setting, get_scenario_setting, recipients as scenario_recipients, run_scenario, send_email
 from app.services.photo_report import create_photo_archive, photo_report_page
@@ -487,6 +488,7 @@ def products_count(db: Session = Depends(get_db), search: str | None = None, sec
     return {"count": product_query(db, params).count()}
 
 
+@router.post("/products/search", response_model=ProductPageOut)
 @router.get("/products/search", response_model=ProductPageOut)
 def search_products(
     db: Session = Depends(get_db),
@@ -520,7 +522,12 @@ def search_products(
     page_size: Annotated[int, Query(alias="pageSize")] = 100,
     sort: Literal["updated_at", "is_new", "id", "name", "article", "code", "price", "quantity"] = "updated_at",
     order: Literal["asc", "desc"] | None = None,
+    code_batch: Annotated[CatalogCodeBatch | None, Body()] = None,
 ):
+    if code_batch is not None:
+        if code is not None:
+            raise HTTPException(422, "Передайте коды либо в URL, либо в теле запроса")
+        code = code_batch.code
     if page_size not in {20, 50, 100}:
         raise HTTPException(422, "pageSize должен быть равен 20, 50 или 100")
     if quantity_from is not None and quantity_to is not None and quantity_from > quantity_to:
@@ -568,6 +575,7 @@ def search_products(
     return {"items": [decorate(item, type_names) for item in items], "pagination": pagination}
 
 
+@router.post("/reports/photos", response_model=PhotoReportPageOut)
 @router.get("/reports/photos", response_model=PhotoReportPageOut)
 def report_photos(
     db: Session = Depends(get_db),
@@ -599,7 +607,12 @@ def report_photos(
     property: Annotated[list[str] | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(alias="pageSize", ge=20, le=100)] = 50,
+    code_batch: Annotated[CatalogCodeBatch | None, Body()] = None,
 ):
+    if code_batch is not None:
+        if code is not None:
+            raise HTTPException(422, "Передайте коды либо в URL, либо в теле запроса")
+        code = code_batch.code
     if quantity_from is not None and quantity_to is not None and quantity_from > quantity_to:
         raise HTTPException(422, "Минимальное количество не может быть больше максимального")
     if price_from is not None and price_to is not None and price_from > price_to:
@@ -1215,8 +1228,13 @@ def start_xlsx_export(
     price_to: Annotated[float | None, Query(alias="priceTo", ge=0)] = None,
     property: Annotated[list[str] | None, Query()] = None,
     column: Annotated[list[str] | None, Query()] = None,
+    code_batch: Annotated[CatalogCodeBatch | None, Body()] = None,
 ):
     """Запускает длительное формирование Excel и сразу возвращает идентификатор задания."""
+    if code_batch is not None:
+        if code is not None:
+            raise HTTPException(422, "Передайте коды либо в URL, либо в теле запроса")
+        code = code_batch.code
     if quantity_from is not None and quantity_to is not None and quantity_from > quantity_to:
         raise HTTPException(422, "Минимальное количество не может быть больше максимального")
     if price_from is not None and price_to is not None and price_from > price_to:

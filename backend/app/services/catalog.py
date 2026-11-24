@@ -142,8 +142,13 @@ def catalog_product_query(db: Session, params, eager_load: bool = True):
     if name := str(params.get("name") or "").strip():
         q = q.filter(Product.name.ilike(f"%{name}%"))
     code_values = _search_values(params.get("code"))
-    if code_values:
-        q = q.filter(or_(*(Product.code.ilike(f"%{code}%") for code in code_values)))
+    if len(code_values) > 1:
+        # A pasted list selects identifiers, not substrings. Match the existing
+        # normalized-code expression index; preserve leading zeros and literals.
+        normalized_codes = list(dict.fromkeys(code.lower() for code in code_values))
+        q = q.filter(func.lower(func.trim(Product.code)).in_(normalized_codes))
+    elif code_values:
+        q = q.filter(Product.code.ilike(f"%{code_values[0]}%"))
     article_values = _search_values(params.get("article"))
     if article_values:
         q = q.filter(or_(*(Product.article.ilike(f"%{article}%") for article in article_values)))

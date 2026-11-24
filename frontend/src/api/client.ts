@@ -1,3 +1,4 @@
+import { codeRequest } from "../catalogQuery";
 import type { CategoryNode } from "../categoryTree";
 import type {
   Meta,
@@ -81,7 +82,8 @@ export const api = {
     return request<Product[]>(`${API}/products?${params}`);
   },
   async searchProducts(params: URLSearchParams): Promise<ProductPage> {
-    return request<ProductPage>(`${API}/products/search?${params}`);
+    const { query, init } = codeRequest(params);
+    return request<ProductPage>(`${API}/products/search?${query}`, init);
   },
   async productCount(params: URLSearchParams): Promise<{ count: number }> {
     return request<{ count: number }>(`${API}/products/count?${params}`);
@@ -90,7 +92,8 @@ export const api = {
     return request<ProductDetail>(`${API}/products/${id}`);
   },
   async photoReport(params: URLSearchParams): Promise<PhotoReportPage> {
-    return request<PhotoReportPage>(`${API}/reports/photos?${params}`);
+    const { query, init } = codeRequest(params);
+    return request<PhotoReportPage>(`${API}/reports/photos?${query}`, init);
   },
   async productHistorySettings(): Promise<ProductHistorySetting> {
     return request<ProductHistorySetting>(`${API}/history/monthly-promotion/settings`);
@@ -304,7 +307,8 @@ export const api = {
     return `${API}/export.${kind}?${params}`;
   },
   async startExcelExport(params: URLSearchParams): Promise<{ job_id: string; status: string }> {
-    return request<{ job_id: string; status: string }>(`${API}/exports/xlsx?${params}`, { method: "POST" });
+    const { query, init } = codeRequest(params);
+    return request<{ job_id: string; status: string }>(`${API}/exports/xlsx?${query}`, init ?? { method: "POST" });
   },
   async excelExportStatus(jobId: string): Promise<{ status: "processing" | "ready" | "error"; error?: string; size?: number; filename?: string; media_type?: string; processed: number; total?: number; progress: number }> {
     return request<{ status: "processing" | "ready" | "error"; error?: string; size?: number; filename?: string; media_type?: string; processed: number; total?: number; progress: number }>(`${API}/exports/xlsx/${jobId}`);
