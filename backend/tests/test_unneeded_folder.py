@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
-from app.models.catalog import MailSetting, NotificationEmailHistory, Product, ProductProperty, UnneededFolderSnapshot
+from app.models.catalog import MailSetting, NotificationEmailHistory, Product, ProductProperty, Stock, UnneededFolderSnapshot, WarehouseSetting
 from app.services import unneeded_folder as service
 from app.services.catalog import folder_paths
 from app.schemas.catalog import ScenarioSettingIn
@@ -43,8 +43,16 @@ class UnneededFolderTests(unittest.TestCase):
     def test_baseline_no_mail_and_daily_aggregate(self):
         self.assertEqual(self.setting.send_time, '22:30')
         self.assertEqual(service.run_due(self.db, self.now), 'empty')
-        self.add('0002', '<Новый>', 'Каталог|НЕНУЖНОЕ|Дочерняя|<Новый>')
-        self.add('0003', 'Третий', 'НЕНУЖНОЕ|Третий')
+        self.db.add(WarehouseSetting(code='AVIATORS', name='Авиаторов Зал+Склад'))
+        new_product = self.add('0002', '<Новый>', 'Каталог|НЕНУЖНОЕ|Дочерняя|<Новый>')
+        new_product.stocks.extend([
+            Stock(warehouse='AVIATORS', quantity=12),
+            Stock(warehouse='Авиаторов Зал+Склад', quantity=0.5),
+            Stock(warehouse='OTHER', quantity=99),
+        ])
+        self.add('0003', 'Третий', 'НЕНУЖНОЕ|Третий').stocks.append(
+            Stock(warehouse='OTHER', quantity=5)
+        )
         self.db.commit()
         with patch.object(service, 'send_email') as send:
             self.assertEqual(service.run_due(self.db, self.now), 'skipped')
@@ -53,7 +61,9 @@ class UnneededFolderTests(unittest.TestCase):
             args = send.call_args
             self.assertEqual(args.args[1], ['one@example.test', 'two@example.test'])
             self.assertIn('&lt;Новый&gt;', args.args[3])
-            self.assertIn('Менеджер', args.args[3])
+            self.assertIn('<th>Остаток: Авиаторов Зал+Склад</th>', args.args[3])
+            self.assertIn('<td>0002</td><td>&lt;Новый&gt;</td><td>Менеджер</td><td>12,5</td>', args.args[3])
+            self.assertIn('<td>0003</td><td>Третий</td><td>Менеджер</td><td>0</td>', args.args[3])
             self.assertNotIn('Исходный', args.args[3])
             data, filename, mime = args.kwargs['extra_attachments'][0]
             self.assertTrue(filename.endswith('.xls'))
@@ -62,7 +72,7 @@ class UnneededFolderTests(unittest.TestCase):
             self.assertEqual(sheet.ncols, 1)
             self.assertEqual(sheet.col_values(0), ['', '0002', '0003'])
             self.assertEqual(service.run_due(self.db, self.now.replace(day=25)), 'empty')
-        self.assertEqual(self.db.query(NotificationEmailHistory).count(), 1)
+        self.assertEqual(self.db.query(NotificationEmailHistory).one().body_html, args.args[3])
 
     def test_error_retains_products_for_next_day_without_same_day_duplicate(self):
         self.add('002', 'Новый', 'НЕНУЖНОЕ|Новый')

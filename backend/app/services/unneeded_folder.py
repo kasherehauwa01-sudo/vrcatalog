@@ -9,15 +9,16 @@ from time import perf_counter
 from zoneinfo import ZoneInfo
 
 import xlwt
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 
 from app.db.session import SessionLocal
-from app.models.catalog import NotificationEmailHistory, NotificationScenarioSetting, Product, ProductProperty, UnneededFolderSnapshot
+from app.models.catalog import NotificationEmailHistory, NotificationScenarioSetting, Product, ProductProperty, Stock, UnneededFolderSnapshot, WarehouseSetting
 from app.services.catalog_folders import FOLDER_PATH_PROPERTIES, folder_path
 from app.services.monthly_promotion import get_mail_setting, recipients, send_email
 
 CODE = "unneeded_folder"
 NAME = "Добавление товара в папку НЕНУЖНОЕ"
+WAREHOUSE_NAME = "Авиаторов Зал+Склад"
 logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 
@@ -60,11 +61,32 @@ def set_enabled(db, setting, enabled):
     setting.enabled = enabled
 
 
-def build_preview(products):
-    rows = "".join(f"<tr><td>{escape(code)}</td><td>{escape(name)}</td><td>{escape(manager or '')}</td></tr>"
-                   for code, name, manager in products)
+def warehouse_stock_by_code(db, codes):
+    quantities = {}
+    for start in range(0, len(codes), 500):
+        rows = db.execute(
+            select(Product.code, func.sum(Stock.quantity))
+            .join(Stock, Stock.product_id == Product.id)
+            .outerjoin(WarehouseSetting, WarehouseSetting.code == Stock.warehouse)
+            .where(
+                Product.code.in_(codes[start:start + 500]),
+                func.coalesce(WarehouseSetting.name, Stock.warehouse) == WAREHOUSE_NAME,
+            )
+            .group_by(Product.code)
+        )
+        quantities.update((code, quantity) for code, quantity in rows)
+    return quantities
+
+
+def build_preview(products, quantities):
+    rows = "".join(
+        f"<tr><td>{escape(code)}</td><td>{escape(name)}</td><td>{escape(manager or '')}</td>"
+        f"<td>{format(quantities.get(code, 0), '.15g').replace('.', ',')}</td></tr>"
+        for code, name, manager in products
+    )
     return ("<h2>Новые товары в папке НЕНУЖНОЕ</h2><table border='1' cellpadding='6'>"
-            "<tr><th>Код</th><th>Наименование</th><th>Менеджер</th></tr>" + rows + "</table>")
+            f"<tr><th>Код</th><th>Наименование</th><th>Менеджер</th>"
+            f"<th>Остаток: {WAREHOUSE_NAME}</th></tr>" + rows + "</table>")
 
 
 def build_attachment(products):
@@ -98,7 +120,8 @@ def run_due(db, now=None):
         setting.last_run_date = today
         db.commit()
         return "empty"
-    html = build_preview(added)
+    quantities = warehouse_stock_by_code(db, [code for code, _, _ in added])
+    html = build_preview(added, quantities)
     status = "sent"
     try:
         send_email(db, targets, NAME, html, extra_attachments=[
