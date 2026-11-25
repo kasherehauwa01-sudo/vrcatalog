@@ -141,6 +141,42 @@ class CatalogCodeBatchTests(unittest.TestCase):
                     finally:
                         workbook.close()
 
+    def test_zip_export_selection_download_and_single_price_validation(self):
+        from zipfile import ZipFile
+        from app.api import routes
+        from app.core.admin_auth import require_heavy_admin
+
+        self.app.dependency_overrides[require_heavy_admin] = lambda: object()
+        with patch.object(routes.export_executor, 'submit') as submit:
+            response = self.client.post('/api/exports/xlsx', params=[('promotion', 'true'), ('column', 'code')])
+            self.assertEqual(response.status_code, 422)
+            submit.assert_not_called()
+        with (
+            patch.object(routes.export_executor, 'submit', side_effect=lambda task, *args: task(*args)),
+            patch.object(routes, 'SessionLocal', side_effect=lambda: Session(self.engine)),
+            patch.dict(routes.export_jobs, {}, clear=True),
+        ):
+            response = self.client.post('/api/exports/xlsx', params={
+                'zip_categories': 'true', 'group_categories': 'true', 'column': 'code',
+            }, json={'product_ids': [1, 2]})
+            self.assertEqual(response.status_code, 200, response.text)
+            job_id = response.json()['job_id']
+            status = self.client.get(f'/api/exports/xlsx/{job_id}').json()
+            self.assertEqual(status['status'], 'ready', status)
+            self.addCleanup(Path(routes.export_jobs[job_id]['path']).unlink, missing_ok=True)
+            self.assertEqual(status['filename'], 'products.zip')
+            self.assertEqual(status['media_type'], 'application/zip')
+            self.assertEqual((status['total'], status['processed']), (2, 2))
+            download = self.client.get(f'/api/exports/xlsx/{job_id}/download')
+            self.assertEqual(download.headers['content-type'], 'application/zip')
+            chunk = self.client.get(f'/api/exports/xlsx/{job_id}/chunk?offset=0')
+            self.assertEqual(chunk.content, download.content)
+            with ZipFile(BytesIO(download.content)) as archive:
+                self.assertEqual(archive.namelist(), ['Без подкатегории.xlsx'])
+                book = load_workbook(BytesIO(archive.read(archive.namelist()[0])))
+                self.assertEqual([row[0].value for row in book.active][3:], self.codes[:2])
+                book.close()
+
     def test_invalid_xlsx_selection_does_not_start_an_export_job(self):
         from app.api import routes
         from app.core.admin_auth import require_heavy_admin

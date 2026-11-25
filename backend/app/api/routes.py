@@ -18,7 +18,7 @@ from pathlib import Path
 from threading import Lock
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request as UrlRequest, urlopen
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 from typing import Annotated, Any, Callable, Literal
 
@@ -49,6 +49,7 @@ from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSetting
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
 from app.services.catalog import catalog_product_query, decorate, folder_paths, integration_batch_product_info, integration_brands, integration_catalog_tree, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
+from app.services.export_layout import FORM_HEADERS, PRICE_PAIRS, archive_name, export_plan, form_columns, form_price
 from app.services.export_links import MAX_SHEET_HYPERLINKS, primary_image_links, product_site_link
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
@@ -1175,8 +1176,9 @@ def cleanup_export_jobs() -> None:
             Path(job["path"]).unlink(missing_ok=True)
 
 
-def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> None:
+def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None, options: dict | None = None) -> None:
     """Формирует XLSX на диске вне HTTP-запроса."""
+    options = options or {}
     path: str | None = None
     started_at = time.monotonic()
     try:
@@ -1190,14 +1192,14 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None) -> 
             logger.info("Экспорт %s: начало, товаров=%s, фильтры=%s, фото=%s, RSS=%s МБ", job_id, product_count, safe_params, has_photos, current_rss_mb())
             export_dir = Path(settings.upload_dir) / "xlsx-exports"
             export_dir.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(dir=export_dir, delete=False, suffix=".xlsx") as output:
+            with tempfile.NamedTemporaryFile(dir=export_dir, delete=False, suffix=".zip" if options.get("zip_categories") else ".xlsx") as output:
                 path = output.name
-            processed = write_export_workbook_streaming(db, params, columns, path, job_id, product_count, filtered_ids)
+            processed = write_export_output(db, params, columns, path, job_id, product_count, filtered_ids, options)
             if has_photos:
                 # Одно обслуживание после задания вместо обхода каталога для каждой фотографии.
                 maintain_export_image_cache_safely(job_id)
-            filename = "products.xlsx"
-            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            filename = "products.zip" if options.get("zip_categories") else "products.xlsx"
+            media_type = "application/zip" if options.get("zip_categories") else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             gc.collect()
             if processed != product_count:
                 logger.error("Экспорт %s: количество не совпало, обработано=%s, ожидалось=%s", job_id, processed, product_count)
@@ -1244,6 +1246,11 @@ def start_xlsx_export(
     price_to: Annotated[float | None, Query(alias="priceTo", ge=0)] = None,
     property: Annotated[list[str] | None, Query()] = None,
     column: Annotated[list[str] | None, Query()] = None,
+    group_categories: bool = False,
+    group_folders: bool = False,
+    promotion: bool = False,
+    order_form: bool = False,
+    zip_categories: bool = False,
     body: Annotated[CatalogCodeBatch | CatalogExportSelection | None, Body()] = None,
 ):
     """Запускает длительное формирование Excel и сразу возвращает идентификатор задания."""
@@ -1272,12 +1279,18 @@ def start_xlsx_export(
     }
     if isinstance(body, CatalogExportSelection):
         params = {"product_ids": body.product_ids}
-    columns = column
+    columns = list(dict.fromkeys(column)) if column else None
+    options = dict(group_categories=group_categories, group_folders=group_folders,
+                   promotion=promotion, order_form=order_form, zip_categories=zip_categories)
+    try:
+        form_price(columns or LEGACY_EXPORT_COLUMNS, options)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     cleanup_export_jobs()
     job_id = uuid.uuid4().hex
     with export_jobs_lock:
         export_jobs[job_id] = {"status": "processing", "created_at": time.monotonic(), "path": None, "error": None, "processed": 0, "total": None, "progress": 0}
-    export_executor.submit(create_xlsx_export, job_id, params, columns)
+    export_executor.submit(create_xlsx_export, job_id, params, columns, options)
     return {"job_id": job_id, "status": "processing"}
 
 
@@ -1534,6 +1547,27 @@ def insert_export_thumbnail(worksheet, row: int, column: int, content: bytes | N
     })
 
 
+def write_export_output(db, params, columns, path, job_id, total, filtered_ids, options):
+    if not any(options.get(key) for key in ("group_categories", "group_folders", "zip_categories")):
+        return write_export_workbook_streaming(db, params, columns, path, job_id, total, filtered_ids, options=options)
+    with export_plan(db, filtered_ids, options, Path(path).parent) as plan:
+        if not options.get("zip_categories"):
+            return write_export_workbook_streaming(db, params, columns, path, job_id, total, filtered_ids,
+                                                   options=options, batches=plan.batches())
+        processed = 0
+        used_names = set()
+        with ZipFile(path, "w", compression=ZIP_STORED, allowZip64=True) as archive:
+            with tempfile.TemporaryDirectory(dir=Path(path).parent) as temp:
+                for category, section, count in plan.sections():
+                    output = str(Path(temp) / "category.xlsx")
+                    processed += write_export_workbook_streaming(
+                        db, params, columns, output, job_id, total, filtered_ids,
+                        options=options, batches=plan.batches((category, section)), progress_offset=processed)
+                    archive.write(output, archive_name(section, used_names))
+                    Path(output).unlink()
+        return processed
+
+
 def write_export_workbook_streaming(
     db: Session,
     params: dict,
@@ -1542,9 +1576,13 @@ def write_export_workbook_streaming(
     job_id: str,
     total: int,
     filtered_ids=None,
+    *, options=None, batches=None, progress_offset=0,
 ) -> int:
     """Пишет большой XLSX на диск пакетами, не удерживая строки каталога в памяти."""
-    selected_columns = columns or LEGACY_EXPORT_COLUMNS
+    options = options or {}
+    selected_columns = list(dict.fromkeys(columns or LEGACY_EXPORT_COLUMNS))
+    selected_price = form_price(selected_columns, options)
+    selected_columns = form_columns(selected_columns, options)
     warehouse_names = {item.code: item.name for item in db.query(WarehouseSetting).all()}
     product_type_names = {item.code: item.name for item in db.query(ProductTypeSetting).all()}
     selected_columns = [
@@ -1552,14 +1590,15 @@ def write_export_workbook_streaming(
         *(column for column in selected_columns if column not in EXPORT_LEADING_COLUMNS),
     ]
     headers = [
-        EXPORT_MAIN_COLUMNS[column] if column in EXPORT_MAIN_COLUMNS
+        FORM_HEADERS[column] if column in FORM_HEADERS
+        else EXPORT_MAIN_COLUMNS[column] if column in EXPORT_MAIN_COLUMNS
         else "Остаток" if column == "quantity"
         else column.removeprefix("price:") if column.startswith("price:")
         else warehouse_names[column.removeprefix("stock:")]
         for column in selected_columns
     ]
     needs_photos = "photo" in selected_columns
-    needs_prices = any(column.startswith("price:") for column in selected_columns)
+    needs_prices = bool(selected_price) or any(column.startswith("price:") for column in selected_columns)
     needs_stocks = any(column.startswith("stock:") for column in selected_columns)
     needs_properties = any(column in {"manager", "marking_code"} for column in selected_columns)
     needs_barcodes = "barcodes" in selected_columns
@@ -1576,7 +1615,7 @@ def write_export_workbook_streaming(
         relation_options.append(selectinload(Product.barcodes))
 
     export_dir = Path(path).parent
-    workbook = xlsxwriter.Workbook(path, {"constant_memory": True, "tmpdir": str(export_dir), "use_zip64": True})
+    workbook = xlsxwriter.Workbook(path, {"constant_memory": True, "tmpdir": str(export_dir), "use_zip64": True, "strings_to_formulas": False})
     border = 1
     header_format = workbook.add_format({
         "bold": True, "bg_color": "#E7E9EC", "border": border,
@@ -1592,6 +1631,13 @@ def write_export_workbook_streaming(
     price_alt_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0.00", "bg_color": "#F7F7F7"})
     number_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0"})
     number_alt_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0", "bg_color": "#F7F7F7"})
+    category_format = workbook.add_format({"bold": True, "bg_color": "#C5F0EF", "border": 1})
+    section_format = workbook.add_format({"bold": True, "bg_color": "#E7E9EC", "border": 1})
+    folder_format = workbook.add_format({"bold": True, "font_color": "#164C80", "border": 1})
+    promo_format = workbook.add_format({"bg_color": "#FFF59D", "num_format": "# ##0.00", "border": 1})
+    order_format = workbook.add_format({"bg_color": "#D9EAFB", "num_format": "0.###", "border": 1})
+    previous_group = ()
+    grouped = options.get("group_categories") or options.get("group_folders")
     column_widths = {
         "photo": 14, "image_url": 45, "site_url": 45, "code": 16, "article": 20, "name": 55, "section": 30,
         "product_type": 25, "manufacturer": 24, "manager": 20, "marking_code": 20,
@@ -1628,16 +1674,15 @@ def write_export_workbook_streaming(
             thumbnail_dir = Path(thumbnail_spool.name)
             export_photo_placeholder(thumbnail_dir / "no-photo.png")
         while True:
-            batch_ids = [
-                product_id
-                for product_id, in (
-                    db.query(filtered_ids.c.product_id)
-                    .filter(filtered_ids.c.product_id > last_id)
-                    .order_by(filtered_ids.c.product_id)
-                    .limit(EXPORT_PRODUCT_BATCH_SIZE)
-                    .all()
-                )
-            ]
+            metadata = {}
+            if batches is not None:
+                batch = next(batches, [])
+                batch_ids = [row[0] for row in batch]
+                metadata = {row[0]: row[1:] for row in batch}
+            else:
+                batch_ids = [product_id for product_id, in (
+                    db.query(filtered_ids.c.product_id).filter(filtered_ids.c.product_id > last_id)
+                    .order_by(filtered_ids.c.product_id).limit(EXPORT_PRODUCT_BATCH_SIZE).all())]
             if not batch_ids:
                 break
             query = db.query(Product).filter(Product.id.in_(batch_ids))
@@ -1659,12 +1704,35 @@ def write_export_workbook_streaming(
                 if missing_urls:
                     photos.update(download_export_images(missing_urls, download_export_image, max_workers=8))
             for product in products:
-                if row_index > sheet_row_limit:
-                    # XlsxWriter scans the preceding row heights for each drawing anchor.
-                    worksheet.autofilter(0, 0, row_index - 1, len(selected_columns) - 1)
+                group = []
+                if grouped:
+                    category, section, folders = metadata[product.id]
+                    if options.get("group_categories"):
+                        group.extend([("category", category), ("section", section)])
+                    if options.get("group_folders"):
+                        group.extend(("folder", name) for name in folders)
+                group = tuple(group)
+                common = 0
+                for old, new in zip(previous_group, group):
+                    if old != new:
+                        break
+                    common += 1
+                if row_index + len(group) - common > sheet_row_limit:
+                    if not grouped:
+                        worksheet.autofilter(0, 0, row_index - 1, len(selected_columns) - 1)
                     sheet_number += 1
                     worksheet = add_product_sheet(sheet_number)
                     row_index = 1
+                    common = 0
+                for kind, title in group[common:]:
+                    fmt = category_format if kind == "category" else section_format if kind == "section" else folder_format
+                    if len(selected_columns) > 1:
+                        worksheet.merge_range(row_index, 0, row_index, len(selected_columns) - 1, title, fmt)
+                    else:
+                        worksheet.write_string(row_index, 0, title, fmt)
+                    worksheet.set_row(row_index, 24)
+                    row_index += 1
+                previous_group = group
                 properties = {}
                 for item in (product.properties if needs_properties else ()):
                     value = (item.value or "").strip()
@@ -1685,6 +1753,10 @@ def write_export_workbook_streaming(
                     "material": product.material or "", "certificate": product.certificate or "",
                     "barcodes": ", ".join(item.value for item in product.barcodes) if needs_barcodes else "", "quantity": product.quantity,
                 }
+                if selected_price:
+                    values["price:" + selected_price] = prices.get(selected_price)
+                    values.update(promo_price=prices.get(selected_price), old_price=prices.get(PRICE_PAIRS[selected_price]),
+                                  order_quantity=None, order_total=None)
                 for column_index, column in enumerate(selected_columns):
                     value = values.get(column, prices.get(column.removeprefix("price:"), 0) if column.startswith("price:") else stocks.get(column.removeprefix("stock:"), 0))
                     alternate = row_index % 2 == 0
@@ -1696,6 +1768,18 @@ def write_export_workbook_streaming(
                         cell_format = center_alt_format if alternate else center_format
                     else:
                         cell_format = text_alt_format if alternate else text_format
+                    if column == "order_total":
+                        price_column = "promo_price" if options.get("promotion") else "price:" + selected_price
+                        price_cell = f"{get_column_letter(selected_columns.index(price_column) + 1)}{row_index + 1}"
+                        quantity_cell = f"{get_column_letter(selected_columns.index('order_quantity') + 1)}{row_index + 1}"
+                        worksheet.write_formula(row_index, column_index,
+                                                f'=IF(OR({price_cell}="",{quantity_cell}=""),"",{price_cell}*{quantity_cell})', price_format, '')
+                        continue
+                    if column == "order_quantity":
+                        worksheet.write_blank(row_index, column_index, None, order_format)
+                        continue
+                    if column in {"promo_price", "old_price"}:
+                        cell_format = promo_format if column == "promo_price" else price_format
                     if column in {"image_url", "site_url"} and value:
                         if len(value) <= 2079:
                             worksheet.write_url(row_index, column_index, value, link_alt_format if alternate else link_format, string=value)
@@ -1713,14 +1797,14 @@ def write_export_workbook_streaming(
                 job = export_jobs.get(job_id)
                 if job:
                     job.update(
-                        processed=processed,
-                        progress=round(processed * 100 / total) if total else 100,
+                        processed=progress_offset + processed,
+                        progress=round((progress_offset + processed) * 100 / total) if total else 100,
                     )
             del products
             db.expire_all()
             gc.collect()
     finally:
-        if row_index > 1 and selected_columns:
+        if row_index > 1 and selected_columns and not grouped:
             worksheet.autofilter(0, 0, row_index - 1, len(selected_columns) - 1)
         try:
             workbook.close()

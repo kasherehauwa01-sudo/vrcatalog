@@ -59,7 +59,7 @@ class ExcelLinkTests(unittest.TestCase):
                 for row in (2, 3, 4):
                     url = sheet.cell(row, 3).value
                     self.assertEqual(sheet.cell(row, 3).hyperlink.target, url)
-                    self.assertEqual(parse_qs(urlsplit(url).query), {'q': [sheet.cell(row, 1).value], 's': ['Найти'], 'type': ['catalog']})
+                    self.assertEqual(parse_qs(urlsplit(url).query), {'code': [sheet.cell(row, 1).value]})
                 downloads.assert_not_called()
                 book.close()
 
@@ -95,7 +95,7 @@ class ExcelLinkTests(unittest.TestCase):
         self.assertEqual(book.active['B2'].hyperlink.target, 'https://volgorost.ru/upload/import_images/images/photo%20one.jpg')
         book.close()
 
-    def test_site_search_matches_supplied_url_format(self):
+    def test_site_redirect_matches_supplied_url_format(self):
         url = urlsplit(product_site_link('ИГР-05421'))
-        self.assertEqual((url.scheme, url.netloc, url.path), ('https', 'volgorost.ru', '/catalog/'))
-        self.assertEqual(parse_qs(url.query), {'q': ['ИГР-05421'], 's': ['Найти'], 'type': ['catalog']})
+        self.assertEqual((url.scheme, url.netloc, url.path), ('https', 'volgorost.ru', '/link.php'))
+        self.assertEqual(parse_qs(url.query), {'code': ['ИГР-05421']})
