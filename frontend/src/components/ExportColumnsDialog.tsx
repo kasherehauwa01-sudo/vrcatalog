@@ -1,12 +1,14 @@
-import { Alert, Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, IconButton, LinearProgress, Paper, Stack, Typography } from "@mui/material";
+import { Alert, Radio, RadioGroup, TextField, Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, IconButton, LinearProgress, Paper, Stack, Typography } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 
 type Column = readonly [string, string];
 export type ExportOptions = {
+  promotion_type: string; adjustment: boolean; adjustment_percent: string;
   group_categories: boolean; group_folders: boolean; promotion: boolean;
   order_form: boolean; zip_categories: boolean;
 };
 export const defaultExportOptions: ExportOptions = {
+  promotion_type: "", adjustment: false, adjustment_percent: "",
   group_categories: false, group_folders: false, promotion: false, order_form: false, zip_categories: false,
 };
 type Props = {
@@ -20,23 +22,27 @@ type Props = {
 
 export function ExportColumnsDialog(props: Props) {
   const { columns, exporting } = props;
-  const singlePrice = props.options.promotion || props.options.order_form;
-  const columnCount = columns.length + (props.options.promotion ? 2 - columns.filter((key) => key.startsWith("price:")).length : 0) + (props.options.order_form ? 2 : 0);
+  const singlePrice = props.options.promotion || props.options.order_form || props.options.adjustment;
+  const columnCount = columns.length + (props.options.promotion ? 2 - columns.filter((key) => key.startsWith("price:")).length : 0) + (props.options.order_form ? 2 : 0) + (props.options.adjustment ? 1 : 0);
   const validPrice = columns.filter((key) => key.startsWith("price:")).length === 1;
-  const setOption = (key: keyof ExportOptions, checked: boolean) => {
-    props.onOptionsChange({ ...props.options, [key]: checked });
-    if (checked && (key === "promotion" || key === "order_form")) {
+  const validPercent = props.options.adjustment_percent.trim() !== "" && Number.isFinite(Number(props.options.adjustment_percent.replace(",", ".")));
+  const missingType = props.options.promotion && !props.options.promotion_type;
+  type ToggleKey = "group_categories" | "group_folders" | "promotion" | "order_form" | "zip_categories" | "adjustment";
+  const setOption = (key: ToggleKey, checked: boolean) => {
+    props.onOptionsChange({ ...props.options, [key]: checked, ...(key === "promotion" && checked ? { promotion_type: "" } : {}) });
+    if (checked && (key === "promotion" || key === "order_form" || key === "adjustment")) {
       // Each form activation requires an explicit price choice.
       const next = columns.filter((item) => !item.startsWith("price:"));
       if (key === "order_form" && !next.includes("site_url")) next.push("site_url");
       props.onChange(next);
     }
   };
-  const layoutOptions: [keyof ExportOptions, string, string][] = [
+  const layoutOptions: [ToggleKey, string, string][] = [
     ["group_categories", "Формировать по категориям", "Строки с названием категории и подкатегории перед товарами."],
     ["group_folders", "Формировать по группам", "Папки и вложенные папки перед товарами. Можно сочетать с категориями."],
-    ["promotion", "Форма для акции месяца", "Только товары вида «Акция месяца». В конце — новая и предыдущая цена выбранного типа."],
+    ["promotion", "Форма для акции месяца", "Только товары выбранного вида: «Акция месяца» или «Надо продать». В конце — новая и предыдущая цена выбранного типа."],
     ["order_form", "Форма для заказа", "В конце — поле «Заказ» и формула суммы. С акцией используется новая цена. Только один вид цены."],
+    ["adjustment", "Скидка / Наценка", "Колонка «Ваша цена»: выбранная цена с учётом процента. Плюс — наценка, минус — скидка."],
     ["zip_categories", "По всем категориям (zip)", "Отдельный Excel для каждой подкатегории из текущей выборки, в одном ZIP-архиве."],
   ];
   const media: Column[] = [["photo", "Фото"], ["image_url", "Ссылка на фото"], ["site_url", "Ссылка на сайт"]];
@@ -74,6 +80,10 @@ export function ExportColumnsDialog(props: Props) {
           <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" }, gap: 1 }}>
             {layoutOptions.map(([key, label, hint]) => <Box key={key}>
               <FormControlLabel sx={{ m: 0, minHeight: 44 }} label={label} control={<Checkbox disabled={exporting} checked={props.options[key]} onChange={(_, checked) => setOption(key, checked)} />} />
+              {key === "adjustment" && <TextField label="Процент скидки / наценки" size="small" placeholder="Например, -10 или 15" value={props.options.adjustment_percent} disabled={exporting || !props.options.adjustment} onChange={(event) => props.onOptionsChange({ ...props.options, adjustment_percent: event.target.value })} inputProps={{ inputMode: "decimal" }} error={props.options.adjustment && !validPercent} sx={{ my: 1, ml: 5.25, maxWidth: "80%" }} />}
+              {key === "promotion" && props.options.promotion && <RadioGroup aria-label="Вид товара для формы акции" value={props.options.promotion_type} onChange={(_, value) => props.onOptionsChange({ ...props.options, promotion_type: value })} sx={{ ml: 5.25 }}>
+                {["Акция месяца", "Надо продать"].map((name) => <FormControlLabel key={name} value={name} control={<Radio disabled={exporting} />} label={name} />)}
+              </RadioGroup>}
               <Typography variant="body2" color="text.secondary" sx={{ ml: 5.25 }}>{hint}</Typography>
             </Box>)}
           </Box>
@@ -99,12 +109,14 @@ export function ExportColumnsDialog(props: Props) {
       </Stack>
     </DialogContent>
     <DialogActions sx={{ p: 2, bgcolor: "white", borderTop: "1px solid", borderColor: "divider" }}>
-      <Stack direction={{ xs: "column", sm: "row" }} gap={1.5} alignItems={{ sm: "center" }} sx={{ width: "100%", maxWidth: 1200, mx: "auto" }}>
+      <Stack direction={{ xs: "column", sm: "row" }} gap={1.5} alignItems={{ sm: "center" }} flexWrap="wrap" sx={{ width: "100%", maxWidth: 1200, mx: "auto" }}>
+        {missingType && <Alert severity="warning">Выберите вид товара: «Акция месяца» или «Надо продать».</Alert>}
+        {props.options.adjustment && !validPercent && <Alert severity="warning">Введите процент скидки / наценки.</Alert>}
         {singlePrice && !validPrice && <Alert severity="warning" sx={{ flexShrink: 0 }}>Выберите один тип цены в блоке «Цены», чтобы скачать файл.</Alert>}
         <Typography role="status" sx={{ mr: { sm: "auto" } }}>Выбрано колонок: <strong>{columnCount}</strong>{!columns.length && ". Выберите хотя бы одну"}</Typography>
         <Stack direction="row" spacing={1}>
           <Button fullWidth variant="outlined" disabled={exporting} onClick={props.onClose}>Отмена</Button>
-          <Button fullWidth variant="contained" disabled={!columns.length || exporting || (singlePrice && !validPrice)} onClick={props.onDownload} sx={{ minWidth: 160, whiteSpace: "nowrap" }}>{exporting ? "Формирование…" : (props.options.zip_categories ? "Скачать ZIP" : "Скачать Excel")}</Button>
+          <Button fullWidth variant="contained" disabled={!columns.length || exporting || (singlePrice && !validPrice) || missingType || (props.options.adjustment && !validPercent)} onClick={props.onDownload} sx={{ minWidth: 160, whiteSpace: "nowrap" }}>{exporting ? "Формирование…" : (props.options.zip_categories ? "Скачать ZIP" : "Скачать Excel")}</Button>
         </Stack>
       </Stack>
     </DialogActions>

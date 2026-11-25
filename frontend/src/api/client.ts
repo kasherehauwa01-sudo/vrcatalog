@@ -345,15 +345,18 @@ export const api = {
   async startExcelExport(params: URLSearchParams, selectedIds: readonly number[] = []): Promise<{ job_id: string; status: string }> {
     if (selectedIds.length) {
       const query = new URLSearchParams();
+      ["group_categories", "group_folders", "promotion", "promotion_type", "order_form", "zip_categories", "adjustment", "adjustment_percent"].forEach((key) => {
+        if (params.has(key)) query.set(key, params.get(key)!);
+      });
       params.getAll("column").forEach((column) => query.append("column", column));
-      return adminRequest<{ job_id: string; status: string }>(`${API}/exports/xlsx?${query}`, {
+      return request<{ job_id: string; status: string }>(`${API}/exports/xlsx?${query}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ product_ids: selectedIds }),
-      }, true);
+      });
     }
     const { query, init } = codeRequest(params);
-    return adminRequest<{ job_id: string; status: string }>(`${API}/exports/xlsx?${query}`, init ?? { method: "POST" }, true);
+    return request<{ job_id: string; status: string }>(`${API}/exports/xlsx?${query}`, init ?? { method: "POST" });
   },
   async excelExportStatus(jobId: string): Promise<{ status: "processing" | "ready" | "error"; error?: string; size?: number; filename?: string; media_type?: string; processed: number; total?: number; progress: number }> {
     return request<{ status: "processing" | "ready" | "error"; error?: string; size?: number; filename?: string; media_type?: string; processed: number; total?: number; progress: number }>(`${API}/exports/xlsx/${jobId}`);

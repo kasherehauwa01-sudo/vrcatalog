@@ -17,6 +17,8 @@ from app.services.catalog import catalog_product_query
 
 class CatalogCodeBatchTests(unittest.TestCase):
     def setUp(self):
+        from app.core.admin_auth import _operations
+        _operations.clear()
         self.engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
         Base.metadata.create_all(self.engine)
         self.codes = [f'CODE-{index:06d}' for index in range(300)]
@@ -90,14 +92,11 @@ class CatalogCodeBatchTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(report.call_args.args[1]['code'], ' '.join(self.codes))
 
-    def test_long_code_export_keeps_admin_protection_and_forwards_same_filter(self):
+    def test_long_code_export_is_public_and_forwards_same_filter(self):
         from app.api import routes
         from app.core.admin_auth import require_heavy_admin
         payload = {'code': ' '.join(self.codes)}
         with patch.object(routes.export_executor, 'submit') as submit, patch.object(routes, 'cleanup_export_jobs'), patch.dict(routes.export_jobs, {}, clear=True):
-            self.assertEqual(self.client.post('/api/exports/xlsx', json=payload).status_code, 401)
-            submit.assert_not_called()
-            self.app.dependency_overrides[require_heavy_admin] = lambda: object()
             response = self.client.post('/api/exports/xlsx', params={'inStockOnly': 'false', 'column': 'code'}, json=payload)
             self.assertEqual(response.status_code, 200, response.text)
             submit.assert_called_once()
@@ -116,8 +115,6 @@ class CatalogCodeBatchTests(unittest.TestCase):
             patch.object(routes, 'SessionLocal', side_effect=lambda: Session(self.engine)),
             patch.dict(routes.export_jobs, {}, clear=True),
         ):
-            self.assertEqual(self.client.post('/api/exports/xlsx', json={'product_ids': selected_ids}).status_code, 401)
-            self.app.dependency_overrides[require_heavy_admin] = lambda: object()
             for params, body, expected in (
                 ({'column': 'code'}, {'product_ids': selected_ids + selected_ids}, selected_codes),
                 ({'column': 'code'}, {'product_ids': [2147483647]}, set()),
@@ -176,6 +173,21 @@ class CatalogCodeBatchTests(unittest.TestCase):
                 book = load_workbook(BytesIO(archive.read(archive.namelist()[0])))
                 self.assertEqual([row[0].value for row in book.active][3:], self.codes[:2])
                 book.close()
+
+    def test_public_export_keeps_rate_limit_and_validates_new_options(self):
+        from app.api import routes
+        from app.core.admin_auth import _operations
+        with patch.object(routes.export_executor, 'submit') as submit, patch.dict(routes.export_jobs, {}, clear=True):
+            for params in ({'promotion': True}, {'promotion': True, 'promotion_type': 'Другое'},
+                           {'adjustment': True}, {'adjustment': True, 'adjustment_percent': 'nan'}):
+                response = self.client.post('/api/exports/xlsx', params={**params, 'column': 'price:ЦенаОптовая'})
+                self.assertEqual(response.status_code, 422, response.text)
+            submit.assert_not_called()
+            _operations.clear()
+            for _ in range(10):
+                self.assertEqual(self.client.post('/api/exports/xlsx', params={'column': 'code'}).status_code, 200)
+            self.assertEqual(self.client.post('/api/exports/xlsx', params={'column': 'code'}).status_code, 429)
+            self.assertEqual(submit.call_count, 10)
 
     def test_invalid_xlsx_selection_does_not_start_an_export_job(self):
         from app.api import routes
