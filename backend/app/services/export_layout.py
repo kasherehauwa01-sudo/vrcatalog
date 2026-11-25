@@ -6,7 +6,9 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from app.models.catalog import Product, ProductProperty
+from sqlalchemy import and_, func, or_
+from app.models.catalog import Product, ProductProperty, ProductTypeSetting
+from app.services.catalog import DEFAULT_PRODUCT_TYPE_NAMES
 from app.services.catalog_folders import FOLDER_PATH_PROPERTIES, folder_path
 
 PRICE_PAIRS = {
@@ -93,7 +95,7 @@ def export_plan(db, filtered_ids, options, directory):
                                        .filter(ProductProperty.product_id.in_(names), ProductProperty.name.in_(FOLDER_PATH_PROPERTIES))
                                        .order_by(ProductProperty.id)):
                         if value and pid not in paths:
-                            path = folder_path(value, names[pid])
+                            path = folder_path(value, names[pid], uppercase_only=True)
                             if path:
                                 paths[pid] = [part.strip() for part in path.split('|')]
                 connection.executemany('INSERT INTO items VALUES (?, ?, ?, ?)', [
@@ -105,3 +107,20 @@ def export_plan(db, filtered_ids, options, directory):
             yield ExportPlan(connection, options)
         finally:
             connection.close()
+
+
+def promotion_product_ids(db, filtered_ids):
+    """Intersect the selection with the same product-type representation as the catalog."""
+    names = dict(DEFAULT_PRODUCT_TYPE_NAMES)
+    names.update({row.code: row.name for row in db.query(ProductTypeSetting).all()})
+    codes = [code for code, name in names.items() if name.strip() == 'Акция месяца']
+    values = ['Акция месяца', *codes]
+    fallback = Product.properties.any(and_(
+        ProductProperty.name.in_(['Вид товара', 'ВидТовара']),
+        func.trim(ProductProperty.value).in_(values),
+    ))
+    return (db.query(Product.id.label('product_id'))
+            .join(filtered_ids, filtered_ids.c.product_id == Product.id)
+            .filter(or_(func.trim(Product.product_type).in_(values),
+                        and_(or_(Product.product_type.is_(None), Product.product_type == ''), fallback)))
+            .subquery())

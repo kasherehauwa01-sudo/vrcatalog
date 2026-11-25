@@ -51,14 +51,14 @@ class ExcelLinkTests(unittest.TestCase):
                 sheet = book.active
                 self.assertEqual([cell.value for cell in sheet[1]], ['Код', 'Ссылка на фото', 'Ссылка на сайт'])
                 self.assertEqual(sheet['A2'].value, '001234')
-                self.assertEqual(sheet['B2'].value, 'https://volgorost.ru/upload/import_images/images/photo%20one.jpg')
-                self.assertEqual(sheet['B2'].hyperlink.target, sheet['B2'].value)
-                self.assertTrue(sheet['B3'].value.startswith('https://cdn.example.test/'))
+                self.assertEqual(sheet['B2'].hyperlink.target, 'https://volgorost.ru/upload/import_images/images/photo%20one.jpg')
+                self.assertEqual(sheet['B2'].value, 'Ссылка на фото')
+                self.assertTrue(sheet['B3'].hyperlink.target.startswith('https://cdn.example.test/'))
                 self.assertIsNone(sheet['B4'].value)
                 self.assertIsNone(sheet['B4'].hyperlink)
                 for row in (2, 3, 4):
-                    url = sheet.cell(row, 3).value
-                    self.assertEqual(sheet.cell(row, 3).hyperlink.target, url)
+                    url = sheet.cell(row, 3).hyperlink.target
+                    self.assertEqual(sheet.cell(row, 3).value, 'Ссылка на сайт')
                     self.assertEqual(parse_qs(urlsplit(url).query), {'code': [sheet.cell(row, 1).value]})
                 downloads.assert_not_called()
                 book.close()

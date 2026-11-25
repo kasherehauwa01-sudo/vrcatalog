@@ -145,7 +145,11 @@ const exportMainColumns = [
   ["barcodes", "Штрихкоды"],
 ] as const;
 const exportPriceColumns = ["ЦенаОптовая", "ЦенаКорпоративная", "ЦенаРозничная"] as const;
-const defaultExportColumns = ["code", "name", "section"];
+const defaultExportColumns = ["code", "name", "photo", "price:ЦенаОптовая"];
+const defaultColumnsForWarehouses = (warehouses: Warehouse[]) => {
+  const warehouse = warehouses.find((item) => item.name.trim() === "Авиаторов Зал+Склад");
+  return [...defaultExportColumns, ...(warehouse ? [`stock:${warehouse.code}`] : [])];
+};
 
 const labels: Record<string, string> = {
   category: "Категория1",
@@ -712,7 +716,9 @@ function App() {
     setExportError(null);
     setExportProgress(null);
     setExportMessage("Формируем Excel. Не закрывайте это окно…");
-    setExportWarehouses(await api.warehouses());
+    const warehouses = await api.warehouses();
+    setExportWarehouses(warehouses);
+    setExportColumns(defaultColumnsForWarehouses(warehouses));
     setExportDialogOpen(true);
   };
   const downloadExcel = async () => {
@@ -1235,7 +1241,7 @@ function App() {
           <ExportColumnsDialog options={exportOptions} onOptionsChange={setExportOptions} open={exportDialogOpen} exporting={exporting} progress={exportProgress}
             message={exportMessage} error={exportError} columns={exportColumns} mainColumns={exportMainColumns}
             prices={exportPriceColumns} warehouses={exportWarehouses} onChange={setExportColumns}
-            onDefaults={() => { setExportColumns(defaultExportColumns); setExportOptions(defaultExportOptions); }} onClose={() => setExportDialogOpen(false)} onDownload={downloadExcel} />
+            onDefaults={() => { setExportColumns(defaultColumnsForWarehouses(exportWarehouses)); setExportOptions(defaultExportOptions); }} onClose={() => setExportDialogOpen(false)} onDownload={downloadExcel} />
 
           {tab === "catalog" && (
             <Paper

@@ -26,10 +26,10 @@ class ExcelLayoutTests(unittest.TestCase):
         self.params = {'in_stock_only': False, 'exclude_yyy': False}
         # Interleave sections and folders so tests require global sorting, not batch sorting.
         for index, (section, folder) in enumerate([
-            ('Уборка', 'Бытовая химия|СИМА ЮГ'),
-            ('Аксессуары для бани', 'Бытовая химия|СИМА ЮГ'),
-            ('Уборка', 'Другая папка'),
-            ('Аксессуары для бани', 'Бытовая химия|СИМА ЮГ'),
+            ('Уборка', 'БЫТОВАЯ химия|СИМА ЮГ'),
+            ('Аксессуары для бани', 'БЫТОВАЯ химия|СИМА ЮГ'),
+            ('Уборка', 'ДРУГАЯ папка'),
+            ('Аксессуары для бани', 'БЫТОВАЯ химия|СИМА ЮГ'),
         ]):
             name = 'Товар х|б ' + str(index)
             product = Product(code=f'00{index}', name=name, category1='Баня и сауна', section=section,
@@ -56,8 +56,8 @@ class ExcelLayoutTests(unittest.TestCase):
     def test_group_hierarchy_matches_example_and_does_not_include_product_name(self):
         book = load_workbook(self.output({'group_categories': True, 'group_folders': True}))
         titles = [row[0].value for row in book.active]
-        self.assertEqual(titles, ['Код', 'Баня и сауна', 'Аксессуары для бани', 'Бытовая химия', 'СИМА ЮГ',
-                                  '001', '003', 'Уборка', 'Бытовая химия', 'СИМА ЮГ', '000', 'Другая папка', '002'])
+        self.assertEqual(titles, ['Код', 'Баня и сауна', 'Аксессуары для бани', 'БЫТОВАЯ химия', 'СИМА ЮГ',
+                                  '001', '003', 'Уборка', 'БЫТОВАЯ химия', 'СИМА ЮГ', '000', 'ДРУГАЯ папка', '002'])
         self.assertEqual(book.active['B6'].value, 'Товар х|б 1')
         self.assertFalse(book.active.auto_filter.ref)  # Sorting/filtering must not mix headings with products.
         book.close()
@@ -177,3 +177,46 @@ class ExcelLayoutTests(unittest.TestCase):
             routes.create_xlsx_export('failed-zip', self.params, ['code'], {'zip_categories': True})
             self.assertEqual(routes.export_jobs['failed-zip']['status'], 'error')
             self.assertEqual(list((Path(self.temp.name) / 'xlsx-exports').iterdir()), [])
+
+    def test_promotion_filters_before_counting_selected_ids_and_zip_creation(self):
+        from app.models.catalog import ProductTypeSetting
+        products = self.db.query(Product).order_by(Product.id).all()
+        products[0].product_type = '10'
+        products[1].product_type = '1'
+        products[2].product_type = 'Акция месяца'
+        products[3].properties.append(ProductProperty(name='Вид товара', value='Акция месяца'))
+        self.db.add(Product(code='conflict', name='Обычный', product_type='1',
+                            properties=[ProductProperty(name='ВидТовара', value='10')]))
+        self.db.add(ProductTypeSetting(code='99', name='Акция месяца'))
+        self.db.add(Product(code='custom', name='Настроенный вид', product_type='99', section='Тест'))
+        self.db.commit()
+        for zip_mode, params, expected in (
+            (False, self.params, {'000', '002', '003', 'custom'}),
+            (True, {'product_ids': [1, 2, 3]}, {'000', '002'}),
+        ):
+            with patch.object(routes, 'SessionLocal', side_effect=lambda: Session(self.engine)), \
+                 patch.object(routes.settings, 'upload_dir', self.temp.name), \
+                 patch.dict(routes.export_jobs, {'promo': {}}, clear=True):
+                routes.create_xlsx_export('promo', params, ['code', 'price:ЦенаОптовая'],
+                                          {'promotion': True, 'zip_categories': zip_mode})
+                job = routes.export_jobs['promo']
+                self.assertEqual(job['status'], 'ready', job)
+                self.assertEqual(job['total'], len(expected))
+                self.assertEqual(job['processed'], len(expected))
+                if zip_mode:
+                    with ZipFile(job['path']) as archive:
+                        books = [load_workbook(BytesIO(archive.read(name))) for name in archive.namelist()]
+                else:
+                    books = [load_workbook(job['path'])]
+                codes = {row[0].value for book in books for row in list(book.active)[1:]}
+                self.assertEqual(codes, expected)
+                for book in books:
+                    book.close()
+
+    def test_folder_headers_stop_before_stale_product_fragments(self):
+        product = self.db.query(Product).first()
+        product.properties[0].value = 'МЕТАЛЛ|ПОСУДА для ПРИГОТОВЛЕНИЯ|ТАЛЛЕР|Доска разделочная дерево набор|34,5*18*1|АКРОС'
+        self.db.commit()
+        book = load_workbook(self.output({'group_folders': True}, ['code'], {'product_ids': [product.id]}))
+        self.assertEqual([row[0].value for row in book.active], ['Код', 'МЕТАЛЛ', 'ПОСУДА для ПРИГОТОВЛЕНИЯ', 'ТАЛЛЕР', product.code])
+        book.close()

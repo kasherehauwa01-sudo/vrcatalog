@@ -49,7 +49,7 @@ from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSetting
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
 from app.services.catalog import catalog_product_query, decorate, folder_paths, integration_batch_product_info, integration_brands, integration_catalog_tree, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
-from app.services.export_layout import FORM_HEADERS, PRICE_PAIRS, archive_name, export_plan, form_columns, form_price
+from app.services.export_layout import FORM_HEADERS, PRICE_PAIRS, archive_name, export_plan, form_columns, form_price, promotion_product_ids
 from app.services.export_links import MAX_SHEET_HYPERLINKS, primary_image_links, product_site_link
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
@@ -1184,6 +1184,8 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None, opt
     try:
         with SessionLocal() as db:
             filtered_ids = filtered_product_ids_subquery(db, params)
+            if options.get("promotion"):
+                filtered_ids = promotion_product_ids(db, filtered_ids)
             product_count = db.query(func.count()).select_from(filtered_ids).scalar() or 0
             has_photos = bool(columns and "photo" in columns)
             safe_params = {key: value for key, value in params.items() if value not in (None, "", [], {}, False, "all")}
@@ -1782,7 +1784,7 @@ def write_export_workbook_streaming(
                         cell_format = promo_format if column == "promo_price" else price_format
                     if column in {"image_url", "site_url"} and value:
                         if len(value) <= 2079:
-                            worksheet.write_url(row_index, column_index, value, link_alt_format if alternate else link_format, string=value)
+                            worksheet.write_url(row_index, column_index, value, link_alt_format if alternate else link_format, string=EXPORT_MAIN_COLUMNS[column])
                         else:
                             worksheet.write_string(row_index, column_index, value, cell_format)
                     else:
@@ -1945,6 +1947,7 @@ def build_export_workbook(
             for index, column in enumerate(selected_columns, start=1):
                 if column in {"image_url", "site_url"} and main_values[column] and len(main_values[column]) <= 2079:
                     link_cell = worksheet.cell(row=worksheet.max_row, column=index)
+                    link_cell.value = EXPORT_MAIN_COLUMNS[column]
                     link_cell.hyperlink = main_values[column]
                     link_cell.style = "Hyperlink"
             if photo_column and photo_url and not image_content:

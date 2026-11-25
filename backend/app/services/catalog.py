@@ -98,7 +98,7 @@ def folder_paths(db: Session) -> list[str]:
         Product, Product.id == ProductProperty.product_id,
     ).filter(ProductProperty.name.in_(FOLDER_PATH_PROPERTIES))
     for value, name in values.yield_per(1000):
-        path = folder_path(value, name)
+        path = folder_path(value, name, uppercase_only=True)
         if path:
             paths.add(path)
     return sorted(paths, key=lambda path: (path.casefold(), path))
