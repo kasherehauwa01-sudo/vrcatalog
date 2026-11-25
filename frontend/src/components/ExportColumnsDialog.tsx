@@ -1,4 +1,4 @@
-import { Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, IconButton, LinearProgress, Paper, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, IconButton, LinearProgress, Paper, Stack, Typography } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 
 type Column = readonly [string, string];
@@ -26,14 +26,16 @@ export function ExportColumnsDialog(props: Props) {
   const setOption = (key: keyof ExportOptions, checked: boolean) => {
     props.onOptionsChange({ ...props.options, [key]: checked });
     if (checked && (key === "promotion" || key === "order_form")) {
-      const price = columns.find((item) => item.startsWith("price:")) || `price:${props.prices[0]}`;
-      props.onChange([...columns.filter((item) => !item.startsWith("price:")), price]);
+      // Each form activation requires an explicit price choice.
+      const next = columns.filter((item) => !item.startsWith("price:"));
+      if (key === "order_form" && !next.includes("site_url")) next.push("site_url");
+      props.onChange(next);
     }
   };
   const layoutOptions: [keyof ExportOptions, string, string][] = [
     ["group_categories", "Формировать по категориям", "Строки с названием категории и подкатегории перед товарами."],
     ["group_folders", "Формировать по группам", "Папки и вложенные папки перед товарами. Можно сочетать с категориями."],
-    ["promotion", "Форма для акции месяца", "В конце — новая и предыдущая цена выбранного типа. Только один вид цены."],
+    ["promotion", "Форма для акции месяца", "Только товары вида «Акция месяца». В конце — новая и предыдущая цена выбранного типа."],
     ["order_form", "Форма для заказа", "В конце — поле «Заказ» и формула суммы. С акцией используется новая цена. Только один вид цены."],
     ["zip_categories", "По всем категориям (zip)", "Отдельный Excel для каждой подкатегории из текущей выборки, в одном ZIP-архиве."],
   ];
@@ -46,7 +48,7 @@ export function ExportColumnsDialog(props: Props) {
   ];
   const toggle = (key: string) => {
     if (singlePrice && key.startsWith("price:")) {
-      props.onChange([...columns.filter((item) => !item.startsWith("price:")), key]);
+      props.onChange([...columns.filter((item) => !item.startsWith("price:")), ...(columns.includes(key) ? [] : [key])]);
       return;
     }
     props.onChange(columns.includes(key) ? columns.filter((item) => item !== key) : [...columns, key]);
@@ -98,6 +100,7 @@ export function ExportColumnsDialog(props: Props) {
     </DialogContent>
     <DialogActions sx={{ p: 2, bgcolor: "white", borderTop: "1px solid", borderColor: "divider" }}>
       <Stack direction={{ xs: "column", sm: "row" }} gap={1.5} alignItems={{ sm: "center" }} sx={{ width: "100%", maxWidth: 1200, mx: "auto" }}>
+        {singlePrice && !validPrice && <Alert severity="warning" sx={{ flexShrink: 0 }}>Выберите один тип цены в блоке «Цены», чтобы скачать файл.</Alert>}
         <Typography role="status" sx={{ mr: { sm: "auto" } }}>Выбрано колонок: <strong>{columnCount}</strong>{!columns.length && ". Выберите хотя бы одну"}</Typography>
         <Stack direction="row" spacing={1}>
           <Button fullWidth variant="outlined" disabled={exporting} onClick={props.onClose}>Отмена</Button>

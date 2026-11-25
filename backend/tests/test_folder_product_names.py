@@ -36,21 +36,31 @@ class FolderProductNamesTests(unittest.TestCase):
         self.assertEqual(folder_paths(self.db), [PREFIX, 'МЕТАЛЛ|ПОСУДА|АМФОРА'])
         self.assertEqual({product.code for product in catalog_product_query(self.db, {'folder': [PREFIX]}, eager_load=False)}, {'001', '002'})
 
+    def test_split_stale_name_is_removed_from_filter_tree(self):
+        self.db.add(Product(code='board', name='Доска с обновлённым названием', properties=[
+            ProductProperty(name='ПолныйПуть', value='МЕТАЛЛ|ПОСУДА для ПРИГОТОВЛЕНИЯ|ТАЛЛЕР|Доска разделочная|34,5*18*1|АКРОС')]))
+        self.db.commit()
+        self.assertIn('МЕТАЛЛ|ПОСУДА для ПРИГОТОВЛЕНИЯ|ТАЛЛЕР', folder_paths(self.db))
+        self.assertFalse(any('Доска' in path or '34,5' in path or 'АКРОС' in path for path in folder_paths(self.db)))
+
     def test_parser_preserves_deep_folders_and_legacy_paths(self):
         cases = [
             (PREFIX + '|' + NAME, NAME, PREFIX),
             ('A|B|C|D|E|Name|with|pipes', 'Name|with|pipes', 'A|B|C|D|E'),
-            ('A|Name|Name', 'Name', 'A|Name'),
+            ('A|Name|Name', 'Name', 'A'),
             ('A| Name  with | spaces |', 'name with|spaces', 'A'),
             ('A|Old name', 'Renamed product', 'A'),
             ('Name|with|pipes', 'Name|with|pipes', None),
             ('A||Name', 'Name', None),
+            ('МЕТАЛЛ|ПОСУДА для ПРИГОТОВЛЕНИЯ|ТАЛЛЕР|Доска разделочная|34,5*18*1|АРКОС', 'Другое имя', 'МЕТАЛЛ|ПОСУДА для ПРИГОТОВЛЕНИЯ|ТАЛЛЕР'),
+            ('БАНЯ|34,5*18*1|АРКОС|Товар', 'Товар', 'БАНЯ'),
+            ('МЕТАЛЛ|АКРОС|НОЖ', 'НОЖ', 'МЕТАЛЛ|АКРОС'),
             ('Name', 'Name', None),
             ('', '', None),
         ]
         for value, name, expected in cases:
             with self.subTest(value=value):
-                self.assertEqual(folder_path(value, name), expected)
+                self.assertEqual(folder_path(value, name, uppercase_only=True), expected)
 
     def test_endpoint_returns_only_folder_prefixes_in_one_narrow_query(self):
         app = FastAPI()
