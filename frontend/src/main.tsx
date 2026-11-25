@@ -1666,7 +1666,7 @@ function App() {
                     {selectedScenario === "unneeded_folder" && scenarioForm && <>
                       <Button onClick={() => { setSelectedScenario(null); setScenarioForm(null); }}>← К списку сценариев</Button>
                       <Typography variant="h6">Добавление товара в папку НЕНУЖНОЕ</Typography>
-                      <Typography color="text.secondary">Ежедневное письмо с кодом, наименованием и менеджером новых товаров. XLS содержит коды с ячейки A2. Время московское (UTC+3). При включении текущие товары принимаются за исходный список без рассылки.</Typography>
+                      <Typography color="text.secondary">Ежедневное письмо только о новых товарах в папке НЕНУЖНОЕ с остатком 0 на складе «Авиаторов Зал+Склад». В письме: код, наименование и менеджер. XLS содержит коды с ячейки A2. Время московское (UTC+3). При включении текущие товары принимаются за исходный список без рассылки.</Typography>
                       <FormControlLabel label="Сценарий включён" control={<Switch checked={scenarioForm.enabled} onChange={(event) => setScenarioForm({ ...scenarioForm, enabled: event.target.checked })} />} />
                       <TextField label="Время отправки" type="time" value={scenarioForm.send_time} onChange={(event) => setScenarioForm({ ...scenarioForm, send_time: event.target.value })} InputLabelProps={{ shrink: true }} />
                       <TextField label="Email адреса" multiline minRows={3} helperText="Каждый адрес с новой строки" value={scenarioForm.recipients.join("\n")} onChange={(event) => setScenarioForm({ ...scenarioForm, recipients: event.target.value.split("\n") })} />

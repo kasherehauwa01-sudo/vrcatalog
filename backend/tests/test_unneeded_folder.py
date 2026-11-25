@@ -33,9 +33,10 @@ class UnneededFolderTests(unittest.TestCase):
         self.db.close()
         self.engine.dispose()
 
-    def add(self, code, name, path, manager='Менеджер'):
+    def add(self, code, name, path, manager='Менеджер', stock=0, warehouse=service.WAREHOUSE_NAME):
         product = Product(code=code, name=name, manager=manager,
-                          properties=[ProductProperty(name='ПолныйПуть', value=path)])
+                          properties=[ProductProperty(name='ПолныйПуть', value=path)],
+                          stocks=[] if stock is None else [Stock(warehouse=warehouse, quantity=stock)])
         self.db.add(product)
         self.db.flush()
         return product
@@ -46,8 +47,8 @@ class UnneededFolderTests(unittest.TestCase):
         self.db.add(WarehouseSetting(code='AVIATORS', name='Авиаторов Зал+Склад'))
         new_product = self.add('0002', '<Новый>', 'Каталог|НЕНУЖНОЕ|Дочерняя|<Новый>')
         new_product.stocks.extend([
-            Stock(warehouse='AVIATORS', quantity=12),
-            Stock(warehouse='Авиаторов Зал+Склад', quantity=0.5),
+            Stock(warehouse='AVIATORS', quantity=0),
+            Stock(warehouse='Авиаторов Зал+Склад', quantity=0),
             Stock(warehouse='OTHER', quantity=99),
         ])
         self.add('0003', 'Третий', 'НЕНУЖНОЕ|Третий').stocks.append(
@@ -62,7 +63,7 @@ class UnneededFolderTests(unittest.TestCase):
             self.assertEqual(args.args[1], ['one@example.test', 'two@example.test'])
             self.assertIn('&lt;Новый&gt;', args.args[3])
             self.assertIn('<th>Остаток: Авиаторов Зал+Склад</th>', args.args[3])
-            self.assertIn('<td>0002</td><td>&lt;Новый&gt;</td><td>Менеджер</td><td>12,5</td>', args.args[3])
+            self.assertIn('<td>0002</td><td>&lt;Новый&gt;</td><td>Менеджер</td><td>0</td>', args.args[3])
             self.assertIn('<td>0003</td><td>Третий</td><td>Менеджер</td><td>0</td>', args.args[3])
             self.assertNotIn('Исходный', args.args[3])
             data, filename, mime = args.kwargs['extra_attachments'][0]
@@ -206,3 +207,52 @@ class UnneededFolderTests(unittest.TestCase):
         service.set_enabled(self.db, setting, True)
         self.db.commit()
         self.assertEqual(service.run_due(self.db, self.now.replace(day=24)), 'empty')
+
+    def test_only_new_members_with_zero_target_stock_enter_mail_and_xls(self):
+        self.add('002', 'Подходит', 'НЕНУЖНОЕ|Подходит', stock=0)
+        self.add('003', 'Положительный', 'НЕНУЖНОЕ|Положительный', stock=4)
+        self.add('004', 'Отрицательный', 'НЕНУЖНОЕ|Отрицательный', stock=-1)
+        self.add('005', 'Нет записи', 'НЕНУЖНОЕ|Нет записи', stock=None)
+        self.add('006', 'Другой склад', 'НЕНУЖНОЕ|Другой склад', stock=0, warehouse='Авиаторов')
+        self.add('007', 'Другая папка', 'Другая|Другая папка', stock=0)
+        self.db.commit()
+        with patch.object(service, 'send_email') as send:
+            self.assertEqual(service.run_due(self.db, self.now), 'sent')
+            html = send.call_args.args[3]
+            self.assertIn('Подходит', html)
+            for name in ('Исходный', 'Положительный', 'Отрицательный', 'Нет записи', 'Другой склад', 'Другая папка'):
+                self.assertNotIn(name, html)
+            sheet = xlrd.open_workbook(file_contents=send.call_args.kwargs['extra_attachments'][0][0]).sheet_by_index(0)
+            self.assertEqual(sheet.col_values(0), ['', '002'])
+        self.assertEqual(set(self.db.scalars(select(UnneededFolderSnapshot.product_code))), {'001', '002', '003', '004', '005', '006'})
+
+    def test_warehouse_mapping_and_aggregate_ignore_other_warehouses(self):
+        self.db.add(WarehouseSetting(code='AVIATOR', name=service.WAREHOUSE_NAME))
+        product = self.add('002', 'Новый', 'НЕНУЖНОЕ|Новый', stock=2, warehouse='AVIATOR')
+        product.stocks.extend([Stock(warehouse='AVIATOR', quantity=-2), Stock(warehouse='OTHER', quantity=10)])
+        blocked = self.add('003', 'Не ноль', 'НЕНУЖНОЕ|Не ноль', stock=0)
+        blocked.stocks.append(Stock(warehouse=service.WAREHOUSE_NAME, quantity=1))
+        self.db.flush()
+        self.assertEqual(service.warehouse_stock_by_code(self.db, ['002', '003']), {'002': 0, '003': 1})
+
+    def test_stock_drop_alone_does_not_create_a_folder_addition(self):
+        product = self.add('002', 'Новый', 'НЕНУЖНОЕ|Новый', stock=3)
+        self.db.commit()
+        with patch.object(service, 'send_email') as send:
+            self.assertEqual(service.run_due(self.db, self.now), 'empty')
+            product.stocks[0].quantity = 0
+            self.db.commit()
+            self.assertEqual(service.run_due(self.db, self.now.replace(day=24)), 'empty')
+            send.assert_not_called()
+
+    def test_stock_selection_uses_one_query_per_batch_not_per_product(self):
+        from sqlalchemy import event
+        statements = []
+        for i in range(20):
+            self.add(f'NEW-{i}', 'Новый', 'НЕНУЖНОЕ|Новый')
+        self.db.commit()
+        event.listen(self.engine, 'before_cursor_execute', lambda conn, cursor, sql, params, context, many: statements.append(sql))
+        self.assertEqual(len(service.warehouse_stock_by_code(self.db, [f'NEW-{i}' for i in range(20)])), 20)
+        self.assertEqual(len(statements), 1)
+        self.assertEqual(service.warehouse_stock_by_code(self.db, []), {})
+        self.assertEqual(len(statements), 1)

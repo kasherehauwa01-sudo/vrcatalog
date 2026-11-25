@@ -114,13 +114,18 @@ def run_due(db, now=None):
         return "no_recipients"
     products = current_products(db)
     known = set(db.scalars(select(UnneededFolderSnapshot.product_code)))
-    added = [products[code] for code in sorted(products.keys() - known)]
+    new_codes = sorted(products.keys() - known)
+    quantities = warehouse_stock_by_code(db, new_codes)
+    # Missing stock is unknown, not a recorded zero. Reuse this same snapshot
+    # for selection and the email so no second stock query can disagree.
+    added = [products[code] for code in new_codes if quantities.get(code) == 0]
+    # Snapshot all folder members, including those with nonzero/unknown stock:
+    # later stock changes alone must not count as a new folder addition.
     if not added:
         replace_snapshot(db, products)
         setting.last_run_date = today
         db.commit()
         return "empty"
-    quantities = warehouse_stock_by_code(db, [code for code, _, _ in added])
     html = build_preview(added, quantities)
     status = "sent"
     try:
