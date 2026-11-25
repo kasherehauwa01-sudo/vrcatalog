@@ -1,5 +1,7 @@
 """Disk-backed ordering for export layouts; never retain the catalog in RAM."""
 from contextlib import contextmanager
+import math
+from decimal import Decimal, ROUND_HALF_UP
 import json
 import re
 import sqlite3
@@ -16,16 +18,20 @@ PRICE_PAIRS = {
     'ЦенаКорпоративная': 'ЦенаПредыдущаяКорпоративная',
     'ЦенаРозничная': 'ЦенаПредыдущаяРозничная',
 }
-FORM_HEADERS = {'promo_price': 'Акция! Новая цена', 'old_price': 'Старая цена',
+FORM_HEADERS = {'adjusted_price': 'Ваша цена', 'promo_price': 'Акция! Новая цена', 'old_price': 'Старая цена',
                 'order_quantity': 'Заказ', 'order_total': 'Сумма заказа'}
 
 
 def form_price(columns, options):
-    if not (options.get('promotion') or options.get('order_form')):
+    if options.get('promotion') and options.get('promotion_type') not in ('Акция месяца', 'Надо продать'):
+        raise ValueError('Выберите вид товара: Акция месяца или Надо продать')
+    if options.get('adjustment') and (options.get('adjustment_percent') is None or not math.isfinite(options['adjustment_percent'])):
+        raise ValueError('Введите процент скидки / наценки')
+    if not (options.get('promotion') or options.get('order_form') or options.get('adjustment')):
         return None
     prices = [column[6:] for column in columns if column.startswith('price:')]
     if len(prices) != 1 or prices[0] not in PRICE_PAIRS:
-        raise ValueError('Для формы акции или заказа выберите ровно один вид цены')
+        raise ValueError('Выберите ровно один вид цены')
     return prices[0]
 
 
@@ -34,6 +40,8 @@ def form_columns(columns, options):
     if options.get('promotion'):
         result = [column for column in result if not column.startswith('price:')]
         result.extend(['promo_price', 'old_price'])
+    if options.get('adjustment'):
+        result.append('adjusted_price')
     if options.get('order_form'):
         result.extend(['order_quantity', 'order_total'])
     return result
@@ -109,12 +117,12 @@ def export_plan(db, filtered_ids, options, directory):
             connection.close()
 
 
-def promotion_product_ids(db, filtered_ids):
+def promotion_product_ids(db, filtered_ids, promotion_type):
     """Intersect the selection with the same product-type representation as the catalog."""
     names = dict(DEFAULT_PRODUCT_TYPE_NAMES)
     names.update({row.code: row.name for row in db.query(ProductTypeSetting).all()})
-    codes = [code for code, name in names.items() if name.strip() == 'Акция месяца']
-    values = ['Акция месяца', *codes]
+    codes = [code for code, name in names.items() if name.strip() == promotion_type]
+    values = [promotion_type, *codes]
     fallback = Product.properties.any(and_(
         ProductProperty.name.in_(['Вид товара', 'ВидТовара']),
         func.trim(ProductProperty.value).in_(values),
@@ -124,3 +132,9 @@ def promotion_product_ids(db, filtered_ids):
             .filter(or_(func.trim(Product.product_type).in_(values),
                         and_(or_(Product.product_type.is_(None), Product.product_type == ''), fallback)))
             .subquery())
+
+
+def adjusted_price(value, percent):
+    if value is None:
+        return None
+    return float((Decimal(str(value)) * (1 + Decimal(str(percent)) / 100)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))

@@ -725,7 +725,10 @@ function App() {
     const exportParams = new URLSearchParams(params);
     ["column", "page", "pageSize", "sort", "order"].forEach((key) => exportParams.delete(key));
     exportColumns.forEach((column) => exportParams.append("column", column));
-    Object.entries(exportOptions).forEach(([key, enabled]) => exportParams.set(key, String(enabled)));
+    Object.entries(exportOptions).forEach(([key, value]) => {
+      if (key === "adjustment_percent" && !exportOptions.adjustment) return;
+      if (value !== "") exportParams.set(key, key === "adjustment_percent" ? String(value).replace(",", ".") : String(value));
+    });
     setExporting(true);
     setExportError(null);
     setExportProgress(null);

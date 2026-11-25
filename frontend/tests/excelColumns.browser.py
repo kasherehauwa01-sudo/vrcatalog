@@ -25,7 +25,7 @@ with sync_playwright() as p:
             elif path.endswith('/warehouses'):
                 result = [{'id': i, 'code': f'WH{i}', 'name': name} for i, name in enumerate(['Авиаторов Зал+Склад', 'Диамант', 'Привоз', 'Ахтубинск', 'Козловская', 'Бахтурова'])]
             elif path.endswith('/admin/session'):
-                result = {'authenticated': True, 'csrf_token': 'test-token'}
+                result = {'authenticated': False}
             elif path.endswith('/exports/xlsx'):
                 exports.append(route.request.url)
                 result = {'job_id': 'test-export', 'status': 'processing'}
@@ -72,6 +72,7 @@ with sync_playwright() as p:
         expect(dialog.get_by_text('Выберите один тип цены в блоке «Цены», чтобы скачать файл.', exact=True)).to_be_visible()
         expect(dialog.get_by_role('checkbox', name='ЦенаРозничная', exact=True)).not_to_be_checked()
         expect(dialog.get_by_role('checkbox', name='Выбрать всю группу: Цены', exact=True)).to_have_count(0)
+        dialog.get_by_role('radio', name='Надо продать', exact=True).check()
         dialog.get_by_role('checkbox', name='ЦенаРозничная', exact=True).check()
         expect(dialog.get_by_role('checkbox', name='ЦенаОптовая', exact=True)).not_to_be_checked()
         for label in ('Формировать по категориям', 'Формировать по группам', 'Форма для заказа', 'По всем категориям (zip)'):
@@ -79,14 +80,23 @@ with sync_playwright() as p:
         expect(dialog.get_by_role('checkbox', name='Ссылка на сайт', exact=True)).to_be_checked()
         expect(dialog.get_by_role('button', name='Скачать ZIP', exact=True)).to_be_disabled()
         dialog.get_by_role('checkbox', name='ЦенаРозничная', exact=True).check()
+        dialog.get_by_role('checkbox', name='Скидка / Наценка', exact=True).check()
+        expect(dialog.get_by_role('button', name='Скачать ZIP', exact=True)).to_be_disabled()
+        dialog.get_by_role('textbox', name='Процент скидки / наценки', exact=True).fill('-12,5')
+        expect(dialog.get_by_role('button', name='Скачать ZIP', exact=True)).to_be_disabled()
+        dialog.get_by_role('checkbox', name='ЦенаРозничная', exact=True).check()
+        expect(dialog.get_by_role('button', name='Скачать ZIP', exact=True)).to_be_enabled()
         dialog.locator('.MuiDialogContent-root').evaluate('(node) => node.scrollTop = 0')
         page.screenshot(path=str(artifacts / f'excel-forms-{width}.png'))
-        expect(dialog.get_by_text('Выбрано колонок: 9', exact=True)).to_be_visible()
+        expect(dialog.get_by_text('Выбрано колонок: 10', exact=True)).to_be_visible()
         dialog.get_by_role('button', name='Скачать ZIP', exact=True).click()
         expect(dialog.get_by_role('checkbox', name='Форма для заказа', exact=True)).to_be_disabled()
         expect(dialog.get_by_role('alert')).to_have_text('Тестовая ошибка экспорта', timeout=10000)
         payload = parse_qs(urlsplit(exports[-1]).query)
         assert [column for column in payload['column'] if column.startswith('price:')] == ['price:ЦенаРозничная']
+        assert payload['adjustment'] == ['true']
+        assert payload['adjustment_percent'] == ['-12.5']
+        assert payload['promotion_type'] == ['Надо продать']
         assert all(payload[key] == ['true'] for key in ('group_categories', 'group_folders', 'promotion', 'order_form', 'zip_categories'))
         dialog.get_by_role('button', name='Снять все', exact=True).click()
         expect(dialog.get_by_role('button', name='Скачать ZIP', exact=True)).to_be_disabled()

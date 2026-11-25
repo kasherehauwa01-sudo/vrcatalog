@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import SessionLocal, get_db
 from app.core.config import settings
-from app.core.admin_auth import COOKIE_NAME, check_login_rate_limit, create_admin_session, require_admin, require_heavy_admin, rotate_csrf, verify_admin_password
+from app.core.admin_auth import COOKIE_NAME, check_heavy_request_limit, check_login_rate_limit, create_admin_session, require_admin, require_heavy_admin, rotate_csrf, verify_admin_password
 from app.importer.xml_importer import XMLCatalogImporter, public_image_url
 from app.models.catalog import Favorite, HistorySnapshot, Notification, NotificationEmailHistory, Product, ProductTypeSetting, ServiceLog, Stock, ViewHistory, WarehouseSetting
 from app.models.catalog import AdminSession
@@ -49,7 +49,7 @@ from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSetting
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
 from app.services.catalog import catalog_product_query, decorate, folder_paths, integration_batch_product_info, integration_brands, integration_catalog_tree, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
-from app.services.export_layout import FORM_HEADERS, PRICE_PAIRS, archive_name, export_plan, form_columns, form_price, promotion_product_ids
+from app.services.export_layout import FORM_HEADERS, PRICE_PAIRS, archive_name, export_plan, form_columns, form_price, promotion_product_ids, adjusted_price
 from app.services.export_links import MAX_SHEET_HYPERLINKS, primary_image_links, product_site_link
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
@@ -1185,7 +1185,7 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None, opt
         with SessionLocal() as db:
             filtered_ids = filtered_product_ids_subquery(db, params)
             if options.get("promotion"):
-                filtered_ids = promotion_product_ids(db, filtered_ids)
+                filtered_ids = promotion_product_ids(db, filtered_ids, options.get("promotion_type"))
             product_count = db.query(func.count()).select_from(filtered_ids).scalar() or 0
             has_photos = bool(columns and "photo" in columns)
             safe_params = {key: value for key, value in params.items() if value not in (None, "", [], {}, False, "all")}
@@ -1219,7 +1219,7 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None, opt
             export_jobs[job_id].update(status="error", error="Не удалось сформировать Excel")
 
 
-@router.post("/exports/xlsx", dependencies=[Depends(require_heavy_admin)])
+@router.post("/exports/xlsx", dependencies=[Depends(check_heavy_request_limit)])
 def start_xlsx_export(
     search: Annotated[str | None, Query(max_length=255)] = None,
     id: Annotated[int | None, Query(ge=1)] = None,
@@ -1251,6 +1251,9 @@ def start_xlsx_export(
     group_categories: bool = False,
     group_folders: bool = False,
     promotion: bool = False,
+    promotion_type: Literal["Акция месяца", "Надо продать"] | None = None,
+    adjustment: bool = False,
+    adjustment_percent: Annotated[float | None, Query(allow_inf_nan=False)] = None,
     order_form: bool = False,
     zip_categories: bool = False,
     body: Annotated[CatalogCodeBatch | CatalogExportSelection | None, Body()] = None,
@@ -1283,7 +1286,8 @@ def start_xlsx_export(
         params = {"product_ids": body.product_ids}
     columns = list(dict.fromkeys(column)) if column else None
     options = dict(group_categories=group_categories, group_folders=group_folders,
-                   promotion=promotion, order_form=order_form, zip_categories=zip_categories)
+                   promotion=promotion, promotion_type=promotion_type, adjustment=adjustment,
+                   adjustment_percent=adjustment_percent, order_form=order_form, zip_categories=zip_categories)
     try:
         form_price(columns or LEGACY_EXPORT_COLUMNS, options)
     except ValueError as error:
@@ -1759,6 +1763,8 @@ def write_export_workbook_streaming(
                     values["price:" + selected_price] = prices.get(selected_price)
                     values.update(promo_price=prices.get(selected_price), old_price=prices.get(PRICE_PAIRS[selected_price]),
                                   order_quantity=None, order_total=None)
+                if options.get("adjustment"):
+                    values["adjusted_price"] = adjusted_price(prices.get(selected_price), options["adjustment_percent"])
                 for column_index, column in enumerate(selected_columns):
                     value = values.get(column, prices.get(column.removeprefix("price:"), 0) if column.startswith("price:") else stocks.get(column.removeprefix("stock:"), 0))
                     alternate = row_index % 2 == 0
@@ -1780,7 +1786,7 @@ def write_export_workbook_streaming(
                     if column == "order_quantity":
                         worksheet.write_blank(row_index, column_index, None, order_format)
                         continue
-                    if column in {"promo_price", "old_price"}:
+                    if column in {"promo_price", "old_price", "adjusted_price"}:
                         cell_format = promo_format if column == "promo_price" else price_format
                     if column in {"image_url", "site_url"} and value:
                         if len(value) <= 2079:

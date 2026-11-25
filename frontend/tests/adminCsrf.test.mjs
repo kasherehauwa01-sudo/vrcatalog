@@ -37,7 +37,7 @@ async function loadApi(t, respond) {
 }
 
 for (const code of ['00123', codes]) {
-  test(`export restores CSRF after reload with ${code === codes ? '300 codes' : 'one code'}`, async (t) => {
+  test(`public export does not request CSRF with ${code === codes ? '300 codes' : 'one code'}`, async (t) => {
     const { api, calls } = await loadApi(t, (call) => {
       if (call.url.pathname.endsWith('/admin/session')) {
         assert.equal(call.credentials, 'same-origin');
@@ -50,12 +50,11 @@ for (const code of ['00123', codes]) {
     const params = new URLSearchParams({ code, brand: 'Brand' });
     assert.deepEqual(await api.startExcelExport(params, []), { job_id: 'job', status: 'processing' });
     assert.deepEqual(calls.map(({ method, url }) => [method, url.pathname]), [
-      ['GET', `${apiPath}/admin/session`],
       ['POST', `${apiPath}/exports/xlsx`],
     ]);
     assert.equal(calls[0].headers.has('X-CSRF-Token'), false);
-    const post = calls[1];
-    assert.equal(post.headers.get('X-CSRF-Token'), 'restored-token');
+    const post = calls[0];
+    assert.equal(post.headers.get('X-CSRF-Token'), null);
     assert.equal(post.url.searchParams.get('brand'), 'Brand');
     if (code === codes) {
       assert.equal(post.url.searchParams.has('code'), false);
@@ -68,32 +67,14 @@ for (const code of ['00123', codes]) {
   });
 }
 
-test('expired session stops export even when a token remains in memory', async (t) => {
+test('export works without an administrator session', async (t) => {
   const { api, calls } = await loadApi(t, (call) => {
-    if (call.url.pathname.endsWith('/admin/login')) {
-      return Response.json({ authenticated: true, csrf_token: 'expired-token' });
-    }
-    return Response.json({ detail: 'Требуется вход администратора' }, { status: 401 });
+    assert.ok(!call.url.pathname.endsWith('/admin/session'));
+    return Response.json({ job_id: 'public-job', status: 'processing' });
   });
-  let expired = 0;
-  window.addEventListener('vrcatalog-admin-expired', () => expired++);
-
-  await api.adminLogin('test-password');
-  await assert.rejects(api.startExcelExport(new URLSearchParams()), /Требуется вход администратора/);
-  assert.deepEqual(calls.map(({ url }) => url.pathname), [`${apiPath}/admin/login`, `${apiPath}/admin/session`]);
+  assert.equal((await api.startExcelExport(new URLSearchParams())).job_id, 'public-job');
+  assert.equal(calls.length, 1);
   assert.equal(calls[0].headers.has('X-CSRF-Token'), false);
-  assert.equal(expired, 1);
-});
-
-test('missing session after reload stops export before the protected POST', async (t) => {
-  const { api, calls } = await loadApi(t, () =>
-    Response.json({ detail: 'Требуется вход администратора' }, { status: 401 }),
-  );
-
-  await assert.rejects(api.startExcelExport(new URLSearchParams()), /Требуется вход администратора/);
-  assert.deepEqual(calls.map(({ method, url }) => [method, url.pathname]), [
-    ['GET', `${apiPath}/admin/session`],
-  ]);
 });
 
 test('ordinary GETs and public long-code search do not restore or send CSRF', async (t) => {
@@ -159,18 +140,18 @@ test('checked product IDs take precedence over catalog filters in Excel export',
     }
     return Response.json({ job_id: 'job', status: 'processing' });
   });
-  const params = new URLSearchParams({ code: codes, brand: 'Brand', page: '2' });
+  const params = new URLSearchParams({ code: codes, brand: 'Brand', page: '2', promotion: 'true', promotion_type: 'Надо продать', adjustment: 'true', adjustment_percent: '-10' });
   params.append('column', 'code');
   params.append('column', 'name');
 
   await api.startExcelExport(params, [12, 35]);
 
-  assert.equal(calls.length, 2);
-  const post = calls[1];
+  assert.equal(calls.length, 1);
+  const post = calls[0];
   assert.equal(post.url.pathname, `${apiPath}/exports/xlsx`);
-  assert.deepEqual([...post.url.searchParams], [['column', 'code'], ['column', 'name']]);
+  assert.deepEqual([...post.url.searchParams], [['promotion', 'true'], ['promotion_type', 'Надо продать'], ['adjustment', 'true'], ['adjustment_percent', '-10'], ['column', 'code'], ['column', 'name']]);
   assert.equal(post.method, 'POST');
-  assert.equal(post.headers.get('X-CSRF-Token'), 'restored-token');
+  assert.equal(post.headers.get('X-CSRF-Token'), null);
   assert.equal(post.headers.get('Content-Type'), 'application/json');
   assert.deepEqual(JSON.parse(post.body), { product_ids: [12, 35] });
 });

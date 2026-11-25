@@ -74,7 +74,7 @@ class ExcelLayoutTests(unittest.TestCase):
 
     def test_all_price_pairs_and_combined_order_form_have_correct_formula_row(self):
         for i, price in enumerate(PRICE_PAIRS):
-            book = load_workbook(self.output({'promotion': True, 'order_form': True, 'group_categories': True}, ['code', 'price:' + price]))
+            book = load_workbook(self.output({'promotion': True, 'promotion_type': 'Акция месяца', 'order_form': True, 'group_categories': True}, ['code', 'price:' + price]))
             sheet = book.active
             self.assertEqual([cell.value for cell in sheet[1]], ['Код', 'Акция! Новая цена', 'Старая цена', 'Заказ', 'Сумма заказа'])
             self.assertEqual(sheet['B4'].value, 100 + i)
@@ -93,7 +93,7 @@ class ExcelLayoutTests(unittest.TestCase):
         self.assertIsNone(sheet['B2'].value)
         self.assertEqual(sheet['D2'].value, '=IF(OR(B2="",C2=""),"",B2*C2)')
         book.close()
-        book = load_workbook(self.output({'promotion': True}, ['code', 'price:ЦенаОптовая']))
+        book = load_workbook(self.output({'promotion': True, 'promotion_type': 'Акция месяца'}, ['code', 'price:ЦенаОптовая']))
         self.assertIsNone(book.active['C2'].value)
         book.close()
 
@@ -106,7 +106,7 @@ class ExcelLayoutTests(unittest.TestCase):
 
     def test_zip_contains_exact_selected_subcategories_and_combined_forms(self):
         path = self.output({'zip_categories': True, 'group_categories': True, 'group_folders': True,
-                            'promotion': True, 'order_form': True}, ['code', 'price:ЦенаОптовая'])
+                            'promotion': True, 'promotion_type': 'Акция месяца', 'order_form': True}, ['code', 'price:ЦенаОптовая'])
         with ZipFile(path) as archive:
             self.assertEqual(set(archive.namelist()), {'Аксессуары для бани.xlsx', 'Уборка.xlsx'})
             codes = []
@@ -198,7 +198,7 @@ class ExcelLayoutTests(unittest.TestCase):
                  patch.object(routes.settings, 'upload_dir', self.temp.name), \
                  patch.dict(routes.export_jobs, {'promo': {}}, clear=True):
                 routes.create_xlsx_export('promo', params, ['code', 'price:ЦенаОптовая'],
-                                          {'promotion': True, 'zip_categories': zip_mode})
+                                          {'promotion': True, 'promotion_type': 'Акция месяца', 'zip_categories': zip_mode})
                 job = routes.export_jobs['promo']
                 self.assertEqual(job['status'], 'ready', job)
                 self.assertEqual(job['total'], len(expected))
@@ -220,3 +220,57 @@ class ExcelLayoutTests(unittest.TestCase):
         book = load_workbook(self.output({'group_folders': True}, ['code'], {'product_ids': [product.id]}))
         self.assertEqual([row[0].value for row in book.active], ['Код', 'МЕТАЛЛ', 'ПОСУДА для ПРИГОТОВЛЕНИЯ', 'ТАЛЛЕР', product.code])
         book.close()
+
+    def test_adjustment_for_all_prices_and_promotion_rounds_to_cents(self):
+        for price in PRICE_PAIRS:
+            for percent in (-15, 0, 12.5):
+                for promotion in (False, True):
+                    book = load_workbook(self.output({'adjustment': True, 'adjustment_percent': percent,
+                        'promotion': promotion, 'promotion_type': 'Акция месяца'}, ['code', 'price:' + price]))
+                    headers = [cell.value for cell in book.active[1]]
+                    row = list(book.active.values)[1]
+                    expected = {-15: [85, 85.85, 86.7], 0: [100, 101, 102], 12.5: [112.5, 113.63, 114.75]}
+                    self.assertEqual(row[headers.index('Ваша цена')], expected[percent][list(PRICE_PAIRS).index(price)])
+                    book.close()
+        self.db.query(Price).delete()
+        self.db.commit()
+        book = load_workbook(self.output({'adjustment': True, 'adjustment_percent': -10}, ['code', 'price:ЦенаОптовая']))
+        self.assertIsNone(book.active['C2'].value)
+        book.close()
+
+    def test_required_promotion_type_and_adjustment_inputs_rejected_before_job(self):
+        cases = [dict(promotion=True), dict(adjustment=True),
+                 dict(adjustment=True, adjustment_percent=10, column=['code']),
+                 dict(adjustment=True, adjustment_percent=10, column=['price:ЦенаОптовая', 'price:ЦенаРозничная'])]
+        for args in cases:
+            args.setdefault('column', ['code', 'price:ЦенаОптовая'])
+            with patch.object(routes.export_executor, 'submit') as submit, self.assertRaises(HTTPException):
+                routes.start_xlsx_export(**args)
+            submit.assert_not_called()
+
+    def test_need_to_sell_filter_and_adjustment_zip(self):
+        products = self.db.query(Product).order_by(Product.id).all()
+        products[0].product_type = '3'
+        products[1].product_type = '10'
+        products[2].product_type = 'Надо продать'
+        products[3].product_type = '1'
+        self.db.commit()
+        with patch.object(routes, 'SessionLocal', side_effect=lambda: Session(self.engine)), \
+             patch.object(routes.settings, 'upload_dir', self.temp.name), \
+             patch.dict(routes.export_jobs, {'sell': {}}, clear=True):
+            routes.create_xlsx_export('sell', {'product_ids': [1, 2, 3, 4]}, ['code', 'price:ЦенаОптовая'],
+                {'promotion': True, 'promotion_type': 'Надо продать', 'adjustment': True,
+                 'adjustment_percent': -10, 'zip_categories': True})
+            job = routes.export_jobs['sell']
+            self.assertEqual(job['status'], 'ready', job)
+            self.assertEqual(job['total'], 2)
+            codes = []
+            with ZipFile(job['path']) as archive:
+                for name in archive.namelist():
+                    book = load_workbook(BytesIO(archive.read(name)))
+                    self.assertEqual(book.active['D1'].value, 'Ваша цена')
+                    for row in list(book.active.values)[1:]:
+                        codes.append(row[0])
+                        self.assertEqual(row[3], 90)
+                    book.close()
+            self.assertEqual(sorted(codes), ['000', '002'])

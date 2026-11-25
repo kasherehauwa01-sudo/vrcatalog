@@ -76,10 +76,7 @@ def require_admin(
     return item
 
 
-def require_heavy_admin(
-    request: Request,
-    session: AdminSession = Depends(require_admin),
-) -> AdminSession:
+def check_heavy_request_limit(request: Request) -> None:
     now = datetime.utcnow()
     client = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
     key = f"{client}:{request.url.path}"
@@ -91,6 +88,13 @@ def require_heavy_admin(
         if len(attempts) >= limit:
             raise HTTPException(429, "Слишком много ресурсоемких запросов. Повторите позже.")
         attempts.append(now)
+
+
+def require_heavy_admin(
+    request: Request,
+    session: AdminSession = Depends(require_admin),
+) -> AdminSession:
+    check_heavy_request_limit(request)
     return session
 
 
