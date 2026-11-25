@@ -1,3 +1,4 @@
+import { ExportColumnsDialog } from "./components/ExportColumnsDialog";
 import { readCatalogParams, catalogUrl, codeList } from "./catalogQuery";
 import { CatalogFilterOptions } from "./components/CatalogFilterOptions";
 import { FolderTree } from "./components/FolderTree";
@@ -712,11 +713,6 @@ function App() {
     setExportWarehouses(await api.warehouses());
     setExportDialogOpen(true);
   };
-  const toggleExportColumn = (column: string) => {
-    setExportColumns((current) =>
-      current.includes(column) ? current.filter((item) => item !== column) : [...current, column],
-    );
-  };
   const downloadExcel = async () => {
     const exportParams = new URLSearchParams(params);
     ["column", "page", "pageSize", "sort", "order"].forEach((key) => exportParams.delete(key));
@@ -1233,57 +1229,10 @@ function App() {
             </DialogActions>
           </Dialog>
 
-          <Dialog open={exportDialogOpen} onClose={() => !exporting && setExportDialogOpen(false)} maxWidth="sm" fullWidth>
-            <DialogTitle>Выберите колонки для Excel</DialogTitle>
-            <DialogContent>
-              {exporting && (
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="body2" sx={{ mb: 1 }}>
-                    {exportProgress === null ? exportMessage : `Скачиваем файл: ${exportProgress}%`}
-                  </Typography>
-                  <LinearProgress variant={exportProgress === null ? "indeterminate" : "determinate"} value={exportProgress ?? 0} />
-                </Box>
-              )}
-              {exportError && <Typography color="error" sx={{ mb: 2 }}>{exportError}</Typography>}
-              <Typography variant="h6" sx={{ mt: 1 }}>Основные</Typography>
-              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" } }}>
-                {exportMainColumns.map(([key, label]) => (
-                  <FormControlLabel
-                    key={key}
-                    control={<Checkbox checked={exportColumns.includes(key)} onChange={() => toggleExportColumn(key)} />}
-                    label={label}
-                  />
-                ))}
-              </Box>
-              {exportColumns.includes("photo") && (
-                <Typography variant="caption" color="text.secondary">
-                  Фотографии встраиваются в файл как сжатые миниатюры; повторные выгрузки используют серверный кэш.
-                </Typography>
-              )}
-              <Divider sx={{ my: 2 }} />
-              <Typography variant="h6">Цены</Typography>
-              <Stack>
-                {exportPriceColumns.map((price) => {
-                  const key = `price:${price}`;
-                  return <FormControlLabel key={key} control={<Checkbox checked={exportColumns.includes(key)} onChange={() => toggleExportColumn(key)} />} label={price} />;
-                })}
-              </Stack>
-              <Divider sx={{ my: 2 }} />
-              <Typography variant="h6">Остатки на складах</Typography>
-              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" } }}>
-                {exportWarehouses.map((warehouse) => {
-                  const key = `stock:${warehouse.code}`;
-                  return <FormControlLabel key={key} control={<Checkbox checked={exportColumns.includes(key)} onChange={() => toggleExportColumn(key)} />} label={warehouse.name} />;
-                })}
-              </Box>
-            </DialogContent>
-            <DialogActions>
-              <Button disabled={exporting} onClick={() => setExportDialogOpen(false)}>Отмена</Button>
-              <Button variant="contained" disabled={!exportColumns.length || exporting} onClick={downloadExcel}>
-                {exporting ? "Формирование…" : "Скачать Excel"}
-              </Button>
-            </DialogActions>
-          </Dialog>
+          <ExportColumnsDialog open={exportDialogOpen} exporting={exporting} progress={exportProgress}
+            message={exportMessage} error={exportError} columns={exportColumns} mainColumns={exportMainColumns}
+            prices={exportPriceColumns} warehouses={exportWarehouses} onChange={setExportColumns}
+            onDefaults={() => setExportColumns(defaultExportColumns)} onClose={() => setExportDialogOpen(false)} onDownload={downloadExcel} />
 
           {tab === "catalog" && (
             <Paper

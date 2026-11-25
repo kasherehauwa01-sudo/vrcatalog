@@ -49,6 +49,7 @@ from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSetting
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
 from app.services.catalog import catalog_product_query, decorate, folder_paths, integration_batch_product_info, integration_brands, integration_catalog_tree, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
+from app.services.export_links import MAX_SHEET_HYPERLINKS, primary_image_links, product_site_link
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
 from app.schemas.catalog_search import CatalogCodeBatch, CatalogExportSelection
@@ -1358,6 +1359,8 @@ EXPORT_MAIN_COLUMNS = {
     "code": "Код",
     "article": "Артикул",
     "photo": "Фото",
+    "image_url": "Ссылка на фото",
+    "site_url": "Ссылка на сайт",
     "name": "Наименование",
     "section": "Раздел",
     "product_type": "Вид товара",
@@ -1371,6 +1374,8 @@ EXPORT_MAIN_COLUMNS = {
 LEGACY_EXPORT_COLUMNS = ["code", "article", "name", "section", "quantity"]
 EXPORT_LEADING_COLUMNS = ("photo", "code", "article", "name", "section")
 EXPORT_FIXED_WIDTHS = {
+    "image_url": 45,
+    "site_url": 45,
     "name": 50,
     "section": 12,
     "manufacturer": 20,
@@ -1579,6 +1584,8 @@ def write_export_workbook_streaming(
     })
     text_format = workbook.add_format({"border": border, "valign": "vcenter", "text_wrap": True})
     text_alt_format = workbook.add_format({"border": border, "valign": "vcenter", "text_wrap": True, "bg_color": "#F7F7F7"})
+    link_format = workbook.add_format({"border": border, "valign": "vcenter", "text_wrap": True, "font_color": "#0563C1", "underline": 1})
+    link_alt_format = workbook.add_format({"border": border, "valign": "vcenter", "text_wrap": True, "font_color": "#0563C1", "underline": 1, "bg_color": "#F7F7F7"})
     center_format = workbook.add_format({"border": border, "align": "center", "valign": "vcenter", "text_wrap": True})
     center_alt_format = workbook.add_format({"border": border, "align": "center", "valign": "vcenter", "text_wrap": True, "bg_color": "#F7F7F7"})
     price_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0.00"})
@@ -1586,7 +1593,7 @@ def write_export_workbook_streaming(
     number_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0"})
     number_alt_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0", "bg_color": "#F7F7F7"})
     column_widths = {
-        "photo": 14, "code": 16, "article": 20, "name": 55, "section": 30,
+        "photo": 14, "image_url": 45, "site_url": 45, "code": 16, "article": 20, "name": 55, "section": 30,
         "product_type": 25, "manufacturer": 24, "manager": 20, "marking_code": 20,
         "material": 22, "certificate": 22, "barcodes": 22, "quantity": 14,
     }
@@ -1605,6 +1612,9 @@ def write_export_workbook_streaming(
     worksheet = add_product_sheet(1)
     sheet_number = 1
     photo_column = selected_columns.index("photo") if needs_photos else None
+    link_columns = sum(column in {"image_url", "site_url"} for column in selected_columns)
+    sheet_row_limit = min(EXPORT_PHOTO_ROWS_PER_SHEET if needs_photos else 1048575,
+                          MAX_SHEET_HYPERLINKS // link_columns if link_columns else 1048575)
     row_index = 1
     processed = 0
     last_id = 0
@@ -1636,6 +1646,7 @@ def write_export_workbook_streaming(
             products = query.all()
             product_order = {product_id: index for index, product_id in enumerate(batch_ids)}
             products.sort(key=lambda product: product_order[product.id])
+            image_links = primary_image_links(db, [product.id for product in products]) if "image_url" in selected_columns else {}
             batch_number += 1
             logger.info(
                 "Экспорт %s: пакет=%s, min_id=%s, max_id=%s, batch_size=%s, processed=%s, total=%s, RSS=%s МБ",
@@ -1648,7 +1659,7 @@ def write_export_workbook_streaming(
                 if missing_urls:
                     photos.update(download_export_images(missing_urls, download_export_image, max_workers=8))
             for product in products:
-                if photo_column is not None and row_index > EXPORT_PHOTO_ROWS_PER_SHEET:
+                if row_index > sheet_row_limit:
                     # XlsxWriter scans the preceding row heights for each drawing anchor.
                     worksheet.autofilter(0, 0, row_index - 1, len(selected_columns) - 1)
                     sheet_number += 1
@@ -1665,6 +1676,8 @@ def write_export_workbook_streaming(
                 stocks = {item.warehouse: item.quantity for item in product.stocks} if needs_stocks else {}
                 values = {
                     "code": product.code, "article": product.article or "", "photo": "",
+                    "image_url": image_links.get(product.id, ""),
+                    "site_url": product_site_link(product.code) if "site_url" in selected_columns else "",
                     "name": product.name, "section": product.section or "",
                     "product_type": product_type_names.get(product.product_type, product.product_type or ""),
                     "manufacturer": product.manufacturer or "", "manager": product.manager or properties.get("менеджер", ""),
@@ -1683,7 +1696,13 @@ def write_export_workbook_streaming(
                         cell_format = center_alt_format if alternate else center_format
                     else:
                         cell_format = text_alt_format if alternate else text_format
-                    worksheet.write(row_index, column_index, value, cell_format)
+                    if column in {"image_url", "site_url"} and value:
+                        if len(value) <= 2079:
+                            worksheet.write_url(row_index, column_index, value, link_alt_format if alternate else link_format, string=value)
+                        else:
+                            worksheet.write_string(row_index, column_index, value, cell_format)
+                    else:
+                        worksheet.write(row_index, column_index, value, cell_format)
                 if photo_column is not None:
                     photo_url = product.images[0].image_url if product.images else None
                     insert_export_thumbnail(worksheet, row_index, photo_column, photos.get(photo_url), thumbnail_dir)
@@ -1783,10 +1802,13 @@ def build_export_workbook(
     # одновременно хранились в памяти, из-за чего backend мог быть завершён OOM-killer.
     batch_size = 200 if photo_column and not apply_formatting else 100 if photo_column else max(1, len(products))
     embedded_photo_count = 0
+    link_columns = sum(column in {"image_url", "site_url"} for column in selected_columns)
+    sheet_row_limit = MAX_SHEET_HYPERLINKS // (link_columns + bool(photo_column)) if link_columns else 1048575
     for batch_start in range(0, len(products), batch_size):
         product_batch = products[batch_start:batch_start + batch_size]
         remaining_photo_slots = max(0, MAX_EMBEDDED_EXPORT_IMAGES - embedded_photo_count)
-        photo_products = [product for product in product_batch if product.images][:remaining_photo_slots]
+        photo_products = [product for product in product_batch if product.images][:remaining_photo_slots] if photo_column else []
+        image_links = primary_image_links(db, [product.id for product in product_batch]) if "image_url" in selected_columns else {}
         downloaded_images = download_export_images(
             [product.images[0].image_url for product in photo_products],
             image_loader,
@@ -1794,6 +1816,11 @@ def build_export_workbook(
             timeout=30 if not apply_formatting else 15,
         ) if photo_column else {}
         for product in product_batch:
+            if worksheet.max_row > sheet_row_limit:
+                worksheet = workbook.create_sheet(f"Товары {len(workbook.worksheets) + 1}")
+                worksheet.append(headers)
+                if photo_column:
+                    worksheet.column_dimensions[get_column_letter(photo_column)].width = 16
             photo_url = product.images[0].image_url if photo_column and product.images else ""
             image_content = downloaded_images.get(photo_url)
             properties: dict[str, str] = {}
@@ -1809,6 +1836,8 @@ def build_export_workbook(
                 "code": product.code,
                 "article": product.article or "",
                 "photo": "" if image_content or not photo_url else "Открыть фото",
+                "image_url": image_links.get(product.id, ""),
+                "site_url": product_site_link(product.code) if "site_url" in selected_columns else "",
                 "name": product.name,
                 "section": product.section or "",
                 "product_type": product_type_names.get(product.product_type, product.product_type or ""),
@@ -1829,6 +1858,11 @@ def build_export_workbook(
                 else:
                     row.append(stocks.get(column.removeprefix("stock:"), 0))
             worksheet.append(row)
+            for index, column in enumerate(selected_columns, start=1):
+                if column in {"image_url", "site_url"} and main_values[column] and len(main_values[column]) <= 2079:
+                    link_cell = worksheet.cell(row=worksheet.max_row, column=index)
+                    link_cell.hyperlink = main_values[column]
+                    link_cell.style = "Hyperlink"
             if photo_column and photo_url and not image_content:
                 photo_cell = worksheet.cell(row=worksheet.max_row, column=photo_column)
                 photo_cell.hyperlink = photo_url
@@ -1860,31 +1894,32 @@ def build_export_workbook(
                         # Повреждённое или неподдерживаемое изображение не должно прерывать весь экспорт.
                         pass
 
-    for column_index, column in enumerate(selected_columns, start=1):
-        column_letter = get_column_letter(column_index)
-        if column == "photo":
-            continue
-        if column in EXPORT_FIXED_WIDTHS:
-            width = EXPORT_FIXED_WIDTHS[column]
-        elif column in EXPORT_VALUE_WIDTH_COLUMNS and apply_formatting:
-            value_lengths = (len(str(cell.value or "")) for cell in worksheet[column_letter][1:])
-            width = max(len(headers[column_index - 1]), *value_lengths) + 2
-        else:
-            width = len(headers[column_index - 1]) + 2
-        worksheet.column_dimensions[column_letter].width = width
+    for worksheet in workbook.worksheets:
+        for column_index, column in enumerate(selected_columns, start=1):
+            column_letter = get_column_letter(column_index)
+            if column == "photo":
+                continue
+            if column in EXPORT_FIXED_WIDTHS:
+                width = EXPORT_FIXED_WIDTHS[column]
+            elif column in EXPORT_VALUE_WIDTH_COLUMNS and apply_formatting:
+                value_lengths = (len(str(cell.value or "")) for cell in worksheet[column_letter][1:])
+                width = max(len(headers[column_index - 1]), *value_lengths) + 2
+            else:
+                width = len(headers[column_index - 1]) + 2
+            worksheet.column_dimensions[column_letter].width = width
 
-        if column in EXPORT_FIXED_WIDTHS and apply_formatting:
-            for cell in worksheet[column_letter]:
-                alignment = copy(cell.alignment)
-                alignment.wrap_text = True
-                cell.alignment = alignment
+            if column in EXPORT_FIXED_WIDTHS and apply_formatting:
+                for cell in worksheet[column_letter]:
+                    alignment = copy(cell.alignment)
+                    alignment.wrap_text = True
+                    cell.alignment = alignment
 
-    # Вертикальное выравнивание применяется ко всей таблице, включая заголовки,
-    # обычные значения и ячейки с переносом строк.
-    if apply_formatting:
-        for row in worksheet.iter_rows():
-            for cell in row:
-                alignment = copy(cell.alignment)
-                alignment.vertical = "center"
-                cell.alignment = alignment
+        # Вертикальное выравнивание применяется ко всей таблице, включая заголовки,
+        # обычные значения и ячейки с переносом строк.
+        if apply_formatting:
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    alignment = copy(cell.alignment)
+                    alignment.vertical = "center"
+                    cell.alignment = alignment
     return workbook
