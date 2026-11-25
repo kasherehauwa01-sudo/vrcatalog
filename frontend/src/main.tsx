@@ -1,4 +1,4 @@
-import { ExportColumnsDialog } from "./components/ExportColumnsDialog";
+import { ExportColumnsDialog, defaultExportOptions, type ExportOptions } from "./components/ExportColumnsDialog";
 import { readCatalogParams, catalogUrl, codeList } from "./catalogQuery";
 import { CatalogFilterOptions } from "./components/CatalogFilterOptions";
 import { FolderTree } from "./components/FolderTree";
@@ -294,6 +294,7 @@ function App() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportOptions, setExportOptions] = useState<ExportOptions>(defaultExportOptions);
   const [exportColumns, setExportColumns] = useState<string[]>(defaultExportColumns);
   const [exportWarehouses, setExportWarehouses] = useState<Warehouse[]>([]);
   const [exporting, setExporting] = useState(false);
@@ -707,6 +708,7 @@ function App() {
   };
   const openExportDialog = async () => {
     setExportColumns(defaultExportColumns);
+    setExportOptions(defaultExportOptions);
     setExportError(null);
     setExportProgress(null);
     setExportMessage("Формируем Excel. Не закрывайте это окно…");
@@ -717,6 +719,7 @@ function App() {
     const exportParams = new URLSearchParams(params);
     ["column", "page", "pageSize", "sort", "order"].forEach((key) => exportParams.delete(key));
     exportColumns.forEach((column) => exportParams.append("column", column));
+    Object.entries(exportOptions).forEach(([key, enabled]) => exportParams.set(key, String(enabled)));
     setExporting(true);
     setExportError(null);
     setExportProgress(null);
@@ -1229,10 +1232,10 @@ function App() {
             </DialogActions>
           </Dialog>
 
-          <ExportColumnsDialog open={exportDialogOpen} exporting={exporting} progress={exportProgress}
+          <ExportColumnsDialog options={exportOptions} onOptionsChange={setExportOptions} open={exportDialogOpen} exporting={exporting} progress={exportProgress}
             message={exportMessage} error={exportError} columns={exportColumns} mainColumns={exportMainColumns}
             prices={exportPriceColumns} warehouses={exportWarehouses} onChange={setExportColumns}
-            onDefaults={() => setExportColumns(defaultExportColumns)} onClose={() => setExportDialogOpen(false)} onDownload={downloadExcel} />
+            onDefaults={() => { setExportColumns(defaultExportColumns); setExportOptions(defaultExportOptions); }} onClose={() => setExportDialogOpen(false)} onDownload={downloadExcel} />
 
           {tab === "catalog" && (
             <Paper

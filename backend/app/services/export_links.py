@@ -24,5 +24,5 @@ def primary_image_links(db, product_ids):
 
 
 def product_site_link(code):
-    # The site's actual catalog search form; never fetch products during export.
-    return "https://volgorost.ru/catalog/?" + urlencode({"q": code, "s": "Найти", "type": "catalog"})
+    # Public code redirect; never fetch products during export.
+    return "https://volgorost.ru/link.php?" + urlencode({"code": code})
