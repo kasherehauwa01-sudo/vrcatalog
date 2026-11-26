@@ -4,6 +4,7 @@ import { CatalogFilterOptions } from "./components/CatalogFilterOptions";
 import { FolderTree } from "./components/FolderTree";
 import { SectionTree } from "./components/SectionTree";
 import { CategoryNode } from "./categoryTree";
+import { DeviceAccess } from "./components/DeviceAccess";
 import { CategorySettings } from "./components/CategorySettings";
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -293,7 +294,7 @@ function App() {
   const [settingsPassword, setSettingsPassword] = useState("");
   const [settingsPasswordError, setSettingsPasswordError] = useState(false);
   const [settingsUnlocked, setSettingsUnlocked] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "mail" | "scenarios" | "analogs" | "history" | "logs">("settings");
+  const [settingsTab, setSettingsTab] = useState<"settings" | "mappings" | "mail" | "scenarios" | "analogs" | "history" | "logs" | "access">("settings");
   const [openSettingsGroups, setOpenSettingsGroups] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -1371,7 +1372,9 @@ function App() {
                   variant="scrollable"
                   scrollButtons="auto"
                   onChange={(_, value) =>
-                    value === "logs"
+                    value === "access"
+                      ? setSettingsTab("access")
+                      : value === "logs"
                       ? openLogs()
                       : value === "mappings"
                         ? openMappings()
@@ -1393,11 +1396,13 @@ function App() {
                   <Tab value="scenarios" label="Сценарии" />
                   <Tab value="analogs" label="Подбор аналогов" />
                   <Tab value="history" label={'История цен "Акция месяца"'} />
+                  <Tab value="access" label="Доступы" />
                   <Tab value="logs" label="Логи" />
                 </Tabs>
                 <Button size="small" onClick={async () => { await api.adminLogout(); setSettingsUnlocked(false); setTab("catalog"); }} sx={{ mb: 2 }}>
                   Выйти из режима администратора
                 </Button>
+                {settingsUnlocked && settingsTab === "access" && <DeviceAccess />}
                 {settingsTab === "settings" && (
                   <Box>
                     <Typography variant="h6">Настройки</Typography>

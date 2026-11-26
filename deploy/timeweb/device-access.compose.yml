@@ -1,0 +1,13 @@
+services:
+  backend:
+    environment:
+      DEVICE_CA_CERT: /run/vrcatalog-device-ca/issuer.crt
+      DEVICE_CA_KEY: /run/vrcatalog-device-ca/issuer.key
+      DEVICE_PROXY_SECRET: ${DEVICE_PROXY_SECRET:?DEVICE_PROXY_SECRET must be set}
+    volumes:
+      - type: bind
+        source: ${DEVICE_CA_DIRECTORY:?DEVICE_CA_DIRECTORY must be set}
+        target: /run/vrcatalog-device-ca
+        read_only: true
+        bind:
+          create_host_path: false

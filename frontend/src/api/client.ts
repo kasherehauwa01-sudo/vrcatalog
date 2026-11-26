@@ -81,7 +81,28 @@ async function adminRequest<T>(url: string, init: RequestInit, refreshSession = 
   return response.json() as Promise<T>;
 }
 
+export type AccessDevice = {
+  id: number;
+  name: string;
+  owner: string;
+  comment: string;
+  fingerprint: string;
+  common_name: string;
+  expires_at: string;
+  last_seen_at: string | null;
+  status: "active" | "revoked" | "expired";
+};
+export type DeviceDetails = Pick<AccessDevice, "name" | "owner" | "comment">;
+
 export const api = {
+  accessDevices(): Promise<AccessDevice[]> {
+    return request(`${API}/access/devices`, { cache: "no-store" });
+  },
+  saveAccessDevice(action: string, data?: DeviceDetails | (DeviceDetails & { pem: string }) | { pem: string }, method = "POST"): Promise<AccessDevice | { device: AccessDevice; certificate: string }> {
+    return adminRequest(`${API}/access/devices/${action}`, {
+      method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+    });
+  },
   async adminLogin(password: string): Promise<void> {
     await runAdminOperation(async () => {
       const result = await request<{ authenticated: boolean; csrf_token: string }>(`${API}/admin/login`, {

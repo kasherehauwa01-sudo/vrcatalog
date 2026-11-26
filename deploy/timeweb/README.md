@@ -98,3 +98,5 @@ getent hosts registry-1.docker.io
 ```bash
 /var/www/html/vr/vrcatalog/deploy/timeweb/update_vrcatalog.sh
 ```
+
+Для закрытия каталога клиентскими сертификатами см. [настройку доступа устройств](DEVICE_ACCESS.md).
