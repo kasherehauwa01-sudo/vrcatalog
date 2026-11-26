@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.api.device_access import proxy_router, router as device_router
 from app.api.internal_routes import history_router, router as internal_router
 from app.core.config import settings
 from app.db.schema_migrations import ensure_price_columns, ensure_product_columns
@@ -35,6 +36,8 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization", "X-Internal-Token", "X-CSRF-Token"],
 )
 app.include_router(router, prefix="/api")
+app.include_router(device_router, prefix="/api")
+app.include_router(proxy_router, prefix="/api")
 app.include_router(internal_router, prefix="/api")
 app.include_router(history_router, prefix="/api")
 

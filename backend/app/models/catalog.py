@@ -447,3 +447,18 @@ class UnneededFolderSnapshot(Base):
     __tablename__ = "unneeded_folder_snapshot"
 
     product_code: Mapped[str] = mapped_column(String(128), primary_key=True)
+
+
+class DeviceCertificate(Base):
+    __tablename__ = "device_certificates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160))
+    owner: Mapped[str] = mapped_column(String(160))
+    comment: Mapped[str] = mapped_column(String(500))
+    fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
+    public_key_fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
+    common_name: Mapped[str] = mapped_column(String(255))
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime)

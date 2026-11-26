@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     enable_api_docs: bool = True
     admin_session_hours: int = 8
     max_xml_upload_mb: int = 200
+    device_ca_cert: str = ""
+    device_ca_key: str = ""
+    device_proxy_secret: str = ""
     image_allowed_hosts: str = ""
     base_path: str = "/vr/catalog"
     export_image_cache_max_mb: int = EXPORT_IMAGE_CACHE_MAX_MB
@@ -42,6 +45,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_secrets(self):
+        if self.device_proxy_secret and len(self.device_proxy_secret) < 32:
+            raise ValueError("DEVICE_PROXY_SECRET должен быть случайным значением длиной не менее 32 символов")
         if self.environment.casefold() != "production":
             return self
         placeholders = {"", "change-me", "change-this-secret-key", "replace-me", "secret"}
