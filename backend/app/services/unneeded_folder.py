@@ -56,7 +56,7 @@ def replace_snapshot(db, codes):
 
 def set_enabled(db, setting, enabled):
     if enabled and not setting.enabled:
-        replace_snapshot(db, current_products(db))
+        replace_snapshot(db, zero_stock_by_code(db, current_products(db)))
         setting.last_run_date = None
     setting.enabled = enabled
 
@@ -78,13 +78,19 @@ def warehouse_stock_by_code(db, codes):
     return quantities
 
 
+def zero_stock_by_code(db, products):
+    quantities = warehouse_stock_by_code(db, list(products))
+    # Missing stock is unknown, not a recorded zero.
+    return {code: quantity for code, quantity in quantities.items() if quantity == 0}
+
+
 def build_preview(products, quantities):
     rows = "".join(
         f"<tr><td>{escape(code)}</td><td>{escape(name)}</td><td>{escape(manager or '')}</td>"
         f"<td>{format(quantities.get(code, 0), '.15g').replace('.', ',')}</td></tr>"
         for code, name, manager in products
     )
-    return ("<h2>Новые товары в папке НЕНУЖНОЕ</h2><table border='1' cellpadding='6'>"
+    return ("<h2>Товары с нулевым остатком в папке НЕНУЖНОЕ</h2><table border='1' cellpadding='6'>"
             f"<tr><th>Код</th><th>Наименование</th><th>Менеджер</th>"
             f"<th>Остаток: {WAREHOUSE_NAME}</th></tr>" + rows + "</table>")
 
@@ -114,15 +120,10 @@ def run_due(db, now=None):
         return "no_recipients"
     products = current_products(db)
     known = set(db.scalars(select(UnneededFolderSnapshot.product_code)))
-    new_codes = sorted(products.keys() - known)
-    quantities = warehouse_stock_by_code(db, new_codes)
-    # Missing stock is unknown, not a recorded zero. Reuse this same snapshot
-    # for selection and the email so no second stock query can disagree.
-    added = [products[code] for code in new_codes if quantities.get(code) == 0]
-    # Snapshot all folder members, including those with nonzero/unknown stock:
-    # later stock changes alone must not count as a new folder addition.
+    quantities = zero_stock_by_code(db, products)
+    added = [products[code] for code in sorted(quantities.keys() - known)]
     if not added:
-        replace_snapshot(db, products)
+        replace_snapshot(db, quantities)
         setting.last_run_date = today
         db.commit()
         return "empty"
@@ -133,11 +134,11 @@ def run_due(db, now=None):
             (build_attachment(added), "НЕНУЖНОЕ.xls", "vnd.ms-excel"),
         ])
     except Exception:
-        # Keep baseline unchanged: failed products remain eligible next day.
         status = "error"
         logger.warning("unneeded_folder_digest status=error count=%d", len(added))
-    if status == "sent":
-        replace_snapshot(db, products)
+    # On failure keep previously reported zeros and drop products that are no
+    # longer eligible. Unsent products still qualify on the next check.
+    replace_snapshot(db, quantities if status == "sent" else known & quantities.keys())
     setting.last_run_date = today
     db.add(NotificationEmailHistory(
         scenario_code=CODE, recipients_json=json.dumps(targets), subject=NAME,

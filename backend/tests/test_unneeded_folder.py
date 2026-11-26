@@ -208,7 +208,7 @@ class UnneededFolderTests(unittest.TestCase):
         self.db.commit()
         self.assertEqual(service.run_due(self.db, self.now.replace(day=24)), 'empty')
 
-    def test_only_new_members_with_zero_target_stock_enter_mail_and_xls(self):
+    def test_only_members_with_zero_target_stock_enter_mail_and_xls(self):
         self.add('002', 'Подходит', 'НЕНУЖНОЕ|Подходит', stock=0)
         self.add('003', 'Положительный', 'НЕНУЖНОЕ|Положительный', stock=4)
         self.add('004', 'Отрицательный', 'НЕНУЖНОЕ|Отрицательный', stock=-1)
@@ -224,7 +224,7 @@ class UnneededFolderTests(unittest.TestCase):
                 self.assertNotIn(name, html)
             sheet = xlrd.open_workbook(file_contents=send.call_args.kwargs['extra_attachments'][0][0]).sheet_by_index(0)
             self.assertEqual(sheet.col_values(0), ['', '002'])
-        self.assertEqual(set(self.db.scalars(select(UnneededFolderSnapshot.product_code))), {'001', '002', '003', '004', '005', '006'})
+        self.assertEqual(set(self.db.scalars(select(UnneededFolderSnapshot.product_code))), {'001', '002'})
 
     def test_warehouse_mapping_and_aggregate_ignore_other_warehouses(self):
         self.db.add(WarehouseSetting(code='AVIATOR', name=service.WAREHOUSE_NAME))
@@ -235,15 +235,39 @@ class UnneededFolderTests(unittest.TestCase):
         self.db.flush()
         self.assertEqual(service.warehouse_stock_by_code(self.db, ['002', '003']), {'002': 0, '003': 1})
 
-    def test_stock_drop_alone_does_not_create_a_folder_addition(self):
-        product = self.add('002', 'Новый', 'НЕНУЖНОЕ|Новый', stock=3)
+    def test_stock_drop_of_existing_folder_member_is_reported_and_can_repeat(self):
+        product = self.add('002', 'В папке', 'НЕНУЖНОЕ|В папке', stock=3)
         self.db.commit()
         with patch.object(service, 'send_email') as send:
             self.assertEqual(service.run_due(self.db, self.now), 'empty')
             product.stocks[0].quantity = 0
             self.db.commit()
-            self.assertEqual(service.run_due(self.db, self.now.replace(day=24)), 'empty')
+            self.assertEqual(service.run_due(self.db, self.now.replace(day=24)), 'sent')
+            self.assertIn('<td>002</td><td>В папке</td><td>Менеджер</td><td>0</td>', send.call_args.args[3])
+            self.assertEqual(service.run_due(self.db, self.now.replace(day=25)), 'empty')
+            send.assert_called_once()
+
+            product.stocks[0].quantity = 5
+            self.db.commit()
+            self.assertEqual(service.run_due(self.db, self.now.replace(day=26)), 'empty')
+            product.stocks[0].quantity = 0
+            self.db.commit()
+            self.assertEqual(service.run_due(self.db, self.now.replace(day=27)), 'sent')
+            self.assertEqual(send.call_count, 2)
+
+    def test_legacy_baseline_drops_ineligible_codes_and_preserves_known_zeros(self):
+        product = self.add('002', 'В папке', 'НЕНУЖНОЕ|В папке', stock=3)
+        self.db.add(UnneededFolderSnapshot(product_code='002'))
+        self.db.commit()
+        with patch.object(service, 'send_email') as send:
+            self.assertEqual(service.run_due(self.db, self.now), 'empty')
+            self.assertEqual(set(self.db.scalars(select(UnneededFolderSnapshot.product_code))), {'001'})
             send.assert_not_called()
+            product.stocks[0].quantity = 0
+            self.db.commit()
+            self.assertEqual(service.run_due(self.db, self.now.replace(day=24)), 'sent')
+            self.assertIn('<td>002</td>', send.call_args.args[3])
+            self.assertNotIn('<td>001</td>', send.call_args.args[3])
 
     def test_stock_selection_uses_one_query_per_batch_not_per_product(self):
         from sqlalchemy import event

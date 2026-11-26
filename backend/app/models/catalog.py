@@ -443,7 +443,7 @@ class CatalogSyncState(Base):
 
 
 class UnneededFolderSnapshot(Base):
-    """Membership at the last successful digest (or initial enable)."""
+    """Folder products with zero target stock at baseline or already reported."""
     __tablename__ = "unneeded_folder_snapshot"
 
     product_code: Mapped[str] = mapped_column(String(128), primary_key=True)
