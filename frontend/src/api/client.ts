@@ -98,9 +98,14 @@ export const api = {
   accessDevices(): Promise<AccessDevice[]> {
     return request(`${API}/access/devices`, { cache: "no-store" });
   },
-  saveAccessDevice(action: string, data?: DeviceDetails | (DeviceDetails & { pem: string }) | { pem: string }, method = "POST"): Promise<AccessDevice | { device: AccessDevice; certificate: string }> {
+  saveAccessDevice(action: string, data?: DeviceDetails | (DeviceDetails & { pem: string }) | { pem: string }, method = "POST"): Promise<AccessDevice | { device: AccessDevice; certificate: string; crl_updated?: boolean; warning?: string }> {
     return adminRequest(`${API}/access/devices/${action}`, {
       method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+    });
+  },
+  refreshAccessCrl(): Promise<{ success: boolean; message: string }> {
+    return adminRequest(`${API}/access/devices/refresh-crl`, {
+      method: "POST",
     });
   },
   async adminLogin(password: string): Promise<void> {

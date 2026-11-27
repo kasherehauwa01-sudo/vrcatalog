@@ -49,6 +49,9 @@ class DeviceAccessTests(unittest.TestCase):
             device_access.settings, device_ca_cert=str(cert_path), device_ca_key=str(key_path),
             device_proxy_secret=self.proxy_secret, admin_password_hash=PasswordHasher().hash("test-password"),
         ))
+        self.crl_refresh = self.enterContext(
+            patch.object(device_access, "refresh_device_crl")
+        )
         self.engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
         self.addCleanup(self.engine.dispose)
         Base.metadata.create_all(self.engine)
@@ -61,7 +64,7 @@ class DeviceAccessTests(unittest.TestCase):
                 yield session
 
         app.dependency_overrides[get_db] = get_test_db
-        self.client = self.enterContext(TestClient(app))
+        self.client = self.enterContext(TestClient(app, base_url="https://testserver"))
         self.path = "/api/access/devices"
         self.details = {"name": "Ноутбук", "owner": "Администратор", "comment": "Тест"}
 
@@ -76,6 +79,14 @@ class DeviceAccessTests(unittest.TestCase):
             "X-VR-Device-Certificate": quote(pem, safe=""), **headers,
         })
 
+    def assert_serial_stored(self, pem):
+        cert = x509.load_pem_x509_certificate(pem.encode())
+        with Session(self.engine) as db:
+            row = db.query(DeviceCertificate).filter_by(
+                fingerprint=device_access.fingerprint(cert)
+            ).one()
+            self.assertEqual(row.serial_number, format(cert.serial_number, "x"))
+
     def test_issue_requires_admin_and_csrf_and_proxy_rejects_forged_proof(self):
         payload = {**self.details, "pem": csr()}
         self.assertEqual(self.client.get(self.path).status_code, 401)
@@ -85,6 +96,7 @@ class DeviceAccessTests(unittest.TestCase):
         result = self.client.post(self.path + "/issue", json=payload, headers=csrf)
         self.assertEqual(result.status_code, 201, result.text)
         pem = result.json()["certificate"]
+        self.assert_serial_stored(pem)
         self.assertEqual(self.verify(pem, **{"X-VR-Device-Secret": "forged"}).status_code, 403)
         self.assertEqual(self.verify(pem, **{"X-VR-Device-Verify": "NONE"}).status_code, 403)
         self.assertEqual(self.verify("").status_code, 403)
@@ -101,6 +113,7 @@ class DeviceAccessTests(unittest.TestCase):
         registered = self.client.post(self.path + "/register", json={**self.details, "pem": pem}, headers=csrf)
         self.assertEqual(registered.status_code, 201, registered.text)
         device_id = registered.json()["id"]
+        self.assert_serial_stored(pem)
         self.assertEqual(self.verify(pem).status_code, 204)
         edited = self.client.patch(f"{self.path}/{device_id}", json={**self.details, "name": "Мобильный"}, headers=csrf)
         self.assertEqual(edited.json()["name"], "Мобильный")
@@ -109,9 +122,12 @@ class DeviceAccessTests(unittest.TestCase):
         self.assertEqual(self.verify(pem).status_code, 204)
         replacement = self.client.post(f"{self.path}/{device_id}/replace", json={"pem": csr()}, headers=csrf)
         self.assertEqual(replacement.status_code, 201, replacement.text)
+        self.assertTrue(replacement.json()["crl_updated"])
+        self.crl_refresh.assert_called_once_with()
         self.assertEqual(self.verify(pem).status_code, 403)
         new = replacement.json()
         new_pem, new_id = new["certificate"], new["device"]["id"]
+        self.assert_serial_stored(new_pem)
         self.assertEqual(self.verify(new_pem).status_code, 204)
         with Session(self.engine) as db:
             db.get(DeviceCertificate, new_id).expires_at = device_access.utc_now() - timedelta(hours=1)
@@ -119,4 +135,94 @@ class DeviceAccessTests(unittest.TestCase):
         self.assertEqual(self.verify(new_pem).status_code, 403)
         revoked = self.client.post(f"{self.path}/{new_id}/revoke", headers=csrf)
         self.assertEqual(revoked.json()["status"], "revoked")
+        self.assertEqual(self.crl_refresh.call_count, 2)
         self.assertEqual(self.client.post(self.path + "/register", json={**self.details, "pem": pem}, headers=csrf).status_code, 409)
+
+
+    def test_refresh_crl_requires_admin_and_csrf(self):
+        url = self.path + "/refresh-crl"
+
+        unauthenticated = self.client.post(url)
+        self.assertIn(unauthenticated.status_code, (401, 403))
+        self.crl_refresh.assert_not_called()
+
+        csrf = self.login()
+        without_csrf = self.client.post(url)
+        self.assertIn(without_csrf.status_code, (401, 403))
+        self.crl_refresh.assert_not_called()
+
+        refreshed = self.client.post(url, headers=csrf)
+        self.assertEqual(refreshed.status_code, 200)
+        self.assertTrue(refreshed.json()["success"])
+        self.crl_refresh.assert_called_once_with()
+
+        self.crl_refresh.side_effect = device_access.HTTPException(
+            status_code=503,
+            detail="Обновление CRL не подтверждено",
+        )
+        failed = self.client.post(url, headers=csrf)
+        self.assertEqual(failed.status_code, 503)
+        self.assertEqual(self.crl_refresh.call_count, 2)
+
+    def test_revoke_when_crl_refresh_fails(self):
+        csrf = self.login()
+        issued = self.client.post(
+            self.path + "/issue",
+            json={**self.details, "pem": csr()},
+            headers=csrf,
+        )
+        self.assertEqual(issued.status_code, 201, issued.text)
+        device_id = issued.json()["device"]["id"]
+
+        self.crl_refresh.side_effect = device_access.HTTPException(
+            status_code=503,
+            detail="CRL update failed",
+        )
+
+        url = f"{self.path}/{device_id}/revoke"
+        failed = self.client.post(url, headers=csrf)
+        self.assertEqual(failed.status_code, 503)
+
+        with Session(self.engine) as db:
+            self.assertIsNotNone(
+                db.get(DeviceCertificate, device_id).revoked_at
+            )
+
+        self.crl_refresh.side_effect = None
+        retried = self.client.post(url, headers=csrf)
+        self.assertEqual(retried.status_code, 200, retried.text)
+        self.assertEqual(retried.json()["status"], "revoked")
+        self.assertEqual(self.crl_refresh.call_count, 2)
+
+
+    def test_replace_when_crl_refresh_fails(self):
+        csrf = self.login()
+        issued = self.client.post(
+            self.path + "/issue",
+            json={**self.details, "pem": csr()},
+            headers=csrf,
+        )
+        self.assertEqual(issued.status_code, 201, issued.text)
+        old_id = issued.json()["device"]["id"]
+        old_pem = issued.json()["certificate"]
+
+        self.crl_refresh.side_effect = device_access.HTTPException(
+            status_code=503,
+            detail="CRL update failed",
+        )
+
+        replaced = self.client.post(
+            f"{self.path}/{old_id}/replace",
+            json={"pem": csr()},
+            headers=csrf,
+        )
+        self.assertEqual(replaced.status_code, 201, replaced.text)
+
+        result = replaced.json()
+        self.assertFalse(result["crl_updated"])
+        self.assertTrue(result["warning"])
+        self.assertTrue(result["certificate"])
+        self.assertNotEqual(result["device"]["id"], old_id)
+        self.assertEqual(self.verify(old_pem).status_code, 403)
+        self.assertEqual(self.verify(result["certificate"]).status_code, 204)
+        self.crl_refresh.assert_called_once_with()

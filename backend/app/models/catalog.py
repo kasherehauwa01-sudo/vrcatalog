@@ -459,6 +459,7 @@ class DeviceCertificate(Base):
     fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
     public_key_fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
     common_name: Mapped[str] = mapped_column(String(255))
+    serial_number: Mapped[str | None] = mapped_column(String(40), unique=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime)

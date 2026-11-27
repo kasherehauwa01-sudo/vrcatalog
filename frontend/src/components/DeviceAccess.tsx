@@ -19,6 +19,9 @@ const displayDate = (value: string | null) => value ? dateFormat.format(new Date
 export function DeviceAccess() {
   const [devices, setDevices] = useState<AccessDevice[] | null>(null);
   const [listError, setListError] = useState("");
+  const [crlUpdating, setCrlUpdating] = useState(false);
+  const [crlMessage, setCrlMessage] = useState("");
+  const [crlError, setCrlError] = useState("");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [dialog, setDialog] = useState<{ mode: Mode; device?: AccessDevice } | null>(null);
@@ -26,7 +29,7 @@ export function DeviceAccess() {
   const [pem, setPem] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [issued, setIssued] = useState<{ name: string; certificate: string } | null>(null);
+  const [issued, setIssued] = useState<{ name: string; certificate: string; warning?: string } | null>(null);
 
   const load = async () => {
     setListError("");
@@ -58,7 +61,7 @@ export function DeviceAccess() {
     try {
       const result = await api.saveAccessDevice(action, data, mode === "edit" ? "PATCH" : "POST");
       if ("certificate" in result) {
-        setIssued({ name: result.device.common_name, certificate: result.certificate });
+        setIssued({ name: result.device.common_name, certificate: result.certificate, warning: result.warning });
         setDevices((current) => [result.device, ...(current ?? []).map((item) =>
           item.id === device?.id ? { ...item, status: "revoked" as const } : item)]);
       } else {
@@ -70,6 +73,20 @@ export function DeviceAccess() {
       setError(failure instanceof Error ? failure.message : "Не удалось сохранить изменения");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const updateCrl = async () => {
+    setCrlUpdating(true);
+    setCrlMessage("");
+    setCrlError("");
+    try {
+      const result = await api.refreshAccessCrl();
+      setCrlMessage(result.message);
+    } catch (failure) {
+      setCrlError(failure instanceof Error ? failure.message : "Не удалось обновить CRL");
+    } finally {
+      setCrlUpdating(false);
     }
   };
 
@@ -94,10 +111,15 @@ export function DeviceAccess() {
     <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" gap={2}>
       <Box><Typography variant="h6">Доступы устройств</Typography><Typography color="text.secondary" variant="body2">Клиентские сертификаты VR Catalog</Typography></Box>
       <Stack direction={{ xs: "column", sm: "row" }} gap={1}>
+        <Button variant="outlined" onClick={updateCrl} disabled={crlUpdating}>
+          {crlUpdating ? "Обновляем CRL…" : "Обновить CRL"}
+        </Button>
         <Button variant="outlined" onClick={() => open("register")}>{titles.register}</Button>
         <Button variant="contained" onClick={() => open("issue")}>{titles.issue}</Button>
       </Stack>
     </Stack>
+    {crlMessage && <Alert severity="success" onClose={() => setCrlMessage("")}>{crlMessage}</Alert>}
+    {crlError && <Alert severity="error" onClose={() => setCrlError("")}>{crlError}</Alert>}
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack direction={{ xs: "column", sm: "row" }} gap={2}>
         <TextField size="small" label="Устройство, владелец или сертификат" value={search} onChange={(event) => setSearch(event.target.value)} sx={{ minWidth: { sm: 300 } }} />
@@ -156,7 +178,12 @@ export function DeviceAccess() {
     </Dialog>
     <Dialog open={!!issued} onClose={() => setIssued(null)} fullWidth maxWidth="xs">
       <DialogTitle>Сертификат выпущен</DialogTitle>
-      <DialogContent>Скачайте сертификат и установите его на устройство вместе с закрытым ключом, созданным при подготовке запроса.</DialogContent>
+      <DialogContent>
+        <Stack spacing={2}>
+          {issued?.warning && <Alert severity="warning">{issued.warning}</Alert>}
+          <Typography>Скачайте сертификат и установите его на устройство вместе с закрытым ключом, созданным при подготовке запроса.</Typography>
+        </Stack>
+      </DialogContent>
       <DialogActions><Button onClick={() => setIssued(null)}>Закрыть</Button><Button variant="contained" onClick={download}>Скачать сертификат</Button></DialogActions>
     </Dialog>
   </Stack>;

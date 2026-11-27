@@ -1,5 +1,7 @@
 """Device registry and the authorization endpoint for the HTTPS reverse proxy."""
 import hashlib
+import json
+import socket
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -39,6 +41,32 @@ class IssueDevice(DeviceDetails):
 
 class DevicePem(BaseModel):
     pem: str = Field(min_length=1, max_length=16384)
+
+
+
+def refresh_device_crl():
+    """Synchronously publish the device revocation list."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(120)
+            client.connect("/run/vrcatalog-crl/refresh.sock")
+            client.sendall(b'{"action":"refresh"}\n')
+            with client.makefile("rb") as stream:
+                raw = stream.readline(8193)
+
+        if not raw or len(raw) > 8192:
+            raise ValueError("Invalid CRL service response")
+
+        result = json.loads(raw)
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise RuntimeError("CRL service did not confirm publication")
+
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Сертификат отозван в базе, но обновление CRL не подтверждено. Повторите операцию.",
+        ) from exc
+
 
 
 def utc_now():
@@ -135,6 +163,7 @@ def add_device(db, details, cert, replaced=None):
         fingerprint=fingerprint(cert),
         public_key_fingerprint=hashlib.sha256(key_bytes(cert.public_key())).hexdigest(),
         common_name=names[0].value[:255] if names else "",
+        serial_number=format(cert.serial_number, "x"),
         expires_at=cert.not_valid_after_utc.replace(tzinfo=None),
     )
     db.add(row)
@@ -158,6 +187,12 @@ def find_device(db, device_id):
 @router.get("")
 def devices(db: Session = Depends(get_db)):
     return [public_device(row) for row in db.scalars(select(DeviceCertificate).order_by(DeviceCertificate.id.desc()))]
+
+
+@router.post("/refresh-crl")
+def refresh_crl():
+    refresh_device_crl()
+    return {"success": True, "message": "Список отозванных сертификатов обновлён"}
 
 
 @router.post("/issue", status_code=201)
@@ -186,6 +221,7 @@ def revoke(device_id: int, db: Session = Depends(get_db)):
     if row.revoked_at is None:
         row.revoked_at = utc_now()
         db.commit()
+    refresh_device_crl()
     return public_device(row)
 
 
@@ -194,7 +230,18 @@ def replace(device_id: int, data: DevicePem, response: Response, db: Session = D
     row = find_device(db, device_id)
     cert = issue_certificate(data.pem)
     response.headers["Cache-Control"] = "no-store"
-    return {"device": add_device(db, row, cert, replaced=row), "certificate": cert.public_bytes(serialization.Encoding.PEM).decode()}
+    device = add_device(db, row, cert, replaced=row)
+    certificate = cert.public_bytes(serialization.Encoding.PEM).decode()
+    try:
+        refresh_device_crl()
+    except HTTPException:
+        return {
+            "device": device,
+            "certificate": certificate,
+            "crl_updated": False,
+            "warning": "Новый сертификат выдан, но обновление списка отзыва не подтверждено. Обратитесь к администратору.",
+        }
+    return {"device": device, "certificate": certificate, "crl_updated": True}
 
 
 @proxy_router.get("/verify", status_code=204)
