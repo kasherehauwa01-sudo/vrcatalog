@@ -1,4 +1,5 @@
 import unittest
+from base64 import b64decode
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -11,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes import router
 from app.db.session import Base, get_db
-from app.models.catalog import Product, ProductProperty
+from app.models.catalog import Price, Product, ProductImage, ProductProperty, Stock, WarehouseSetting
 from app.services.catalog import catalog_product_query
 
 
@@ -231,3 +232,110 @@ class CatalogCodeBatchTests(unittest.TestCase):
         self.assertEqual(combined.status_code, 200, combined.text)
         self.assertEqual(combined.json()['section_tree'], sections.json())
         self.assertEqual(combined.json()['filters']['brand'], ['Амфора', 'Другой'])
+
+    def test_xlsx_applies_markup_and_warehouse_limits_to_selected_or_filtered_products(self):
+        from app.api import routes
+
+        with Session(self.engine) as db:
+            db.add(WarehouseSetting(code='AVIATORS', name='Авиаторов'))
+            products = db.query(Product).filter(Product.code.in_(self.codes[:8])).order_by(Product.code).all()
+            for product, (purchase, sale, balance) in zip(products, [
+                (100, 120, 5), (0.2, 0.23, 3), (100, 120, 0), (100, 130, 6),
+                (0, 130, 1), (None, 130, 1), (100, 130, None), (100, 130, 0.5),
+            ], strict=True):
+                if purchase is not None:
+                    product.prices.append(Price(price_type='Закупочная', price_value=purchase))
+                product.prices.append(Price(price_type='Оптовая', price_value=sale))
+                product.stocks.append(Stock(warehouse='OTHER', quantity=99))
+                if balance is not None:
+                    product.stocks.append(Stock(warehouse='AVIATORS', quantity=balance))
+            # Explicit XML prices win over labels, even when the label is newer.
+            products[0].prices.extend([
+                Price(price_type='ЦенаЗакупочная', price_value=200),
+                Price(price_type='ЦенаЗакупочная', price_value=100),
+                Price(price_type='Закупочная', price_value=300),
+                Price(price_type='ЦенаОптовая', price_value=110),
+                Price(price_type='ЦенаОптовая', price_value=120),
+                Price(price_type='Оптовая', price_value=90),
+            ])
+            products[0].stocks[1].quantity = 2
+            products[0].stocks.append(Stock(warehouse='AVIATORS', quantity=3))
+            for product in products:
+                product.images.append(ProductImage(image_order=1, image_url='https://example.test/photo.png'))
+            ids = [product.id for product in products]
+            db.commit()
+
+        base_params = {
+            'inStockOnly': 'false', 'column': ['photo', 'code', 'purchase_price', 'price:ЦенаОптовая', 'stock:AVIATORS'],
+            'markup_percent': '15', 'stock_warehouse': 'AVIATORS', 'stock_limit': '5',
+        }
+        thumbnail = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+        with (
+            patch.object(routes, 'download_export_images', side_effect=lambda urls, *args, **kwargs: dict.fromkeys(urls, thumbnail)),
+            patch.object(routes.export_executor, 'submit', side_effect=lambda task, *args: task(*args)),
+            patch.object(routes, 'SessionLocal', side_effect=lambda: Session(self.engine)),
+            patch.dict(routes.export_jobs, {}, clear=True),
+        ):
+            for body, comparison, expected in (
+                ({'product_ids': ids}, 'less', (None, self.codes[0], 100, 120, 5)),
+                ({'code': ' '.join(self.codes[:8])}, 'less', (None, self.codes[0], 100, 120, 5)),
+                ({'product_ids': ids}, 'more', (None, self.codes[3], 100, 130, 6)),
+            ):
+                with self.subTest(body=body, comparison=comparison):
+                    response = self.client.post('/api/exports/xlsx', params={
+                        **base_params, 'stock_comparison': comparison,
+                    }, json=body)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    job_id = response.json()['job_id']
+                    job = routes.export_jobs[job_id]
+                    self.assertEqual(job['status'], 'ready', job)
+                    self.addCleanup(Path(job['path']).unlink, missing_ok=True)
+                    self.assertEqual((job['total'], job['processed']), (1, 1))
+                    with Path(job['path']).open('rb') as file:
+                        workbook = load_workbook(file)
+                        try:
+                            self.assertEqual(list(workbook.active.values), [
+                                ('Фото', 'Код', 'Закупочная цена', 'ЦенаОптовая', 'Авиаторов'), expected,
+                            ])
+                            self.assertEqual(len(workbook.active._images), 1)
+                            self.assertEqual(workbook.active._images[0].anchor.pic.nvPicPr.cNvPr.descr, 'Фото товара')
+                        finally:
+                            workbook.close()
+
+    def test_legacy_xlsx_keeps_price_aliases_and_sums_duplicate_warehouse_rows(self):
+        from app.api import routes
+
+        with Session(self.engine) as db:
+            product = db.query(Product).filter_by(code=self.codes[0]).one()
+            product.prices.extend([
+                Price(price_type='Закупочная', price_value=80),
+                Price(price_type='Оптовая', price_value=120),
+            ])
+            product.stocks.extend([Stock(warehouse='AVIATORS', quantity=2), Stock(warehouse='AVIATORS', quantity=3)])
+            db.add(WarehouseSetting(code='AVIATORS', name='Авиаторов'))
+            db.commit()
+            book = routes.build_export_workbook(db, {'id': product.id}, [
+                'code', 'purchase_price', 'price:ЦенаОптовая', 'stock:AVIATORS',
+            ])
+            try:
+                self.assertEqual(list(book.active.values), [
+                    ('Код', 'Закупочная цена', 'ЦенаОптовая', 'Авиаторов'),
+                    (self.codes[0], 80, 120, 5),
+                ])
+            finally:
+                book.close()
+
+    def test_xlsx_rejects_incomplete_stock_filter_and_requires_one_sale_price_for_markup(self):
+        from app.api import routes
+
+        with patch.object(routes.export_executor, 'submit') as submit:
+            for params in (
+                {'column': 'purchase_price', 'markup_percent': 0},
+                {'column': ['price:ЦенаОптовая', 'price:ЦенаРозничная'], 'markup_percent': 10},
+                {'stock_warehouse': 'AVIATORS', 'stock_comparison': 'less'},
+                {'stock_warehouse': 'AVIATORS', 'stock_comparison': 'less', 'stock_limit': -1},
+            ):
+                with self.subTest(params=params):
+                    response = self.client.post('/api/exports/xlsx', params=params)
+                    self.assertEqual(response.status_code, 422, response.text)
+            submit.assert_not_called()
