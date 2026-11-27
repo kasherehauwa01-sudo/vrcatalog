@@ -96,7 +96,7 @@ export type AccessDevice = {
   crl_pending: boolean;
 };
 export type DeviceDetails = Pick<AccessDevice, "name" | "owner" | "comment">;
-type PackagePassword = { password: string; password_confirmation: string };
+export type DevicePackage = { device: AccessDevice; password: string; file: Blob; filename: string };
 
 export const api = {
   accessDevices(): Promise<AccessDevice[]> {
@@ -107,15 +107,25 @@ export const api = {
       method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
     });
   },
-  async downloadDevicePackage(action: string, data: PackagePassword & Partial<DeviceDetails>): Promise<{ file: Blob; filename: string }> {
+  async downloadDevicePackage(action: string, data: { operation_id: string } & Partial<DeviceDetails>): Promise<DevicePackage> {
     const response = await runAdminOperation(() => fetchAdminResponse(`${API}/access/devices/${action}`, {
       method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
     }));
-    if (response.headers.get("Content-Type")?.split(";")[0] !== "application/x-pkcs12") {
-      throw new Error("Сервер не вернул установочный файл сертификата");
+    if (response.headers.get("Content-Type")?.split(";")[0] !== "application/json") {
+      throw new Error("Ответ выпуска не подтверждён. Проверьте список устройств перед новой операцией.");
     }
-    const filename = response.headers.get("Content-Disposition")?.match(/filename="(device-[a-f0-9]+[.]p12)"/)?.[1] ?? "vrcatalog-device.p12";
-    return { file: await response.blob(), filename };
+    const result = await response.json();
+    if (typeof result.password !== "string" || !/^[A-Za-z0-9]{32}$/.test(result.password)
+        || typeof result.pkcs12_base64 !== "string" || !result.device?.id
+        || typeof result.filename !== "string" || !/^device-[a-f0-9]+\.p12$/.test(result.filename)) {
+      throw new Error("Ответ выпуска не подтверждён. Проверьте список устройств перед новой операцией.");
+    }
+    let bytes: Uint8Array<ArrayBuffer>;
+    try { bytes = Uint8Array.from(atob(result.pkcs12_base64), (value) => value.charCodeAt(0)); }
+    catch { throw new Error("Файл не получен. Проверьте список устройств перед новой операцией."); }
+    if (!bytes.length) throw new Error("Файл не получен. Проверьте список устройств перед новой операцией.");
+    return { device: result.device, password: result.password, filename: result.filename,
+      file: new Blob([bytes], { type: "application/x-pkcs12" }) };
   },
   async adminLogin(password: string): Promise<void> {
     await runAdminOperation(async () => {

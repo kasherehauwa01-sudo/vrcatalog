@@ -1,4 +1,6 @@
 """Device registry and the authorization endpoint for the HTTPS reverse proxy."""
+import base64
+import string
 import hashlib
 import json
 import socket
@@ -15,8 +17,9 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, ValidationError
-from sqlalchemy import or_, select, update
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from sqlalchemy import or_, select, update, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -40,26 +43,12 @@ class IssueDevice(DeviceDetails):
     pem: str = Field(min_length=1, max_length=16384)
 
 
-class PackagePassword(BaseModel):
+class PackageOperation(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-    password: SecretStr
-    password_confirmation: SecretStr
-
-    def encryption_password(self) -> bytes:
-        value = self.password.get_secret_value()
-        try:
-            encoded = value.encode("utf-8")
-        except UnicodeError:
-            raise HTTPException(422, "Некорректный пароль сертификата") from None
-        if len(value) < 12 or len(encoded) > 127 or not value.strip() or "\x00" in value:
-            raise HTTPException(422, "Пароль должен содержать от 12 символов и занимать не более 127 байт")
-        if value != self.password_confirmation.get_secret_value():
-            raise HTTPException(422, "Пароли не совпадают")
-        return encoded
+    operation_id: Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]
 
 
-class IssuePackage(DeviceDetails, PackagePassword):
+class IssuePackage(DeviceDetails, PackageOperation):
     pass
 
 
@@ -73,7 +62,9 @@ async def package_payload(request: Request, model):
     try:
         return model.model_validate_json(body)
     except ValidationError:
-        raise HTTPException(422, "Проверьте данные устройства и поля пароля") from None
+        raise HTTPException(422, "Проверьте данные устройства и обновите страницу") from None
+    finally:
+        body[:] = b"\x00" * len(body)
 
 
 async def issue_payload(request: Request):
@@ -81,7 +72,7 @@ async def issue_payload(request: Request):
 
 
 async def replace_payload(request: Request):
-    return await package_payload(request, PackagePassword)
+    return await package_payload(request, PackageOperation)
 
 
 def refresh_device_crl():
@@ -141,7 +132,7 @@ def issue_certificate(pem: str):
     return sign_certificate(key, ca_certificate())
 
 
-def sign_certificate(key, ca):
+def sign_certificate(key, ca, common_name=None):
     try:
         signer = serialization.load_pem_private_key(Path(settings.device_ca_key).read_bytes(), password=None)
         if not isinstance(signer, (rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey)):
@@ -151,7 +142,7 @@ def sign_certificate(key, ca):
         now = datetime.now(timezone.utc)
         if not ca.not_valid_before_utc <= now < ca.not_valid_after_utc:
             raise ValueError("inactive CA")
-        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"device-{secrets.token_hex(8)}")])
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, (common_name or f"device-{secrets.token_hex(8)}"))])
         return (
             x509.CertificateBuilder()
             .subject_name(subject).issuer_name(ca.subject).public_key(key)
@@ -167,25 +158,51 @@ def sign_certificate(key, ca):
         raise HTTPException(503, "Выпуск сертификатов устройств недоступен") from exc
 
 
-def encrypted_package(data):
-    password = data.encryption_password()
-    ca = ca_certificate()
-    key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-    cert = sign_certificate(key.public_key(), ca)
-    name = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+def package_operation(db, operation_id):
+    """Persist replay detection in the certificate CN, never a password/key/cache.
+
+    Transaction locks cover lookup + signing + registration across worker processes.
+    A retry of a committed operation only gets a conflict, never the package again.
+    """
+    digest = hashlib.sha256(operation_id.encode("ascii")).hexdigest()
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": int.from_bytes(bytes.fromhex(digest[:16]), "big", signed=True)})
+    elif db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+    else:
+        raise HTTPException(503, "Выпуск сертификатов недоступен для этой базы данных")
+    common_name = "device-" + digest[:56]  # X.509 common names must fit in 64 characters.
+    if db.scalar(select(DeviceCertificate.id).where(DeviceCertificate.common_name == common_name)) is not None:
+        raise HTTPException(409, "Операция уже выполнена. Проверьте список устройств. Повторная выдача файла и пароля невозможна.")
+    return common_name
+
+
+def generate_package_password():
+    return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
+
+
+def encrypted_package(common_name):
     try:
+        password = generate_package_password()
+        ca = ca_certificate()
+        key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        cert = sign_certificate(key.public_key(), ca, common_name)
         package = pkcs12.serialize_key_and_certificates(
-            name.encode(), key, cert, [ca], serialization.BestAvailableEncryption(password),
+            common_name.encode(), key, cert, [ca], serialization.BestAvailableEncryption(password.encode("ascii")),
         )
-    except (ValueError, TypeError, UnsupportedAlgorithm):
+        return cert, package, common_name, password
+    except HTTPException:
+        raise
+    except (OSError, ValueError, TypeError, UnsupportedAlgorithm):
         raise HTTPException(503, "Не удалось создать установочный файл сертификата") from None
-    return cert, package, name
+    # Secrets are request-local only. Immutable Python/HTTP buffers cannot be reliably zeroized.
 
 
-def package_response(device_id, package, name):
-    return Response(package, status_code=201, media_type="application/x-pkcs12", headers={
-        "Content-Disposition": f'attachment; filename="{name}.p12"',
-        "X-Certificate-Id": str(device_id),
+def package_response(device, package, name, password):
+    return JSONResponse({
+        "device": device, "filename": f"{name}.p12",
+        "pkcs12_base64": base64.b64encode(package).decode("ascii"), "password": password,
+    }, status_code=201, headers={
         "Cache-Control": "no-store, private, max-age=0",
         "Pragma": "no-cache", "Expires": "0", "X-Content-Type-Options": "nosniff",
         "X-Accel-Buffering": "no",
@@ -280,8 +297,9 @@ def refresh_crl():
 @router.post("/issue", status_code=201, response_class=Response, include_in_schema=False)
 @router.post("/issue-package", status_code=201, response_class=Response)
 def issue(data: Annotated[IssuePackage, Depends(issue_payload)], db: Session = Depends(get_db)):
-    cert, package, name = encrypted_package(data)
-    return package_response(add_device(db, data, cert)["id"], package, name)
+    name = package_operation(db, data.operation_id)
+    cert, package, name, password = encrypted_package(name)
+    return package_response(add_device(db, data, cert), package, name, password)
 
 
 @router.post("/register", status_code=201)
@@ -313,14 +331,15 @@ def revoke(device_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{device_id}/replace", status_code=201, response_class=Response, include_in_schema=False)
 @router.post("/{device_id}/replacements/prepare", status_code=201, response_class=Response)
-def replace(device_id: int, data: Annotated[PackagePassword, Depends(replace_payload)], db: Session = Depends(get_db)):
+def replace(device_id: int, data: Annotated[PackageOperation, Depends(replace_payload)], db: Session = Depends(get_db)):
+    name = package_operation(db, data.operation_id)
     row = find_device(db, device_id)
     if row.revoked_at is not None or is_pending(row):
         raise HTTPException(409, "Этот сертификат нельзя использовать как исходный для замены")
     if pending_replacement(db, device_id) is not None:
         raise HTTPException(409, "У устройства уже есть ожидающая замена")
-    cert, package, name = encrypted_package(data)
-    return package_response(add_device(db, row, cert, replaces_id=row.id)["id"], package, name)
+    cert, package, name, password = encrypted_package(name)
+    return package_response(add_device(db, row, cert, replaces_id=row.id), package, name, password)
 
 
 def replacement_pair(db, device_id, replacement_id):

@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert, Box, Button, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, LinearProgress,
   MenuItem, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   TextField, Typography,
 } from "@mui/material";
-import { api, type AccessDevice, type DeviceDetails } from "../api/client";
+import { api, type AccessDevice, type DeviceDetails, type DevicePackage } from "../api/client";
 
 type Mode = "issue" | "edit" | "replace" | "revoke" | "confirm" | "cancel";
 const titles: Record<Mode, string> = {
@@ -24,13 +24,25 @@ export function DeviceAccess() {
   const [status, setStatus] = useState("");
   const [dialog, setDialog] = useState<{ mode: Mode; device?: AccessDevice } | null>(null);
   const [details, setDetails] = useState<DeviceDetails>(emptyDetails);
-  const [password, setPassword] = useState("");
-  const [confirmation, setConfirmation] = useState("");
+  const [operationId, setOperationId] = useState("");
+  const inFlight = useRef(false);
+  const mounted = useRef(true);
   const [installationConfirmed, setInstallationConfirmed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [issued, setIssued] = useState<{ file: Blob; filename: string; replacement: boolean } | null>(null);
-  const [downloadStarted, setDownloadStarted] = useState(false);
+  const [issued, setIssued] = useState<(DevicePackage & { replacement: boolean }) | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [secretError, setSecretError] = useState("");
+  const [closeConfirmation, setCloseConfirmation] = useState(false);
+  const issuedRef = useRef<typeof issued>(null);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const downloadUrls = useRef(new Set<string>());
+  const cleanupDownloads = () => { downloadUrls.current.forEach((url) => URL.revokeObjectURL(url)); downloadUrls.current.clear(); };
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; issuedRef.current = null; cleanupDownloads(); if (copyTimer.current) clearTimeout(copyTimer.current); };
+  }, []);
 
   const load = async () => {
     setListError("");
@@ -44,32 +56,39 @@ export function DeviceAccess() {
   useEffect(() => { void load(); }, []);
 
   const close = () => {
-    setPassword("");
-    setConfirmation("");
+    setOperationId("");
     setDialog(null);
   };
 
   const open = (mode: Mode, device?: AccessDevice) => {
     setError("");
+    if (mode === "issue" || mode === "replace") {
+      try { setOperationId(Array.from(crypto.getRandomValues(new Uint8Array(16)), (value) => value.toString(16).padStart(2, "0")).join("")); }
+      catch { setOperationId(""); setError("Не удалось начать безопасный выпуск. Обновите страницу."); }
+    }
     setInstallationConfirmed(false);
     setDetails(device ? { name: device.name, owner: device.owner, comment: device.comment } : emptyDetails);
     setDialog({ mode, device });
   };
 
   const save = async () => {
-    if (!dialog) return;
+    if (!dialog || inFlight.current) return;
+    inFlight.current = true;
     const { mode, device } = dialog;
     setSaving(true);
     setError("");
     try {
       if (mode === "issue" || mode === "replace") {
-        const credentials = { password, password_confirmation: confirmation };
+        const operation = { operation_id: operationId };
         const result = await api.downloadDevicePackage(
           mode === "issue" ? "issue-package" : `${device?.id}/replacements/prepare`,
-          mode === "issue" ? { ...details, ...credentials } : credentials,
+          mode === "issue" ? { ...details, ...operation } : operation,
         );
-        setDownloadStarted(false);
-        setIssued({ ...result, replacement: mode === "replace" });
+        if (!mounted.current) return;
+        const value = { ...result, replacement: mode === "replace" };
+        issuedRef.current = value;
+        setIssued(value);
+        setShowPassword(false); setCopied(false); setSecretError(""); setCloseConfirmation(false);
       } else if (mode === "edit") {
         await api.saveAccessDevice(String(device?.id), details, "PATCH");
       } else {
@@ -80,33 +99,62 @@ export function DeviceAccess() {
       close();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Не удалось сохранить изменения");
-      setPassword("");
-      setConfirmation("");
+      // Keep the same operation ID: a lost response must not mint another package.
+      if (mode === "issue" || mode === "replace") setError(
+        "Выпуск не подтверждён: " + (failure instanceof Error ? failure.message : "ошибка сети")
+        + " Проверьте список устройств. Повтор этой операции не создаст второй сертификат, если первый уже выпущен.");
     } finally {
+      inFlight.current = false;
       setSaving(false);
       void load();
     }
   };
 
+  const clearIssued = () => {
+    issuedRef.current = null;
+    setIssued(null); setShowPassword(false); setCopied(false); setSecretError(""); setCloseConfirmation(false);
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+    cleanupDownloads();
+  };
+  const copyPassword = async () => {
+    const current = issuedRef.current;
+    if (!current) return;
+    setSecretError("");
+    try {
+      await navigator.clipboard.writeText(current.password);
+      if (issuedRef.current !== current) return;
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 2000);
+    } catch {
+      if (issuedRef.current === current) setSecretError("Не удалось скопировать пароль. Покажите его и скопируйте вручную.");
+    }
+  };
   const download = () => {
     if (!issued) return;
-    const url = URL.createObjectURL(issued.file);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = issued.filename;
-    link.click();
-    setDownloadStarted(true);
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setSecretError("");
+    let url: string | undefined;
+    let link: HTMLAnchorElement | undefined;
+    try {
+      url = URL.createObjectURL(issued.file);
+      downloadUrls.current.add(url);
+      link = document.createElement("a");
+      link.href = url; link.download = issued.filename;
+      document.body.appendChild(link); link.click();
+      const savedUrl = url;
+      window.setTimeout(() => { URL.revokeObjectURL(savedUrl); downloadUrls.current.delete(savedUrl); }, 1000);
+    } catch {
+      if (url) { URL.revokeObjectURL(url); downloadUrls.current.delete(url); }
+      setSecretError("Не удалось начать скачивание. Повторите попытку, не закрывая окно.");
+    } finally { link?.remove(); }
   };
 
   const term = search.trim().toLocaleLowerCase("ru-RU");
   const visible = (devices ?? []).filter((device) =>
     (!status || device.status === status) &&
     [device.name, device.owner, device.common_name, device.fingerprint].some((value) => value.toLocaleLowerCase("ru-RU").includes(term)));
-  const needsPassword = dialog?.mode === "issue" || dialog?.mode === "replace";
+  const needsPackage = dialog?.mode === "issue" || dialog?.mode === "replace";
   const needsDetails = dialog?.mode === "issue" || dialog?.mode === "edit";
-  const validPassword = [...password].length >= 12 && new TextEncoder().encode(password).length <= 127
-    && Boolean(password.trim()) && !password.includes("\x00") && password === confirmation;
   const pendingOriginalIds = new Set(devices?.filter((device) => device.awaiting_activation).map((device) => device.replaces_id));
 
   return <Stack spacing={2}>
@@ -171,34 +219,40 @@ export function DeviceAccess() {
           <TextField required label="Владелец" value={details.owner} onChange={(event) => setDetails({ ...details, owner: event.target.value })} inputProps={{ maxLength: 160 }} />
           <TextField multiline label="Комментарий" value={details.comment} onChange={(event) => setDetails({ ...details, comment: event.target.value })} inputProps={{ maxLength: 500 }} />
         </>}
-        {needsPassword && <>
-          <TextField required type="password" autoComplete="new-password" label="Пароль для сертификата"
-            value={password} onChange={(event) => setPassword(event.target.value)} inputProps={{ maxLength: 127 }}
-            helperText="Минимум 12 символов, не более 127 байт" />
-          <TextField required type="password" autoComplete="new-password" label="Подтверждение пароля"
-            value={confirmation} onChange={(event) => setConfirmation(event.target.value)} inputProps={{ maxLength: 127 }}
-            error={!!confirmation && password !== confirmation} helperText={confirmation && password !== confirmation ? "Пароли не совпадают" : undefined} />
-        </>}
       </Stack></DialogContent>
       <DialogActions>
         <Button disabled={saving} onClick={close}>Отмена</Button>
         <Button variant="contained" color={dialog?.mode === "revoke" ? "error" : "primary"} onClick={save}
-          disabled={saving || Boolean(needsDetails && (!details.name.trim() || !details.owner.trim())) || (needsPassword && !validPassword) || (dialog?.mode === "confirm" && !dialog.device?.crl_pending && !installationConfirmed)}
+          disabled={saving || Boolean(needsDetails && (!details.name.trim() || !details.owner.trim())) || (needsPackage && !operationId) || (dialog?.mode === "confirm" && !dialog.device?.crl_pending && !installationConfirmed)}
         >{saving ? "Сохраняем…" : dialog?.mode === "edit" ? "Сохранить" : dialog && titles[dialog.mode]}</Button>
       </DialogActions>
     </Dialog>
-    <Dialog open={!!issued} disableEscapeKeyDown fullWidth maxWidth="sm">
-      <DialogTitle>{issued?.replacement ? "Замена подготовлена" : "Сертификат выпущен"}</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2}>
-          <Alert severity="warning">Сохраните файл .p12. Повторно скачать этот закрытый ключ невозможно. Храните файл и пароль раздельно.</Alert>
-          <Typography>В Windows откройте .p12, выберите «Текущий пользователь», введите пароль и импортируйте в хранилище «Личное». Оставьте параметр экспорта закрытого ключа выключенным. Перезапустите браузер и выберите сертификат при подключении.</Typography>
-          {issued?.replacement && <Typography>Проверьте наличие сертификата в хранилище Windows. Затем подтвердите замену в списке устройств со второго разрешённого устройства.</Typography>}
+    <Dialog open={!!issued} onClose={() => setCloseConfirmation(true)} fullWidth maxWidth="sm" aria-labelledby="issued-title">
+      <DialogTitle id="issued-title">Сертификат выпущен</DialogTitle>
+      <DialogContent><Stack spacing={2} sx={{ pt: 1 }}>
+        <Typography>Сертификат готов к установке. Скачайте файл и сохраните пароль.</Typography>
+        <Typography>Устройство: <strong>{issued?.device.name}</strong></Typography>
+        <Alert severity="warning">Пароль показывается только сейчас. Сохраните его в надёжном месте. После закрытия окна восстановить пароль будет невозможно.</Alert>
+        <TextField label="Пароль PKCS12" type={showPassword ? "text" : "password"} value={issued?.password ?? ""} autoComplete="off" InputProps={{ readOnly: true }} />
+        <Stack direction="row" gap={1} flexWrap="wrap">
+          <Button onClick={() => setShowPassword((value) => !value)}>{showPassword ? "Скрыть пароль" : "Показать пароль"}</Button>
+          <Button onClick={copyPassword}>{copied ? "Скопировано" : "Скопировать пароль"}</Button>
         </Stack>
-      </DialogContent>
+        {secretError && <Alert severity="error">{secretError}</Alert>}
+        <Typography variant="body2">В Windows откройте .p12 и импортируйте его в «Текущий пользователь → Личное». Храните файл и пароль раздельно.</Typography>
+        {issued?.replacement && <Alert severity="info">Замена подготовлена. Старый сертификат продолжает работать. Установите новый и подтвердите замену отдельно со второго разрешённого устройства.</Alert>}
+      </Stack></DialogContent>
+      <DialogActions sx={{ flexWrap: "wrap", gap: 1 }}>
+        <Button onClick={() => setCloseConfirmation(true)}>Готово</Button>
+        <Button variant="contained" onClick={download}>Скачать сертификат (.p12)</Button>
+      </DialogActions>
+    </Dialog>
+    <Dialog open={!!issued && closeConfirmation} onClose={() => setCloseConfirmation(false)} aria-labelledby="close-issued-title">
+      <DialogTitle id="close-issued-title">Закрыть окно выдачи?</DialogTitle>
+      <DialogContent>Вы сохранили сертификат и пароль? После закрытия окна пароль больше не будет доступен.</DialogContent>
       <DialogActions>
-        <Button disabled={!downloadStarted} onClick={() => setIssued(null)}>Готово</Button>
-        <Button variant="contained" onClick={download}>Скачать .p12</Button>
+        <Button onClick={() => setCloseConfirmation(false)}>Вернуться</Button>
+        <Button onClick={clearIssued}>Да, закрыть</Button>
       </DialogActions>
     </Dialog>
   </Stack>;

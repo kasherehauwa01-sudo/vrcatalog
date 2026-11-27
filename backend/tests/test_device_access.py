@@ -1,3 +1,8 @@
+import base64
+import io
+import logging
+import secrets
+import re
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +23,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from app.core import admin_auth
 from app.api import device_access
 from app.api.routes import router
 from app.db.session import Base, get_db
@@ -33,6 +39,8 @@ def csr():
 
 class DeviceAccessTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.dict(admin_auth._attempts, clear=True))
+        self.enterContext(patch.dict(admin_auth._operations, clear=True))
         directory = self.enterContext(tempfile.TemporaryDirectory())
         ca_key = ec.generate_private_key(ec.SECP256R1())
         name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test issuing CA")])
@@ -70,7 +78,7 @@ class DeviceAccessTests(unittest.TestCase):
         self.client = self.enterContext(TestClient(app, base_url="https://testserver"))
         self.path = "/api/access/devices"
         self.password = "local-test-passphrase"
-        self.credentials = {"password": self.password, "password_confirmation": self.password}
+        self.credentials = {"operation_id": secrets.token_hex(16)}
         self.ca = ca
         self.details = {"name": "Ноутбук", "owner": "Администратор", "comment": "Тест"}
 
@@ -86,16 +94,18 @@ class DeviceAccessTests(unittest.TestCase):
         })
 
     def issue(self, csrf):
-        response = self.client.post(self.path + "/issue-package", json={**self.details, **self.credentials}, headers=csrf)
+        response = self.client.post(self.path + "/issue-package", json={**self.details, "operation_id": secrets.token_hex(16)}, headers=csrf)
         return self.unpack(response)
 
     def unpack(self, response):
         self.assertEqual(response.status_code, 201, response.text if not response.is_success else "")
-        _, cert, _ = pkcs12.load_key_and_certificates(response.content, self.password.encode())
-        return int(response.headers["X-Certificate-Id"]), cert.public_bytes(serialization.Encoding.PEM).decode()
+        payload = response.json()
+        self.password = payload["password"]
+        _, cert, _ = pkcs12.load_key_and_certificates(base64.b64decode(payload["pkcs12_base64"]), self.password.encode())
+        return payload["device"]["id"], cert.public_bytes(serialization.Encoding.PEM).decode()
 
     def prepare(self, original_id, csrf):
-        return self.client.post(f"{self.path}/{original_id}/replacements/prepare", json=self.credentials, headers=csrf)
+        return self.client.post(f"{self.path}/{original_id}/replacements/prepare", json={"operation_id": secrets.token_hex(16)}, headers=csrf)
 
     def replacement_action(self, original_id, replacement_id, action, csrf):
         return self.client.post(f"{self.path}/{original_id}/replacements/{replacement_id}/{action}", headers=csrf)
@@ -109,15 +119,17 @@ class DeviceAccessTests(unittest.TestCase):
         self.assertEqual(self.client.post(url, json=payload).status_code, 403)
         result = self.client.post(url, json=payload, headers=csrf)
         device_id, pem = self.unpack(result)
-        self.assertEqual(result.headers["content-type"], "application/x-pkcs12")
-        self.assertIn(".p12", result.headers["content-disposition"])
+        self.assertEqual(result.headers["content-type"], "application/json")
+        self.assertTrue(result.json()["filename"].endswith(".p12"))
+        self.assertRegex(self.password, r"^[A-Za-z0-9]{32}$")
+        self.assertNotIn(self.password, str(result.headers))
         self.assertIn("no-store", result.headers["cache-control"])
         self.assertEqual(result.headers["pragma"], "no-cache")
         self.assertEqual(result.headers["expires"], "0")
         self.assertEqual(result.headers["x-content-type-options"], "nosniff")
         with self.assertRaises(ValueError):
-            pkcs12.load_key_and_certificates(result.content, b"incorrect-password")
-        key, cert, issuers = pkcs12.load_key_and_certificates(result.content, self.password.encode())
+            pkcs12.load_key_and_certificates(base64.b64decode(result.json()["pkcs12_base64"]), b"incorrect-password")
+        key, cert, issuers = pkcs12.load_key_and_certificates(base64.b64decode(result.json()["pkcs12_base64"]), self.password.encode())
         self.assertEqual(key.key_size, 3072)
         self.assertEqual(device_access.key_bytes(key.public_key()), device_access.key_bytes(cert.public_key()))
         self.assertEqual(issuers, [self.ca])
@@ -142,7 +154,7 @@ class DeviceAccessTests(unittest.TestCase):
         self.assertEqual(self.verify(pem).status_code, 204)
         self.assertIsNotNone(self.client.get(self.path).json()[0]["last_seen_at"])
 
-    def test_invalid_password_and_csr_legacy_issue_return_no_secret(self):
+    def test_manual_password_and_csr_legacy_issue_return_no_secret(self):
         csrf = self.login()
         for credentials in (
             {"password": "too short", "password_confirmation": "too short"},
@@ -219,15 +231,12 @@ class DeviceAccessTests(unittest.TestCase):
     def test_concurrent_preparation_creates_one_pending_certificate(self):
         csrf = self.login()
         original_id, old_pem = self.issue(csrf)
-        original_package = device_access.encrypted_package
         barrier = Barrier(2, timeout=10)
-
-        def generate(data):
+        def prepare_simultaneously():
             barrier.wait()
-            return original_package(data)
-
-        with patch.object(device_access, "encrypted_package", side_effect=generate), ThreadPoolExecutor(2) as executor:
-            futures = [executor.submit(self.prepare, original_id, csrf) for _ in range(2)]
+            return self.prepare(original_id, csrf)
+        with ThreadPoolExecutor(2) as executor:
+            futures = [executor.submit(prepare_simultaneously) for _ in range(2)]
             self.assertCountEqual([future.result().status_code for future in futures], [201, 409])
         self.assertEqual(self.verify(old_pem).status_code, 204)
         with Session(self.engine) as db:
@@ -300,3 +309,81 @@ class DeviceAccessTests(unittest.TestCase):
         self.assertEqual(retried.status_code, 200, retried.text)
         self.assertFalse(retried.json()["crl_pending"])
         self.assertEqual(self.crl_refresh.call_count, 2)
+
+    def test_secure_password_generation_is_unique_and_alphanumeric(self):
+        passwords = {device_access.generate_package_password() for _ in range(100)}
+        self.assertEqual(len(passwords), 100)
+        self.assertTrue(all(re.fullmatch(r"[A-Za-z0-9]{32}", password) for password in passwords))
+
+    def test_replay_returns_conflict_without_regeneration_or_secret(self):
+        csrf = self.login()
+        payload = {**self.details, **self.credentials}
+        first = self.client.post(self.path + '/issue-package', json=payload, headers=csrf)
+        self.unpack(first)
+        with patch.object(device_access, 'encrypted_package', side_effect=AssertionError('Repeated issuance')):
+            for endpoint in ('/issue-package', '/issue'):
+                repeated = self.client.post(self.path + endpoint, json=payload, headers=csrf)
+                self.assertEqual(repeated.status_code, 409)
+                self.assertNotIn(self.password, repeated.text)
+        listing = self.client.get(self.path).json()
+        self.assertEqual(len(listing), 1)
+        self.assertNotIn(self.password, str(listing))
+        self.assertNotIn('pkcs12_base64', str(listing))
+
+    def test_concurrent_replay_only_issues_one_package(self):
+        csrf = self.login()
+        payload = {**self.details, **self.credentials}
+        barrier = Barrier(2, timeout=10)
+        def issue_simultaneously():
+            barrier.wait()
+            return self.client.post(self.path + '/issue-package', json=payload, headers=csrf)
+        with ThreadPoolExecutor(2) as executor:
+            results = list(executor.map(lambda _: issue_simultaneously(), range(2)))
+        self.assertCountEqual([result.status_code for result in results], [201, 409])
+        self.assertEqual(len(self.client.get(self.path).json()), 1)
+
+    def test_failures_do_not_register_device_or_log_secret_and_can_retry(self):
+        csrf = self.login()
+        payload = {**self.details, **self.credentials}
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        logging.getLogger().addHandler(handler)
+        self.addCleanup(logging.getLogger().removeHandler, handler)
+        secret = 'A1' * 16
+        for target in ('rsa.generate_private_key', 'pkcs12.serialize_key_and_certificates'):
+            with patch.object(device_access, 'generate_package_password', return_value=secret), \
+                 patch('app.api.device_access.' + target, side_effect=ValueError(secret)):
+                response = self.client.post(self.path + '/issue-package', json=payload, headers=csrf)
+            self.assertEqual(response.status_code, 503)
+            self.assertNotIn(secret, response.text)
+            self.assertNotIn(secret, output.getvalue())
+            self.assertEqual(self.client.get(self.path).json(), [])
+        success = self.client.post(self.path + '/issue-package', json=payload, headers=csrf)
+        self.unpack(success)
+        self.assertNotIn(self.password, output.getvalue())
+
+    def test_replacement_has_new_password_and_failed_preparation_keeps_old_access(self):
+        csrf = self.login()
+        original_id, pem = self.issue(csrf)
+        old_password = self.password
+        with patch.object(device_access.pkcs12, 'serialize_key_and_certificates', side_effect=ValueError('test failure')):
+            self.assertEqual(self.prepare(original_id, csrf).status_code, 503)
+        self.assertEqual(self.verify(pem).status_code, 204)
+        self.assertEqual(len(self.client.get(self.path).json()), 1)
+        result = self.prepare(original_id, csrf)
+        self.unpack(result)
+        self.assertNotEqual(old_password, self.password)
+        with self.assertRaises(ValueError):
+            pkcs12.load_key_and_certificates(base64.b64decode(result.json()['pkcs12_base64']), old_password.encode())
+        self.assertEqual(self.verify(pem).status_code, 204)
+        self.crl_refresh.assert_not_called()
+
+    def test_empty_metadata_and_missing_operation_are_rejected_without_redirect(self):
+        csrf = self.login()
+        self.assertEqual(self.client.get(self.path, follow_redirects=False).status_code, 200)
+        for values in ({}, {'name': '', 'owner': 'Owner'}, {'name': 'Name', 'owner': ' '}, self.details):
+            response = self.client.post(self.path + '/issue-package', json=values, headers=csrf, follow_redirects=False)
+            self.assertEqual(response.status_code, 422)
+        with patch.object(device_access, 'encrypted_package', side_effect=AssertionError('Unexpected signing')):
+            response = self.client.post(self.path + '/issue-package', content=b'x' * 9000, headers=csrf)
+            self.assertEqual(response.status_code, 413)
