@@ -49,7 +49,7 @@ from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSetting
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
 from app.services.catalog import catalog_product_query, decorate, folder_paths, integration_batch_product_info, integration_brands, integration_catalog_tree, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
-from app.services.export_layout import FORM_HEADERS, PRICE_PAIRS, archive_name, export_plan, form_columns, form_price, promotion_product_ids, adjusted_price
+from app.services.export_layout import FORM_HEADERS, PRICE_PAIRS, PURCHASE_PRICE_TYPE, archive_name, export_plan, form_columns, form_price, promotion_product_ids, restrict_export_product_ids, adjusted_price
 from app.services.export_links import MAX_SHEET_HYPERLINKS, primary_image_links, product_site_link
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
@@ -1186,6 +1186,7 @@ def create_xlsx_export(job_id: str, params: dict, columns: list[str] | None, opt
             filtered_ids = filtered_product_ids_subquery(db, params)
             if options.get("promotion"):
                 filtered_ids = promotion_product_ids(db, filtered_ids, options.get("promotion_type"))
+            filtered_ids = restrict_export_product_ids(db, filtered_ids, columns or LEGACY_EXPORT_COLUMNS, options)
             product_count = db.query(func.count()).select_from(filtered_ids).scalar() or 0
             has_photos = bool(columns and "photo" in columns)
             safe_params = {key: value for key, value in params.items() if value not in (None, "", [], {}, False, "all")}
@@ -1256,6 +1257,10 @@ def start_xlsx_export(
     adjustment_percent: Annotated[float | None, Query(allow_inf_nan=False)] = None,
     order_form: bool = False,
     zip_categories: bool = False,
+    markup_percent: Annotated[float | None, Query(allow_inf_nan=False)] = None,
+    stock_warehouse: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+    stock_comparison: Literal["more", "less"] | None = None,
+    stock_limit: Annotated[int | None, Query(ge=0, le=2147483647)] = None,
     body: Annotated[CatalogCodeBatch | CatalogExportSelection | None, Body()] = None,
 ):
     """Запускает длительное формирование Excel и сразу возвращает идентификатор задания."""
@@ -1285,9 +1290,14 @@ def start_xlsx_export(
     if isinstance(body, CatalogExportSelection):
         params = {"product_ids": body.product_ids}
     columns = list(dict.fromkeys(column)) if column else None
+    stock_filter = (stock_warehouse, stock_comparison, stock_limit)
+    if any(value is not None for value in stock_filter) and any(value is None for value in stock_filter):
+        raise HTTPException(422, "Укажите склад, условие и количество для фильтра по остаткам")
     options = dict(group_categories=group_categories, group_folders=group_folders,
                    promotion=promotion, promotion_type=promotion_type, adjustment=adjustment,
-                   adjustment_percent=adjustment_percent, order_form=order_form, zip_categories=zip_categories)
+                   adjustment_percent=adjustment_percent, order_form=order_form, zip_categories=zip_categories,
+                   markup_percent=markup_percent, stock_warehouse=stock_warehouse,
+                   stock_comparison=stock_comparison, stock_limit=stock_limit)
     try:
         form_price(columns or LEGACY_EXPORT_COLUMNS, options)
     except ValueError as error:
@@ -1375,6 +1385,7 @@ def export_xlsx(db: Session = Depends(get_db), search: str | None = None, sectio
 
 
 EXPORT_MAIN_COLUMNS = {
+    "purchase_price": "Закупочная цена",
     "code": "Код",
     "article": "Артикул",
     "photo": "Фото",
@@ -1604,7 +1615,7 @@ def write_export_workbook_streaming(
         for column in selected_columns
     ]
     needs_photos = "photo" in selected_columns
-    needs_prices = bool(selected_price) or any(column.startswith("price:") for column in selected_columns)
+    needs_prices = bool(selected_price) or any(column.startswith("price:") or column == "purchase_price" for column in selected_columns)
     needs_stocks = any(column.startswith("stock:") for column in selected_columns)
     needs_properties = any(column in {"manager", "marking_code"} for column in selected_columns)
     needs_barcodes = "barcodes" in selected_columns
@@ -1747,7 +1758,10 @@ def write_export_workbook_streaming(
                         if normalized_key and value:
                             properties.setdefault(normalized_key, value)
                 prices = {item.price_type: item.price_value for item in product.prices} if needs_prices else {}
-                stocks = {item.warehouse: item.quantity for item in product.stocks} if needs_stocks else {}
+                stocks = {}
+                if needs_stocks:
+                    for item in product.stocks:
+                        stocks[item.warehouse] = stocks.get(item.warehouse, 0) + item.quantity
                 values = {
                     "code": product.code, "article": product.article or "", "photo": "",
                     "image_url": image_links.get(product.id, ""),
@@ -1759,6 +1773,8 @@ def write_export_workbook_streaming(
                     "material": product.material or "", "certificate": product.certificate or "",
                     "barcodes": ", ".join(item.value for item in product.barcodes) if needs_barcodes else "", "quantity": product.quantity,
                 }
+                if "purchase_price" in selected_columns:
+                    values["purchase_price"] = prices.get(PURCHASE_PRICE_TYPE)
                 if selected_price:
                     values["price:" + selected_price] = prices.get(selected_price)
                     values.update(promo_price=prices.get(selected_price), old_price=prices.get(PRICE_PAIRS[selected_price]),
@@ -1768,7 +1784,7 @@ def write_export_workbook_streaming(
                 for column_index, column in enumerate(selected_columns):
                     value = values.get(column, prices.get(column.removeprefix("price:"), 0) if column.startswith("price:") else stocks.get(column.removeprefix("stock:"), 0))
                     alternate = row_index % 2 == 0
-                    if column.startswith("price:"):
+                    if column.startswith("price:") or column == "purchase_price":
                         cell_format = price_alt_format if alternate else price_format
                     elif column == "quantity" or column.startswith("stock:"):
                         cell_format = number_alt_format if alternate else number_format
@@ -1860,7 +1876,7 @@ def build_export_workbook(
         else:
             headers.append(warehouse_names[column.removeprefix("stock:")])
 
-    needs_prices = any(column.startswith("price:") for column in selected_columns)
+    needs_prices = any(column.startswith("price:") or column == "purchase_price" for column in selected_columns)
     needs_stocks = any(column.startswith("stock:") for column in selected_columns)
     needs_properties = any(column in {"manager", "marking_code"} for column in selected_columns)
     needs_barcodes = "barcodes" in selected_columns
@@ -1941,6 +1957,8 @@ def build_export_workbook(
                 "barcodes": ", ".join(item.value for item in product.barcodes) if needs_barcodes else "",
                 "quantity": product.quantity,
             }
+            if "purchase_price" in selected_columns:
+                main_values["purchase_price"] = prices.get(PURCHASE_PRICE_TYPE)
             row = []
             for column in selected_columns:
                 if column in main_values:

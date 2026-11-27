@@ -140,7 +140,11 @@ test('checked product IDs take precedence over catalog filters in Excel export',
     }
     return Response.json({ job_id: 'job', status: 'processing' });
   });
-  const params = new URLSearchParams({ code: codes, brand: 'Brand', page: '2', promotion: 'true', promotion_type: 'Надо продать', adjustment: 'true', adjustment_percent: '-10' });
+  const params = new URLSearchParams({
+    code: codes, brand: 'Brand', page: '2', promotion: 'true', promotion_type: 'Надо продать',
+    adjustment: 'true', adjustment_percent: '-10', markup_percent: '15',
+    stock_warehouse: 'AVI', stock_comparison: 'less', stock_limit: '5',
+  });
   params.append('column', 'code');
   params.append('column', 'name');
 
@@ -149,7 +153,11 @@ test('checked product IDs take precedence over catalog filters in Excel export',
   assert.equal(calls.length, 1);
   const post = calls[0];
   assert.equal(post.url.pathname, `${apiPath}/exports/xlsx`);
-  assert.deepEqual([...post.url.searchParams], [['promotion', 'true'], ['promotion_type', 'Надо продать'], ['adjustment', 'true'], ['adjustment_percent', '-10'], ['column', 'code'], ['column', 'name']]);
+  assert.deepEqual([...post.url.searchParams], [
+    ['promotion', 'true'], ['promotion_type', 'Надо продать'], ['adjustment', 'true'], ['adjustment_percent', '-10'],
+    ['markup_percent', '15'], ['stock_warehouse', 'AVI'], ['stock_comparison', 'less'], ['stock_limit', '5'],
+    ['column', 'code'], ['column', 'name'],
+  ]);
   assert.equal(post.method, 'POST');
   assert.equal(post.headers.get('X-CSRF-Token'), null);
   assert.equal(post.headers.get('Content-Type'), 'application/json');

@@ -724,9 +724,16 @@ function App() {
   };
   const downloadExcel = async () => {
     const exportParams = new URLSearchParams(params);
-    ["column", "page", "pageSize", "sort", "order"].forEach((key) => exportParams.delete(key));
+    ["column", "page", "pageSize", "sort", "order", "markup_percent", "stock_warehouse", "stock_comparison", "stock_limit"].forEach((key) => exportParams.delete(key));
     exportColumns.forEach((column) => exportParams.append("column", column));
-    Object.entries(exportOptions).forEach(([key, value]) => {
+    const { markup, markup_percent, stock_filter, stock_warehouse, stock_comparison, stock_limit, ...layout } = exportOptions;
+    if (markup) exportParams.set("markup_percent", markup_percent.trim().replace(",", "."));
+    if (stock_filter) {
+      exportParams.set("stock_warehouse", stock_warehouse);
+      exportParams.set("stock_comparison", stock_comparison);
+      exportParams.set("stock_limit", stock_limit.trim());
+    }
+    Object.entries(layout).forEach(([key, value]) => {
       if (key === "adjustment_percent" && !exportOptions.adjustment) return;
       if (value !== "") exportParams.set(key, key === "adjustment_percent" ? String(value).replace(",", ".") : String(value));
     });
@@ -2213,6 +2220,7 @@ function App() {
                     ["Менеджер", detail.manager],
                     ["Бренд", detail.brand],
                     ["Код маркировки", productPropertyValue(detail, ["Код маркировки"]), productPropertyFilter(detail, ["Код маркировки"])],
+                    ["Выгружать на сайт", productPropertyValue(detail, ["Выгружать на сайт"]) ?? "—"],
                     ["Коллекция", productPropertyValue(detail, ["Коллекция"]), productPropertyFilter(detail, ["Коллекция"])],
                     ["Материал", detail.material],
                     ["Цвет", detail.color],

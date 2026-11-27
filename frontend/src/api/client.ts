@@ -366,7 +366,7 @@ export const api = {
   async startExcelExport(params: URLSearchParams, selectedIds: readonly number[] = []): Promise<{ job_id: string; status: string }> {
     if (selectedIds.length) {
       const query = new URLSearchParams();
-      ["group_categories", "group_folders", "promotion", "promotion_type", "order_form", "zip_categories", "adjustment", "adjustment_percent"].forEach((key) => {
+      ["group_categories", "group_folders", "promotion", "promotion_type", "order_form", "zip_categories", "adjustment", "adjustment_percent", "markup_percent", "stock_warehouse", "stock_comparison", "stock_limit"].forEach((key) => {
         if (params.has(key)) query.set(key, params.get(key)!);
       });
       params.getAll("column").forEach((column) => query.append("column", column));
