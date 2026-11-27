@@ -238,10 +238,10 @@ class CatalogCodeBatchTests(unittest.TestCase):
 
         with Session(self.engine) as db:
             db.add_all([WarehouseSetting(code='AVIATORS', name='Авиаторов'), WarehouseSetting(code='SECOND', name='Ахтубинск')])
-            products = db.query(Product).filter(Product.code.in_(self.codes[:9])).order_by(Product.code).all()
+            products = db.query(Product).filter(Product.code.in_(self.codes[:10])).order_by(Product.code).all()
             for product, (purchase, sale, balance) in zip(products, [
                 (100, 120, 5), (0.2, 0.23, 3), (100, 120, 0), (100, 130, 6),
-                (0, 130, 1), (None, 130, 1), (100, 130, None), (100, 130, 0.5), (100, 120, 3),
+                (0, 130, 1), (None, 130, 1), (100, 130, None), (100, 130, 0.5), (100, 120, 3), (100, 120, 2),
             ], strict=True):
                 if purchase is not None:
                     product.prices.append(Price(price_type='Закупочная', price_value=purchase))
@@ -262,7 +262,7 @@ class CatalogCodeBatchTests(unittest.TestCase):
             products[0].stocks.append(Stock(warehouse='AVIATORS', quantity=3))
             for product in products:
                 product.images.append(ProductImage(image_order=1, image_url='https://example.test/photo.png'))
-            products[0].stocks.append(Stock(warehouse='SECOND', quantity=1))
+            products[9].stocks.append(Stock(warehouse='SECOND', quantity=3))
             products[8].stocks.append(Stock(warehouse='SECOND', quantity=50))
             products[3].stocks.append(Stock(warehouse='SECOND', quantity=4))
             products[7].stocks.append(Stock(warehouse='SECOND', quantity=0.6))
@@ -280,14 +280,16 @@ class CatalogCodeBatchTests(unittest.TestCase):
             patch.object(routes, 'SessionLocal', side_effect=lambda: Session(self.engine)),
             patch.dict(routes.export_jobs, {}, clear=True),
         ):
-            first = (None, self.codes[0], 100, 120, 5, 1, 0.2)
+            first = (None, self.codes[0], 100, 120, 5, 0, 0.2)
             fourth = (None, self.codes[3], 100, 130, 6, 4, 0.3)
+            summed_rows = [first, (None, self.codes[7], 100, 130, 0.5, 0.6, 0.3),
+                           (None, self.codes[9], 100, 120, 2, 3, 0.2)]
             for body, comparison, warehouses, expected in (
                 ({'product_ids': [ids[0]]}, 'less', ['AVIATORS'], [first]),
                 ({'code': ' '.join(self.codes[:8])}, 'less', ['AVIATORS'], [first]),
                 ({'product_ids': ids}, 'more', ['AVIATORS'], [fourth]),
-                ({'product_ids': ids}, 'less', ['AVIATORS', 'SECOND', 'AVIATORS'], [first]),
-                ({'code': ' '.join(self.codes[:9])}, 'less', ['AVIATORS', 'SECOND'], [first]),
+                ({'product_ids': ids}, 'less', ['AVIATORS', 'SECOND', 'AVIATORS'], summed_rows),
+                ({'code': ' '.join(self.codes[:10])}, 'less', ['AVIATORS', 'SECOND'], summed_rows),
             ):
                 with self.subTest(body=body, comparison=comparison, warehouses=warehouses):
                     response = self.client.post('/api/exports/xlsx', params={

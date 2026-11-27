@@ -53,7 +53,7 @@ export function ExportColumnsDialog(props: Props) {
     ["adjustment", "Скидка / Наценка", "Колонка «Ваша цена»: выбранная цена с учётом процента. Плюс — наценка, минус — скидка."],
     ["markup", "Показывать товар с наценкой больше", "Наценка считается от закупочной цены к одному выбранному виду продажной цены."],
     ["markup_column", "Наценка", "Добавляет в файл процент наценки относительно закупочной цены."],
-    ["stock_filter", "Показывать только товар с остатком", "Остаток должен соответствовать условию на каждом выбранном складе."],
+    ["stock_filter", "Показывать только товар с остатком", "Условие применяется к сумме остатков по выбранным складам."],
     ["zip_categories", "По всем категориям (zip)", "Отдельный Excel для каждой подкатегории из текущей выборки, в одном ZIP-архиве."],
   ];
   const media: Column[] = [["photo", "Фото"], ["image_url", "Ссылка на фото"], ["site_url", "Ссылка на сайт"]];
@@ -116,7 +116,7 @@ export function ExportColumnsDialog(props: Props) {
                     <Checkbox checked={options.stock_warehouses.includes(code)} tabIndex={-1} disableRipple inputProps={{ "aria-hidden": true }} />{name}
                   </MenuItem>)}
                 </TextField>
-                <Typography variant="body2" color="text.secondary">«Меньше» включает порог. Остатки менее 1 шт. исключаются.</Typography>
+                <Typography variant="body2" color="text.secondary">«Меньше» включает порог. Товары с суммой остатков менее 1 шт. исключаются.</Typography>
               </Stack>}
               {key === "promotion" && props.options.promotion && <RadioGroup aria-label="Вид товара для формы акции" value={props.options.promotion_type} onChange={(_, value) => props.onOptionsChange({ ...props.options, promotion_type: value })} sx={{ ml: 5.25 }}>
                 {["Акция месяца", "Надо продать"].map((name) => <FormControlLabel key={name} value={name} control={<Radio disabled={exporting} />} label={name} />)}
