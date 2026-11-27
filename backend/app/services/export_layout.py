@@ -163,15 +163,18 @@ def restrict_export_product_ids(db, filtered_ids, columns, options):
         query = query.filter(purchase > 0, func.round(cast(difference, Numeric), 8) > 0)
 
     if warehouses:
+        warehouses = tuple(dict.fromkeys(warehouses))
         balance = func.sum(Stock.quantity)
         limit = options["stock_limit"]
         matching_warehouses = (
             select(Stock.warehouse)
             .where(Stock.product_id == Product.id, Stock.warehouse.in_(warehouses))
+            .correlate(Product)
             .group_by(Stock.warehouse)
             .having(balance >= 1, balance <= limit if options["stock_comparison"] == "less" else balance > limit)
         )
-        query = query.filter(matching_warehouses.exists())
+        matching_count = select(func.count()).select_from(matching_warehouses.subquery()).scalar_subquery()
+        query = query.filter(matching_count == len(warehouses))
     return query.subquery()
 
 

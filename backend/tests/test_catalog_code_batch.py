@@ -237,11 +237,11 @@ class CatalogCodeBatchTests(unittest.TestCase):
         from app.api import routes
 
         with Session(self.engine) as db:
-            db.add(WarehouseSetting(code='AVIATORS', name='Авиаторов'))
-            products = db.query(Product).filter(Product.code.in_(self.codes[:8])).order_by(Product.code).all()
+            db.add_all([WarehouseSetting(code='AVIATORS', name='Авиаторов'), WarehouseSetting(code='SECOND', name='Ахтубинск')])
+            products = db.query(Product).filter(Product.code.in_(self.codes[:9])).order_by(Product.code).all()
             for product, (purchase, sale, balance) in zip(products, [
                 (100, 120, 5), (0.2, 0.23, 3), (100, 120, 0), (100, 130, 6),
-                (0, 130, 1), (None, 130, 1), (100, 130, None), (100, 130, 0.5),
+                (0, 130, 1), (None, 130, 1), (100, 130, None), (100, 130, 0.5), (100, 120, 3),
             ], strict=True):
                 if purchase is not None:
                     product.prices.append(Price(price_type='Закупочная', price_value=purchase))
@@ -262,13 +262,15 @@ class CatalogCodeBatchTests(unittest.TestCase):
             products[0].stocks.append(Stock(warehouse='AVIATORS', quantity=3))
             for product in products:
                 product.images.append(ProductImage(image_order=1, image_url='https://example.test/photo.png'))
+            products[0].stocks.append(Stock(warehouse='SECOND', quantity=1))
+            products[8].stocks.append(Stock(warehouse='SECOND', quantity=50))
             products[3].stocks.append(Stock(warehouse='SECOND', quantity=4))
             products[7].stocks.append(Stock(warehouse='SECOND', quantity=0.6))
             ids = [product.id for product in products]
             db.commit()
 
         base_params = {
-            'inStockOnly': 'false', 'column': ['photo', 'code', 'purchase_price', 'price:ЦенаОптовая', 'stock:AVIATORS'],
+            'inStockOnly': 'false', 'column': ['photo', 'code', 'purchase_price', 'price:ЦенаОптовая', 'stock:AVIATORS', 'stock:SECOND'],
             'markup_percent': '15', 'markup_column': 'true', 'stock_warehouse': 'AVIATORS', 'stock_limit': '5',
         }
         thumbnail = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
@@ -278,13 +280,14 @@ class CatalogCodeBatchTests(unittest.TestCase):
             patch.object(routes, 'SessionLocal', side_effect=lambda: Session(self.engine)),
             patch.dict(routes.export_jobs, {}, clear=True),
         ):
-            first = (None, self.codes[0], 100, 120, 5, 0.2)
-            fourth = (None, self.codes[3], 100, 130, 6, 0.3)
+            first = (None, self.codes[0], 100, 120, 5, 1, 0.2)
+            fourth = (None, self.codes[3], 100, 130, 6, 4, 0.3)
             for body, comparison, warehouses, expected in (
-                ({'product_ids': ids}, 'less', ['AVIATORS'], [first]),
+                ({'product_ids': [ids[0]]}, 'less', ['AVIATORS'], [first]),
                 ({'code': ' '.join(self.codes[:8])}, 'less', ['AVIATORS'], [first]),
                 ({'product_ids': ids}, 'more', ['AVIATORS'], [fourth]),
-                ({'product_ids': ids}, 'less', ['AVIATORS', 'SECOND'], [first, fourth]),
+                ({'product_ids': ids}, 'less', ['AVIATORS', 'SECOND', 'AVIATORS'], [first]),
+                ({'code': ' '.join(self.codes[:9])}, 'less', ['AVIATORS', 'SECOND'], [first]),
             ):
                 with self.subTest(body=body, comparison=comparison, warehouses=warehouses):
                     response = self.client.post('/api/exports/xlsx', params={
@@ -300,10 +303,10 @@ class CatalogCodeBatchTests(unittest.TestCase):
                         workbook = load_workbook(file)
                         try:
                             self.assertEqual(list(workbook.active.values), [
-                                ('Фото', 'Код', 'Закупочная цена', 'ЦенаОптовая', 'Авиаторов', 'Наценка'), *expected,
+                                ('Фото', 'Код', 'Закупочная цена', 'ЦенаОптовая', 'Авиаторов', 'Ахтубинск', 'Наценка'), *expected,
                             ])
                             self.assertEqual(len(workbook.active._images), len(expected))
-                            self.assertEqual(workbook.active['F2'].number_format, '0.00%')
+                            self.assertEqual(workbook.active['G2'].number_format, '0.00%')
                             self.assertEqual(workbook.active._images[0].anchor.pic.nvPicPr.cNvPr.descr, 'Фото товара')
                         finally:
                             workbook.close()
