@@ -237,9 +237,10 @@ class AnalogSelectionTests(unittest.TestCase):
         def count_queries(*_args):
             statements.append(1)
 
+        source_id = self.source.id  # Resolve expired fixture before measuring service SQL.
         event.listen(self.engine, "before_cursor_execute", count_queries)
         try:
-            result = find_product_analogs(self.db, self.source.id)
+            result = find_product_analogs(self.db, source_id)
         finally:
             event.remove(self.engine, "before_cursor_execute", count_queries)
 

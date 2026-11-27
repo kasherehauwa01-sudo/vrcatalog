@@ -364,7 +364,8 @@ class XMLCatalogImporter:
                 continue
             # Отсутствие характеристики в конкретной XML-записи не означает снятие
             # «Акции месяца»: сохраняем последнее подтверждённое значение.
-            if field == "product_type" and value is None:
+            # Не заданное количество также не заменяет NOT NULL остаток на None.
+            if field in {"product_type", "quantity"} and value is None:
                 continue
             if getattr(existing, field) != value:
                 setattr(existing, field, value)

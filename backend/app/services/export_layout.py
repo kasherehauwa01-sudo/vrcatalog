@@ -138,3 +138,15 @@ def adjusted_price(value, percent):
     if value is None:
         return None
     return float((Decimal(str(value)) * (1 + Decimal(str(percent)) / 100)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+
+def export_prices(prices):
+    """Accept historical normalized price labels; explicit XML names win ties."""
+    from app.importer.xml_importer import PRICE_NAMES
+    result = {price.price_type: price.price_value for price in prices}
+    for xml_name, label in PRICE_NAMES.items():
+        if xml_name in result:
+            result[label] = result[xml_name]
+        elif label in result:
+            result[xml_name] = result[label]
+    return result

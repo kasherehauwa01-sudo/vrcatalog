@@ -46,6 +46,10 @@ class InternalProductApiTests(unittest.TestCase):
         cls.engine.dispose()
 
     def setUp(self):
+        from app.core.admin_auth import _operations
+        limiter = patch.dict(_operations, {}, clear=True)
+        limiter.start()
+        self.addCleanup(limiter.stop)
         with Session(self.engine) as db:
             db.query(ServiceLog).delete()
             db.query(Price).delete()

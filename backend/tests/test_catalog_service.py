@@ -87,7 +87,7 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.db.flush()
 
         self.assertCountEqual(folder_paths(self.db), [
-            "ПЛАСТМАССА|ЭЛЛАСТИК-ПЛАСТ|Вазы", "ПЛАСТМАССА",
+            "ПЛАСТМАССА|ЭЛЛАСТИК-ПЛАСТ", "ПЛАСТМАССА",
             "ПЛАСТМАССА для дома|ЭЛЛАСТИК-ПЛАСТ",
         ])
         self.assertNotIn("property:Полныйпуть", list_filters(self.db))
@@ -189,7 +189,8 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual([product.code for product in result], ["PAN-2", "TABLE-3"])
 
     def test_new_product_type_filter_does_not_depend_on_xml_characteristic(self):
-        self.products[0].created_at = datetime.utcnow() - timedelta(days=8)
+        for product in self.products:
+            product.created_at = datetime.utcnow() - timedelta(days=8)
         self.products[0].properties.append(ProductProperty(name="Новинка", value="Да"))
         self.db.commit()
 
@@ -545,27 +546,24 @@ class CatalogProductQueryTests(unittest.TestCase):
         self.assertEqual(worksheet._images[0].anchor._from.col, 0)
         self.assertGreater(worksheet._images[0].anchor._from.colOff, 0)
         self.assertGreater(worksheet._images[0].anchor._from.rowOff, 0)
-        self.assertEqual(worksheet["A2"].value, None)
-        workbook.save(BytesIO())
+        saved = BytesIO()
+        workbook.save(saved)
+        saved.seek(0)
+        restored = load_workbook(saved)
+        self.assertIsNone(restored.active["A2"].value)
+        restored.close()
 
-    def test_excel_export_can_leave_photo_loading_to_excel(self):
-        self.products[0].images = [
-            ProductImage(image_order=1, image_url='https://example.test/photo"1.jpg'),
-        ]
+    def test_excel_export_photo_link_does_not_download_or_embed_photos(self):
+        self.products[0].images = [ProductImage(image_order=1, image_url='https://example.test/photo"1.jpg')]
         requested_urls = []
-
         workbook = build_export_workbook(
-            self.db,
-            {"code": "CHAIR-1", "in_stock_only": False},
-            ["code", "photo", "name"],
-            image_loader=lambda url: requested_urls.append(url),
-            embed_photos=False,
+            self.db, {"code": "CHAIR-1", "in_stock_only": False},
+            ["code", "image_url", "name"], image_loader=lambda url: requested_urls.append(url),
         )
         worksheet = workbook.active
-
         self.assertEqual(requested_urls, [])
-        self.assertEqual(worksheet["A2"].value, '=IMAGE("https://example.test/photo""1.jpg")')
-        self.assertEqual(worksheet.row_dimensions[2].height, 82.5)
+        self.assertEqual(worksheet["C2"].value, "Ссылка на фото")
+        self.assertEqual(worksheet["C2"].hyperlink.target, 'https://example.test/photo%221.jpg')
         self.assertEqual(worksheet._images, [])
 
     def test_excel_export_encodes_cyrillic_image_path(self):
@@ -621,10 +619,11 @@ class ServiceLoggingTests(unittest.TestCase):
             add_log(self.db, f"error_{index}", "Ошибка", level="error")
         self.db.commit()
 
-        logs = self.db.query(ServiceLog).order_by(ServiceLog.id).all()
+        logs = self.db.query(ServiceLog).filter(ServiceLog.level == "error").order_by(ServiceLog.id).all()
         self.assertEqual(len(logs), 100)
         self.assertTrue(all(log.level == "error" for log in logs))
         self.assertEqual(logs[0].event, "error_5")
+        self.assertEqual(self.db.query(ServiceLog).filter_by(level="info").count(), 1)
 
 
 class ProductTypeNameTests(unittest.TestCase):

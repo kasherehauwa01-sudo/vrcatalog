@@ -49,7 +49,7 @@ from app.schemas.catalog import AnalogSelectionSettingIn, AnalogSelectionSetting
 from app.services.analogs import available_characteristics, find_product_analogs, get_analog_settings, primary_properties
 from app.services.catalog import catalog_product_query, decorate, folder_paths, integration_batch_product_info, integration_brands, integration_catalog_tree, integration_filter_definitions, integration_filter_options, integration_product_category_map, integration_product_search, list_filters, meta, product_query, paginated_products, product_type_name
 from app.services.logging import add_log
-from app.services.export_layout import FORM_HEADERS, PRICE_PAIRS, archive_name, export_plan, form_columns, form_price, promotion_product_ids, adjusted_price
+from app.services.export_layout import FORM_HEADERS, PRICE_PAIRS, archive_name, export_plan, form_columns, form_price, promotion_product_ids, adjusted_price, export_prices
 from app.services.export_links import MAX_SHEET_HYPERLINKS, primary_image_links, product_site_link
 from app.services.export_image_cache import maintain_export_image_cache_safely
 from app.services.xml_auto_import import get_auto_import_state, get_xml_server_setting, start_manual_import, test_connection
@@ -1746,7 +1746,7 @@ def write_export_workbook_streaming(
                         normalized_key = normalize_export_property_key(key)
                         if normalized_key and value:
                             properties.setdefault(normalized_key, value)
-                prices = {item.price_type: item.price_value for item in product.prices} if needs_prices else {}
+                prices = export_prices(product.prices) if needs_prices else {}
                 stocks = {item.warehouse: item.quantity for item in product.stocks} if needs_stocks else {}
                 values = {
                     "code": product.code, "article": product.article or "", "photo": "",
@@ -1922,7 +1922,7 @@ def build_export_workbook(
                     normalized_key = normalize_export_property_key(key)
                     if normalized_key and value:
                         properties.setdefault(normalized_key, value)
-            prices = {item.price_type: item.price_value for item in product.prices} if needs_prices else {}
+            prices = export_prices(product.prices) if needs_prices else {}
             stocks = {item.warehouse: item.quantity for item in product.stocks} if needs_stocks else {}
             main_values = {
                 "code": product.code,
