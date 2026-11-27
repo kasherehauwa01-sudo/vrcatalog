@@ -23,7 +23,7 @@ PURCHASE_PRICE_TYPE = "ЦенаЗакупочная"
 EXPORT_PRICE_ALIASES = {**PRICE_NAMES, PURCHASE_PRICE_TYPE: "Закупочная"}
 
 FORM_HEADERS = {'adjusted_price': 'Ваша цена', 'promo_price': 'Акция! Новая цена', 'old_price': 'Старая цена',
-                'order_quantity': 'Заказ', 'order_total': 'Сумма заказа'}
+                'order_quantity': 'Заказ', 'order_total': 'Сумма заказа', 'markup_value': 'Наценка'}
 
 
 def form_price(columns, options):
@@ -31,7 +31,7 @@ def form_price(columns, options):
         raise ValueError('Выберите вид товара: Акция месяца или Надо продать')
     if options.get('adjustment') and (options.get('adjustment_percent') is None or not math.isfinite(options['adjustment_percent'])):
         raise ValueError('Введите процент скидки / наценки')
-    if not (options.get('promotion') or options.get('order_form') or options.get('adjustment') or options.get('markup_percent') is not None):
+    if not (options.get('promotion') or options.get('order_form') or options.get('adjustment') or options.get('markup_column') or options.get('markup_percent') is not None):
         return None
     prices = [column[6:] for column in columns if column.startswith('price:')]
     if len(prices) != 1 or prices[0] not in PRICE_PAIRS:
@@ -46,6 +46,8 @@ def form_columns(columns, options):
         result.extend(['promo_price', 'old_price'])
     if options.get('adjustment'):
         result.append('adjusted_price')
+    if options.get('markup_column'):
+        result.append('markup_value')
     if options.get('order_form'):
         result.extend(['order_quantity', 'order_total'])
     return result
@@ -140,8 +142,8 @@ def promotion_product_ids(db, filtered_ids, promotion_type):
 
 def restrict_export_product_ids(db, filtered_ids, columns, options):
     markup_percent = options.get("markup_percent")
-    warehouse = options.get("stock_warehouse")
-    if markup_percent is None and warehouse is None:
+    warehouses = options.get("stock_warehouse")
+    if markup_percent is None and not warehouses:
         return filtered_ids
 
     query = db.query(Product.id.label("product_id")).join(filtered_ids, filtered_ids.c.product_id == Product.id)
@@ -160,13 +162,23 @@ def restrict_export_product_ids(db, filtered_ids, columns, options):
         difference = (sale - purchase) * 100 - purchase * markup_percent
         query = query.filter(purchase > 0, func.round(cast(difference, Numeric), 8) > 0)
 
-    if warehouse is not None:
-        balance = (select(func.sum(Stock.quantity))
-                   .where(Stock.product_id == Product.id, Stock.warehouse == warehouse)
-                   .scalar_subquery())
+    if warehouses:
+        balance = func.sum(Stock.quantity)
         limit = options["stock_limit"]
-        query = query.filter(balance >= 1, balance <= limit if options["stock_comparison"] == "less" else balance > limit)
+        matching_warehouses = (
+            select(Stock.warehouse)
+            .where(Stock.product_id == Product.id, Stock.warehouse.in_(warehouses))
+            .group_by(Stock.warehouse)
+            .having(balance >= 1, balance <= limit if options["stock_comparison"] == "less" else balance > limit)
+        )
+        query = query.filter(matching_warehouses.exists())
     return query.subquery()
+
+
+def markup_ratio(purchase, sale):
+    if purchase is None or sale is None or purchase <= 0 or not (math.isfinite(purchase) and math.isfinite(sale)):
+        return None
+    return float((Decimal(str(sale)) - Decimal(str(purchase))) / Decimal(str(purchase)))
 
 
 def adjusted_price(value, percent):

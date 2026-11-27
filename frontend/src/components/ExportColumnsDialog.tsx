@@ -1,4 +1,4 @@
-import { Alert, Radio, RadioGroup, TextField, Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, IconButton, LinearProgress, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
+import { Alert, Radio, RadioGroup, TextField, Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, IconButton, LinearProgress, MenuItem, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 
 type Column = readonly [string, string];
@@ -6,12 +6,12 @@ export type ExportOptions = {
   promotion_type: string; adjustment: boolean; adjustment_percent: string;
   group_categories: boolean; group_folders: boolean; promotion: boolean;
   order_form: boolean; zip_categories: boolean;
-  markup: boolean; markup_percent: string;
-  stock_filter: boolean; stock_warehouse: string; stock_comparison: "more" | "less"; stock_limit: string;
+  markup: boolean; markup_percent: string; markup_column: boolean;
+  stock_filter: boolean; stock_warehouses: string[]; stock_comparison: "more" | "less"; stock_limit: string;
 };
 export const defaultExportOptions: ExportOptions = {
-  promotion_type: "", adjustment: false, adjustment_percent: "", markup: false, markup_percent: "",
-  stock_filter: false, stock_warehouse: "", stock_comparison: "less", stock_limit: "",
+  promotion_type: "", adjustment: false, adjustment_percent: "", markup: false, markup_percent: "", markup_column: false,
+  stock_filter: false, stock_warehouses: [], stock_comparison: "less", stock_limit: "",
   group_categories: false, group_folders: false, promotion: false, order_form: false, zip_categories: false,
 };
 type Props = {
@@ -27,18 +27,18 @@ export function ExportColumnsDialog(props: Props) {
   const { columns, exporting, options } = props;
   const validMarkup = !options.markup || (options.markup_percent.trim() !== "" && Number.isFinite(Number(options.markup_percent.replace(",", "."))));
   const validStock = !options.stock_filter || (
-    props.warehouses.some(({ code }) => code === options.stock_warehouse)
+    options.stock_warehouses.length > 0 && options.stock_warehouses.every((code) => props.warehouses.some((warehouse) => warehouse.code === code))
     && /^\d+$/.test(options.stock_limit.trim()) && Number(options.stock_limit) <= 2147483647
   );
-  const singlePrice = options.promotion || options.order_form || options.adjustment || options.markup;
-  const columnCount = columns.length + (props.options.promotion ? 2 - columns.filter((key) => key.startsWith("price:")).length : 0) + (props.options.order_form ? 2 : 0) + (props.options.adjustment ? 1 : 0);
+  const singlePrice = options.promotion || options.order_form || options.adjustment || options.markup || options.markup_column;
+  const columnCount = columns.length + (props.options.promotion ? 2 - columns.filter((key) => key.startsWith("price:")).length : 0) + (props.options.order_form ? 2 : 0) + (props.options.adjustment ? 1 : 0) + (options.markup_column ? 1 : 0);
   const validPrice = columns.filter((key) => key.startsWith("price:")).length === 1;
   const validPercent = props.options.adjustment_percent.trim() !== "" && Number.isFinite(Number(props.options.adjustment_percent.replace(",", ".")));
   const missingType = props.options.promotion && !props.options.promotion_type;
-  type ToggleKey = "group_categories" | "group_folders" | "promotion" | "order_form" | "zip_categories" | "adjustment" | "markup";
+  type ToggleKey = "group_categories" | "group_folders" | "promotion" | "order_form" | "zip_categories" | "adjustment" | "markup" | "markup_column" | "stock_filter";
   const setOption = (key: ToggleKey, checked: boolean) => {
     props.onOptionsChange({ ...props.options, [key]: checked, ...(key === "promotion" && checked ? { promotion_type: "" } : {}) });
-    if (checked && (key === "promotion" || key === "order_form" || key === "adjustment" || key === "markup")) {
+    if (checked && (key === "promotion" || key === "order_form" || key === "adjustment" || key === "markup" || key === "markup_column")) {
       // Each form activation requires an explicit price choice.
       const next = columns.filter((item) => !item.startsWith("price:"));
       if (key === "order_form" && !next.includes("site_url")) next.push("site_url");
@@ -52,6 +52,8 @@ export function ExportColumnsDialog(props: Props) {
     ["order_form", "Форма для заказа", "В конце — поле «Заказ» и формула суммы. С акцией используется новая цена. Только один вид цены."],
     ["adjustment", "Скидка / Наценка", "Колонка «Ваша цена»: выбранная цена с учётом процента. Плюс — наценка, минус — скидка."],
     ["markup", "Показывать товар с наценкой больше", "Наценка считается от закупочной цены к одному выбранному виду продажной цены."],
+    ["markup_column", "Наценка", "Добавляет в файл процент наценки относительно закупочной цены."],
+    ["stock_filter", "Показывать только товар с остатком", "Остаток должен соответствовать условию хотя бы на одном выбранном складе."],
     ["zip_categories", "По всем категориям (zip)", "Отдельный Excel для каждой подкатегории из текущей выборки, в одном ZIP-архиве."],
   ];
   const media: Column[] = [["photo", "Фото"], ["image_url", "Ссылка на фото"], ["site_url", "Ссылка на сайт"]];
@@ -91,6 +93,31 @@ export function ExportColumnsDialog(props: Props) {
               <FormControlLabel sx={{ m: 0, minHeight: 44 }} label={label} control={<Checkbox disabled={exporting} checked={props.options[key]} onChange={(_, checked) => setOption(key, checked)} />} />
               {key === "adjustment" && <TextField label="Процент скидки / наценки" size="small" placeholder="Например, -10 или 15" value={props.options.adjustment_percent} disabled={exporting || !props.options.adjustment} onChange={(event) => props.onOptionsChange({ ...props.options, adjustment_percent: event.target.value })} inputProps={{ inputMode: "decimal" }} error={props.options.adjustment && !validPercent} sx={{ my: 1, ml: 5.25, maxWidth: "80%" }} />}
               {key === "markup" && options.markup && <TextField label="Порог наценки, %" size="small" value={options.markup_percent} disabled={exporting} onChange={(event) => props.onOptionsChange({ ...options, markup_percent: event.target.value })} inputProps={{ inputMode: "decimal" }} error={!validMarkup} sx={{ my: 1, ml: 5.25, maxWidth: "80%" }} />}
+              {key === "stock_filter" && options.stock_filter && <Stack spacing={1} sx={{ my: 1, ml: 5.25 }}>
+                <Stack direction={{ xs: "column", sm: "row" }} gap={1}>
+                  <ToggleButtonGroup exclusive size="small" aria-label="Сравнение остатка" value={options.stock_comparison} disabled={exporting} onChange={(_, value: ExportOptions["stock_comparison"] | null) => {
+                    if (value) props.onOptionsChange({ ...options, stock_comparison: value });
+                  }}>
+                    <ToggleButton value="more">Больше</ToggleButton>
+                    <ToggleButton value="less">Меньше</ToggleButton>
+                  </ToggleButtonGroup>
+                  <TextField label="Остаток, шт." size="small" value={options.stock_limit} disabled={exporting} inputProps={{ inputMode: "numeric" }} onChange={(event) => props.onOptionsChange({ ...options, stock_limit: event.target.value })} />
+                </Stack>
+                <TextField id="export-stock-warehouses" select label="Склады для отбора" size="small" value={options.stock_warehouses} disabled={exporting || !props.warehouses.length}
+                  onChange={(event) => {
+                    const selected: string | string[] = event.target.value;
+                    props.onOptionsChange({ ...options, stock_warehouses: typeof selected === "string" ? [selected] : selected });
+                  }}
+                  SelectProps={{
+                    multiple: true,
+                    renderValue: (value) => props.warehouses.filter(({ code }) => (value as string[]).includes(code)).map(({ name }) => name).join(", "),
+                  }}>
+                  {props.warehouses.map(({ code, name }) => <MenuItem key={code} value={code}>
+                    <Checkbox checked={options.stock_warehouses.includes(code)} tabIndex={-1} disableRipple inputProps={{ "aria-hidden": true }} />{name}
+                  </MenuItem>)}
+                </TextField>
+                <Typography variant="body2" color="text.secondary">«Меньше» включает порог. Остатки менее 1 шт. исключаются.</Typography>
+              </Stack>}
               {key === "promotion" && props.options.promotion && <RadioGroup aria-label="Вид товара для формы акции" value={props.options.promotion_type} onChange={(_, value) => props.onOptionsChange({ ...props.options, promotion_type: value })} sx={{ ml: 5.25 }}>
                 {["Акция месяца", "Надо продать"].map((name) => <FormControlLabel key={name} value={name} control={<Radio disabled={exporting} />} label={name} />)}
               </RadioGroup>}
@@ -108,30 +135,9 @@ export function ExportColumnsDialog(props: Props) {
                 {!(singlePrice && title === "Цены") && <FormControlLabel sx={{ mr: 0, flexShrink: 0 }} label={`${selected}/${items.length}`} control={<Checkbox disabled={exporting || !items.length} checked={!!items.length && selected === items.length} indeterminate={selected > 0 && selected < items.length} inputProps={{ "aria-label": `Выбрать всю группу: ${title}` }} onChange={() => props.onChange(selected === items.length ? columns.filter((key) => !items.some(([item]) => item === key)) : [...new Set([...columns, ...items.map(([key]) => key)])])} />} />}
               </Stack>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>{description}</Typography>
-              {title === "Остатки на складах" && <Stack spacing={1} sx={{ mb: 1 }}>
-                <FormControlLabel label="Показывать только товар с остатком" control={<Checkbox checked={options.stock_filter} disabled={exporting} onChange={(_, checked) => props.onOptionsChange({ ...options, stock_filter: checked })} />} />
-                {options.stock_filter && <>
-                  <Stack direction={{ xs: "column", sm: "row" }} gap={1}>
-                    <ToggleButtonGroup exclusive size="small" aria-label="Сравнение остатка" value={options.stock_comparison} disabled={exporting} onChange={(_, value: ExportOptions["stock_comparison"] | null) => {
-                      if (value) props.onOptionsChange({ ...options, stock_comparison: value });
-                    }}>
-                      <ToggleButton value="more">Больше</ToggleButton>
-                      <ToggleButton value="less">Меньше</ToggleButton>
-                    </ToggleButtonGroup>
-                    <TextField label="Остаток, шт." size="small" value={options.stock_limit} disabled={exporting} inputProps={{ inputMode: "numeric" }} onChange={(event) => props.onOptionsChange({ ...options, stock_limit: event.target.value })} />
-                  </Stack>
-                  <Typography variant="body2" color="text.secondary">Выберите один склад для отбора. «Меньше» включает порог. Минимальный остаток для отбора — 1 шт.</Typography>
-                </>}
-              </Stack>}
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: title === "Фото и ссылки" ? "1fr" : "1fr 1fr" }, columnGap: 2 }}>
-                {items.map(([key, label]) => <Stack key={key} direction="row" alignItems="center" justifyContent="space-between">
-                  <FormControlLabel sx={{ minHeight: 44, mx: 0, overflowWrap: "anywhere" }} control={<Checkbox disabled={exporting} checked={columns.includes(key)} onChange={() => toggle(key)} />} label={label} />
-                  {title === "Остатки на складах" && options.stock_filter && <Radio
-                    name="export-stock-warehouse" checked={options.stock_warehouse === key.slice(6)} disabled={exporting}
-                    inputProps={{ "aria-label": `Фильтр по складу: ${label}` }}
-                    onChange={() => props.onOptionsChange({ ...options, stock_warehouse: key.slice(6) })}
-                  />}
-                </Stack>)}
+                {items.map(([key, label]) => <FormControlLabel key={key} sx={{ minHeight: 44, mx: 0, overflowWrap: "anywhere" }}
+                  control={<Checkbox disabled={exporting} checked={columns.includes(key)} onChange={() => toggle(key)} />} label={label} />)}
               </Box>
               {!items.length && <Typography color="text.secondary">Нет доступных значений</Typography>}
               {title === "Фото и ссылки" && columns.includes("photo") && <Typography variant="body2" sx={{ mt: 1 }} color="text.secondary">Миниатюры увеличивают размер файла и время формирования. Для лёгкого файла достаточно ссылки на фото.</Typography>}
@@ -146,7 +152,7 @@ export function ExportColumnsDialog(props: Props) {
         {props.options.adjustment && !validPercent && <Alert severity="warning">Введите процент скидки / наценки.</Alert>}
         {singlePrice && !validPrice && <Alert severity="warning" sx={{ flexShrink: 0 }}>Выберите один тип продажной цены в блоке «Цены», чтобы скачать файл.</Alert>}
         {!validMarkup && <Alert severity="warning">Введите порог наценки в процентах.</Alert>}
-        {!validStock && <Alert severity="warning">Выберите склад и укажите целое количество для отбора по остатку.</Alert>}
+        {!validStock && <Alert severity="warning">Выберите хотя бы один склад и укажите целое количество для отбора по остатку.</Alert>}
         <Typography role="status" sx={{ mr: { sm: "auto" } }}>Выбрано колонок: <strong>{columnCount}</strong>{!columns.length && ". Выберите хотя бы одну"}</Typography>
         <Stack direction="row" spacing={1}>
           <Button fullWidth variant="outlined" disabled={exporting} onClick={props.onClose}>Отмена</Button>

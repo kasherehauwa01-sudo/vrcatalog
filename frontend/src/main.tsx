@@ -724,12 +724,12 @@ function App() {
   };
   const downloadExcel = async () => {
     const exportParams = new URLSearchParams(params);
-    ["column", "page", "pageSize", "sort", "order", "markup_percent", "stock_warehouse", "stock_comparison", "stock_limit"].forEach((key) => exportParams.delete(key));
+    ["column", "page", "pageSize", "sort", "order", "markup_percent", "markup_column", "stock_warehouse", "stock_comparison", "stock_limit"].forEach((key) => exportParams.delete(key));
     exportColumns.forEach((column) => exportParams.append("column", column));
-    const { markup, markup_percent, stock_filter, stock_warehouse, stock_comparison, stock_limit, ...layout } = exportOptions;
+    const { markup, markup_percent, stock_filter, stock_warehouses, stock_comparison, stock_limit, ...layout } = exportOptions;
     if (markup) exportParams.set("markup_percent", markup_percent.trim().replace(",", "."));
     if (stock_filter) {
-      exportParams.set("stock_warehouse", stock_warehouse);
+      stock_warehouses.forEach((warehouse) => exportParams.append("stock_warehouse", warehouse));
       exportParams.set("stock_comparison", stock_comparison);
       exportParams.set("stock_limit", stock_limit.trim());
     }

@@ -221,6 +221,21 @@ class ExcelLayoutTests(unittest.TestCase):
         self.assertEqual([row[0].value for row in book.active], ['Код', 'МЕТАЛЛ', 'ПОСУДА для ПРИГОТОВЛЕНИЯ', 'ТАЛЛЕР', product.code])
         book.close()
 
+    def test_markup_column_does_not_filter_rows_and_leaves_missing_cost_blank(self):
+        products = self.db.query(Product).order_by(Product.id).all()
+        products[0].prices.append(Price(price_type='Закупочная', price_value=80))
+        products[1].prices.append(Price(price_type='ЦенаЗакупочная', price_value=0))
+        self.db.commit()
+        book = load_workbook(self.output({'markup_column': True}, ['code', 'price:ЦенаОптовая']))
+        try:
+            self.assertEqual(list(book.active.values), [
+                ('Код', 'ЦенаОптовая', 'Наценка'),
+                ('000', 100, 0.25), ('001', 100, None), ('002', 100, None), ('003', 100, None),
+            ])
+            self.assertEqual(book.active['C2'].number_format, '0.00%')
+        finally:
+            book.close()
+
     def test_adjustment_for_all_prices_and_promotion_rounds_to_cents(self):
         for price in PRICE_PAIRS:
             for percent in (-15, 0, 12.5):

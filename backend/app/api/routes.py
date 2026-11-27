@@ -52,7 +52,7 @@ from app.services.logging import add_log
 from app.services.export_layout import (
     FORM_HEADERS, PRICE_PAIRS, PURCHASE_PRICE_TYPE, adjusted_price, archive_name,
     export_plan, export_prices, export_stocks, form_columns, form_price,
-    promotion_product_ids, restrict_export_product_ids,
+    markup_ratio, promotion_product_ids, restrict_export_product_ids,
 )
 from app.services.export_links import MAX_SHEET_HYPERLINKS, primary_image_links, product_site_link
 from app.services.export_image_cache import maintain_export_image_cache_safely
@@ -1268,7 +1268,8 @@ def start_xlsx_export(
     order_form: bool = False,
     zip_categories: bool = False,
     markup_percent: Annotated[float | None, Query(allow_inf_nan=False)] = None,
-    stock_warehouse: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+    markup_column: bool = False,
+    stock_warehouse: Annotated[list[Annotated[str, Query(min_length=1, max_length=255)]] | None, Query(max_length=100)] = None,
     stock_comparison: Literal["more", "less"] | None = None,
     stock_limit: Annotated[int | None, Query(ge=0, le=2147483647)] = None,
     body: Annotated[CatalogCodeBatch | CatalogExportSelection | None, Body()] = None,
@@ -1306,7 +1307,7 @@ def start_xlsx_export(
     options = dict(group_categories=group_categories, group_folders=group_folders,
                    promotion=promotion, promotion_type=promotion_type, adjustment=adjustment,
                    adjustment_percent=adjustment_percent, order_form=order_form, zip_categories=zip_categories,
-                   markup_percent=markup_percent, stock_warehouse=stock_warehouse,
+                   markup_percent=markup_percent, markup_column=markup_column, stock_warehouse=stock_warehouse,
                    stock_comparison=stock_comparison, stock_limit=stock_limit)
     try:
         form_price(columns or LEGACY_EXPORT_COLUMNS, options)
@@ -1656,6 +1657,8 @@ def write_export_workbook_streaming(
     center_alt_format = workbook.add_format({"border": border, "align": "center", "valign": "vcenter", "text_wrap": True, "bg_color": "#F7F7F7"})
     price_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0.00"})
     price_alt_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0.00", "bg_color": "#F7F7F7"})
+    markup_format = workbook.add_format({"num_format": "0.00%", "border": 1, "valign": "vcenter", "align": "right"})
+    markup_alt_format = workbook.add_format({"num_format": "0.00%", "border": 1, "valign": "vcenter", "align": "right", "bg_color": "#F7F7F7"})
     number_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0"})
     number_alt_format = workbook.add_format({"border": border, "align": "right", "valign": "vcenter", "num_format": "# ##0", "bg_color": "#F7F7F7"})
     category_format = workbook.add_format({"bold": True, "bg_color": "#C5F0EF", "border": 1})
@@ -1786,6 +1789,8 @@ def write_export_workbook_streaming(
                     values["price:" + selected_price] = prices.get(selected_price)
                     values.update(promo_price=prices.get(selected_price), old_price=prices.get(PRICE_PAIRS[selected_price]),
                                   order_quantity=None, order_total=None)
+                if options.get("markup_column"):
+                    values["markup_value"] = markup_ratio(prices.get(PURCHASE_PRICE_TYPE), prices.get(selected_price))
                 if options.get("adjustment"):
                     values["adjusted_price"] = adjusted_price(prices.get(selected_price), options["adjustment_percent"])
                 for column_index, column in enumerate(selected_columns):
@@ -1793,6 +1798,8 @@ def write_export_workbook_streaming(
                     alternate = row_index % 2 == 0
                     if column.startswith("price:") or column == "purchase_price":
                         cell_format = price_alt_format if alternate else price_format
+                    elif column == "markup_value":
+                        cell_format = markup_alt_format if alternate else markup_format
                     elif column == "quantity" or column.startswith("stock:"):
                         cell_format = number_alt_format if alternate else number_format
                     elif column in {"photo", "code", "article"}:

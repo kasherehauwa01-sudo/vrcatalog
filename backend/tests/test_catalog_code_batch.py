@@ -262,12 +262,14 @@ class CatalogCodeBatchTests(unittest.TestCase):
             products[0].stocks.append(Stock(warehouse='AVIATORS', quantity=3))
             for product in products:
                 product.images.append(ProductImage(image_order=1, image_url='https://example.test/photo.png'))
+            products[3].stocks.append(Stock(warehouse='SECOND', quantity=4))
+            products[7].stocks.append(Stock(warehouse='SECOND', quantity=0.6))
             ids = [product.id for product in products]
             db.commit()
 
         base_params = {
             'inStockOnly': 'false', 'column': ['photo', 'code', 'purchase_price', 'price:ЦенаОптовая', 'stock:AVIATORS'],
-            'markup_percent': '15', 'stock_warehouse': 'AVIATORS', 'stock_limit': '5',
+            'markup_percent': '15', 'markup_column': 'true', 'stock_warehouse': 'AVIATORS', 'stock_limit': '5',
         }
         thumbnail = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
         with (
@@ -276,28 +278,32 @@ class CatalogCodeBatchTests(unittest.TestCase):
             patch.object(routes, 'SessionLocal', side_effect=lambda: Session(self.engine)),
             patch.dict(routes.export_jobs, {}, clear=True),
         ):
-            for body, comparison, expected in (
-                ({'product_ids': ids}, 'less', (None, self.codes[0], 100, 120, 5)),
-                ({'code': ' '.join(self.codes[:8])}, 'less', (None, self.codes[0], 100, 120, 5)),
-                ({'product_ids': ids}, 'more', (None, self.codes[3], 100, 130, 6)),
+            first = (None, self.codes[0], 100, 120, 5, 0.2)
+            fourth = (None, self.codes[3], 100, 130, 6, 0.3)
+            for body, comparison, warehouses, expected in (
+                ({'product_ids': ids}, 'less', ['AVIATORS'], [first]),
+                ({'code': ' '.join(self.codes[:8])}, 'less', ['AVIATORS'], [first]),
+                ({'product_ids': ids}, 'more', ['AVIATORS'], [fourth]),
+                ({'product_ids': ids}, 'less', ['AVIATORS', 'SECOND'], [first, fourth]),
             ):
-                with self.subTest(body=body, comparison=comparison):
+                with self.subTest(body=body, comparison=comparison, warehouses=warehouses):
                     response = self.client.post('/api/exports/xlsx', params={
-                        **base_params, 'stock_comparison': comparison,
+                        **base_params, 'stock_comparison': comparison, 'stock_warehouse': warehouses,
                     }, json=body)
                     self.assertEqual(response.status_code, 200, response.text)
                     job_id = response.json()['job_id']
                     job = routes.export_jobs[job_id]
                     self.assertEqual(job['status'], 'ready', job)
                     self.addCleanup(Path(job['path']).unlink, missing_ok=True)
-                    self.assertEqual((job['total'], job['processed']), (1, 1))
+                    self.assertEqual((job['total'], job['processed']), (len(expected), len(expected)))
                     with Path(job['path']).open('rb') as file:
                         workbook = load_workbook(file)
                         try:
                             self.assertEqual(list(workbook.active.values), [
-                                ('Фото', 'Код', 'Закупочная цена', 'ЦенаОптовая', 'Авиаторов'), expected,
+                                ('Фото', 'Код', 'Закупочная цена', 'ЦенаОптовая', 'Авиаторов', 'Наценка'), *expected,
                             ])
-                            self.assertEqual(len(workbook.active._images), 1)
+                            self.assertEqual(len(workbook.active._images), len(expected))
+                            self.assertEqual(workbook.active['F2'].number_format, '0.00%')
                             self.assertEqual(workbook.active._images[0].anchor.pic.nvPicPr.cNvPr.descr, 'Фото товара')
                         finally:
                             workbook.close()
@@ -331,6 +337,8 @@ class CatalogCodeBatchTests(unittest.TestCase):
         with patch.object(routes.export_executor, 'submit') as submit:
             for params in (
                 {'column': 'purchase_price', 'markup_percent': 0},
+                {'column': 'purchase_price', 'markup_column': 'true'},
+                {'column': ['price:ЦенаОптовая', 'price:ЦенаРозничная'], 'markup_column': 'true'},
                 {'column': ['price:ЦенаОптовая', 'price:ЦенаРозничная'], 'markup_percent': 10},
                 {'stock_warehouse': 'AVIATORS', 'stock_comparison': 'less'},
                 {'stock_warehouse': 'AVIATORS', 'stock_comparison': 'less', 'stock_limit': -1},
