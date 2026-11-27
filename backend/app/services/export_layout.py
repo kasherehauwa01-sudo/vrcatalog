@@ -8,8 +8,8 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from sqlalchemy import and_, func, or_
-from app.models.catalog import Product, ProductProperty, ProductTypeSetting
+from sqlalchemy import Numeric, and_, cast, func, or_, select
+from app.models.catalog import Price, Product, ProductProperty, ProductTypeSetting, Stock
 from app.services.catalog import DEFAULT_PRODUCT_TYPE_NAMES
 from app.services.catalog_folders import FOLDER_PATH_PROPERTIES, folder_path
 
@@ -18,6 +18,8 @@ PRICE_PAIRS = {
     'ЦенаКорпоративная': 'ЦенаПредыдущаяКорпоративная',
     'ЦенаРозничная': 'ЦенаПредыдущаяРозничная',
 }
+PURCHASE_PRICE_TYPE = "ЦенаЗакупочная"
+
 FORM_HEADERS = {'adjusted_price': 'Ваша цена', 'promo_price': 'Акция! Новая цена', 'old_price': 'Старая цена',
                 'order_quantity': 'Заказ', 'order_total': 'Сумма заказа'}
 
@@ -27,7 +29,7 @@ def form_price(columns, options):
         raise ValueError('Выберите вид товара: Акция месяца или Надо продать')
     if options.get('adjustment') and (options.get('adjustment_percent') is None or not math.isfinite(options['adjustment_percent'])):
         raise ValueError('Введите процент скидки / наценки')
-    if not (options.get('promotion') or options.get('order_form') or options.get('adjustment')):
+    if not (options.get('promotion') or options.get('order_form') or options.get('adjustment') or options.get('markup_percent') is not None):
         return None
     prices = [column[6:] for column in columns if column.startswith('price:')]
     if len(prices) != 1 or prices[0] not in PRICE_PAIRS:
@@ -132,6 +134,36 @@ def promotion_product_ids(db, filtered_ids, promotion_type):
             .filter(or_(func.trim(Product.product_type).in_(values),
                         and_(or_(Product.product_type.is_(None), Product.product_type == ''), fallback)))
             .subquery())
+
+
+def restrict_export_product_ids(db, filtered_ids, columns, options):
+    markup_percent = options.get("markup_percent")
+    warehouse = options.get("stock_warehouse")
+    if markup_percent is None and warehouse is None:
+        return filtered_ids
+
+    query = db.query(Product.id.label("product_id")).join(filtered_ids, filtered_ids.c.product_id == Product.id)
+    if markup_percent is not None:
+        sale_type = form_price(columns, options)
+
+        def price_value(price_type):
+            return (select(Price.price_value)
+                    .where(Price.product_id == Product.id, Price.price_type == price_type)
+                    .order_by(Price.id.desc()).limit(1).scalar_subquery())
+
+        purchase = price_value(PURCHASE_PRICE_TYPE)
+        sale = price_value(sale_type)
+        # Stabilize strict equality at the threshold for prices stored as floats.
+        difference = (sale - purchase) * 100 - purchase * markup_percent
+        query = query.filter(purchase > 0, func.round(cast(difference, Numeric), 8) > 0)
+
+    if warehouse is not None:
+        balance = (select(func.sum(Stock.quantity))
+                   .where(Stock.product_id == Product.id, Stock.warehouse == warehouse)
+                   .scalar_subquery())
+        limit = options["stock_limit"]
+        query = query.filter(balance >= 1, balance <= limit if options["stock_comparison"] == "less" else balance > limit)
+    return query.subquery()
 
 
 def adjusted_price(value, percent):

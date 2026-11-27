@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes import router
 from app.db.session import Base, get_db
-from app.models.catalog import Product, ProductProperty
+from app.models.catalog import Price, Product, ProductProperty, Stock
 from app.services.catalog import catalog_product_query
 
 
@@ -231,3 +231,69 @@ class CatalogCodeBatchTests(unittest.TestCase):
         self.assertEqual(combined.status_code, 200, combined.text)
         self.assertEqual(combined.json()['section_tree'], sections.json())
         self.assertEqual(combined.json()['filters']['brand'], ['Амфора', 'Другой'])
+
+    def test_xlsx_applies_markup_and_warehouse_limits_to_selected_or_filtered_products(self):
+        from app.api import routes
+
+        with Session(self.engine) as db:
+            products = db.query(Product).filter(Product.code.in_(self.codes[:8])).order_by(Product.code).all()
+            for product, (purchase, sale, balance) in zip(products, [
+                (100, 120, 5), (0.2, 0.23, 3), (100, 120, 0), (100, 130, 6),
+                (0, 130, 1), (None, 130, 1), (100, 130, None), (100, 130, 0.5),
+            ], strict=True):
+                if purchase is not None:
+                    product.prices.append(Price(price_type='ЦенаЗакупочная', price_value=purchase))
+                product.prices.append(Price(price_type='ЦенаОптовая', price_value=sale))
+                product.stocks.append(Stock(warehouse='OTHER', quantity=99))
+                if balance is not None:
+                    product.stocks.append(Stock(warehouse='AVIATORS', quantity=balance))
+            ids = [product.id for product in products]
+            db.commit()
+
+        base_params = {
+            'inStockOnly': 'false', 'column': ['code', 'purchase_price', 'price:ЦенаОптовая'],
+            'markup_percent': '15', 'stock_warehouse': 'AVIATORS', 'stock_limit': '5',
+        }
+        with (
+            patch.object(routes.export_executor, 'submit', side_effect=lambda task, *args: task(*args)),
+            patch.object(routes, 'SessionLocal', side_effect=lambda: Session(self.engine)),
+            patch.dict(routes.export_jobs, {}, clear=True),
+        ):
+            for body, comparison, expected in (
+                ({'product_ids': ids}, 'less', (self.codes[0], 100, 120)),
+                ({'code': ' '.join(self.codes[:8])}, 'less', (self.codes[0], 100, 120)),
+                ({'product_ids': ids}, 'more', (self.codes[3], 100, 130)),
+            ):
+                with self.subTest(body=body, comparison=comparison):
+                    response = self.client.post('/api/exports/xlsx', params={
+                        **base_params, 'stock_comparison': comparison,
+                    }, json=body)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    job_id = response.json()['job_id']
+                    job = routes.export_jobs[job_id]
+                    self.assertEqual(job['status'], 'ready', job)
+                    self.addCleanup(Path(job['path']).unlink, missing_ok=True)
+                    self.assertEqual(job['total'], 1)
+                    with Path(job['path']).open('rb') as file:
+                        workbook = load_workbook(file, read_only=True)
+                        try:
+                            self.assertEqual(list(workbook.active.values), [
+                                ('Код', 'Закупочная цена', 'ЦенаОптовая'), expected,
+                            ])
+                        finally:
+                            workbook.close()
+
+    def test_xlsx_rejects_incomplete_stock_filter_and_requires_one_sale_price_for_markup(self):
+        from app.api import routes
+
+        with patch.object(routes.export_executor, 'submit') as submit:
+            for params in (
+                {'column': 'purchase_price', 'markup_percent': 0},
+                {'column': ['price:ЦенаОптовая', 'price:ЦенаРозничная'], 'markup_percent': 10},
+                {'stock_warehouse': 'AVIATORS', 'stock_comparison': 'less'},
+                {'stock_warehouse': 'AVIATORS', 'stock_comparison': 'less', 'stock_limit': -1},
+            ):
+                with self.subTest(params=params):
+                    response = self.client.post('/api/exports/xlsx', params=params)
+                    self.assertEqual(response.status_code, 422, response.text)
+            submit.assert_not_called()
