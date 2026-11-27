@@ -90,23 +90,32 @@ export type AccessDevice = {
   common_name: string;
   expires_at: string;
   last_seen_at: string | null;
-  status: "active" | "revoked" | "expired";
+  status: "active" | "revoked" | "expired" | "pending";
+  replaces_id: number | null;
+  awaiting_activation: boolean;
+  crl_pending: boolean;
 };
 export type DeviceDetails = Pick<AccessDevice, "name" | "owner" | "comment">;
+type PackagePassword = { password: string; password_confirmation: string };
 
 export const api = {
   accessDevices(): Promise<AccessDevice[]> {
     return request(`${API}/access/devices`, { cache: "no-store" });
   },
-  saveAccessDevice(action: string, data?: DeviceDetails | (DeviceDetails & { pem: string }) | { pem: string }, method = "POST"): Promise<AccessDevice | { device: AccessDevice; certificate: string; crl_updated?: boolean; warning?: string }> {
+  saveAccessDevice(action: string, data?: DeviceDetails, method = "POST"): Promise<AccessDevice> {
     return adminRequest(`${API}/access/devices/${action}`, {
       method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
     });
   },
-  refreshAccessCrl(): Promise<{ success: boolean; message: string }> {
-    return adminRequest(`${API}/access/devices/refresh-crl`, {
-      method: "POST",
-    });
+  async downloadDevicePackage(action: string, data: PackagePassword & Partial<DeviceDetails>): Promise<{ file: Blob; filename: string }> {
+    const response = await runAdminOperation(() => fetchAdminResponse(`${API}/access/devices/${action}`, {
+      method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+    }));
+    if (response.headers.get("Content-Type")?.split(";")[0] !== "application/x-pkcs12") {
+      throw new Error("Сервер не вернул установочный файл сертификата");
+    }
+    const filename = response.headers.get("Content-Disposition")?.match(/filename="(device-[a-f0-9]+[.]p12)"/)?.[1] ?? "vrcatalog-device.p12";
+    return { file: await response.blob(), filename };
   },
   async adminLogin(password: string): Promise<void> {
     await runAdminOperation(async () => {

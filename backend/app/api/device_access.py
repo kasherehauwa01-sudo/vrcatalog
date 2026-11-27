@@ -12,9 +12,10 @@ from cryptography import x509
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, ValidationError
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -39,9 +40,48 @@ class IssueDevice(DeviceDetails):
     pem: str = Field(min_length=1, max_length=16384)
 
 
-class DevicePem(BaseModel):
-    pem: str = Field(min_length=1, max_length=16384)
+class PackagePassword(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
+    password: SecretStr
+    password_confirmation: SecretStr
+
+    def encryption_password(self) -> bytes:
+        value = self.password.get_secret_value()
+        try:
+            encoded = value.encode("utf-8")
+        except UnicodeError:
+            raise HTTPException(422, "Некорректный пароль сертификата") from None
+        if len(value) < 12 or len(encoded) > 127 or not value.strip() or "\x00" in value:
+            raise HTTPException(422, "Пароль должен содержать от 12 символов и занимать не более 127 байт")
+        if value != self.password_confirmation.get_secret_value():
+            raise HTTPException(422, "Пароли не совпадают")
+        return encoded
+
+
+class IssuePackage(DeviceDetails, PackagePassword):
+    pass
+
+
+async def package_payload(request: Request, model):
+    # Avoid FastAPI's default validation response, which echoes invalid input.
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > 8192:
+            raise HTTPException(413, "Слишком большой запрос")
+        body.extend(chunk)
+    try:
+        return model.model_validate_json(body)
+    except ValidationError:
+        raise HTTPException(422, "Проверьте данные устройства и поля пароля") from None
+
+
+async def issue_payload(request: Request):
+    return await package_payload(request, IssuePackage)
+
+
+async def replace_payload(request: Request):
+    return await package_payload(request, PackagePassword)
 
 
 def refresh_device_crl():
@@ -98,7 +138,10 @@ def issue_certificate(pem: str):
             raise ValueError("unsupported key or CSR signature")
     except (ValueError, UnsupportedAlgorithm) as exc:
         raise HTTPException(422, "Требуется подписанный CSR с ключом RSA от 2048 бит или EC P-256/P-384/P-521") from exc
-    ca = ca_certificate()
+    return sign_certificate(key, ca_certificate())
+
+
+def sign_certificate(key, ca):
     try:
         signer = serialization.load_pem_private_key(Path(settings.device_ca_key).read_bytes(), password=None)
         if not isinstance(signer, (rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey)):
@@ -122,6 +165,31 @@ def issue_certificate(pem: str):
         )
     except (OSError, ValueError, TypeError, UnsupportedAlgorithm) as exc:
         raise HTTPException(503, "Выпуск сертификатов устройств недоступен") from exc
+
+
+def encrypted_package(data):
+    password = data.encryption_password()
+    ca = ca_certificate()
+    key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    cert = sign_certificate(key.public_key(), ca)
+    name = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+    try:
+        package = pkcs12.serialize_key_and_certificates(
+            name.encode(), key, cert, [ca], serialization.BestAvailableEncryption(password),
+        )
+    except (ValueError, TypeError, UnsupportedAlgorithm):
+        raise HTTPException(503, "Не удалось создать установочный файл сертификата") from None
+    return cert, package, name
+
+
+def package_response(device_id, package, name):
+    return Response(package, status_code=201, media_type="application/x-pkcs12", headers={
+        "Content-Disposition": f'attachment; filename="{name}.p12"',
+        "X-Certificate-Id": str(device_id),
+        "Cache-Control": "no-store, private, max-age=0",
+        "Pragma": "no-cache", "Expires": "0", "X-Content-Type-Options": "nosniff",
+        "X-Accel-Buffering": "no",
+    })
 
 
 def registered_certificate(pem: str):
@@ -152,11 +220,26 @@ def public_device(row):
         "fingerprint": row.fingerprint, "common_name": row.common_name,
         "expires_at": row.expires_at.isoformat() + "Z",
         "last_seen_at": row.last_seen_at.isoformat() + "Z" if row.last_seen_at else None,
-        "status": "revoked" if row.revoked_at else "expired" if row.expires_at <= now else "active",
+        "replaces_id": row.replaces_id, "crl_pending": row.crl_pending,
+        "status": ("revoked" if row.revoked_at else "expired" if row.expires_at <= now
+                   else "pending" if is_pending(row) else "active"),
+        "awaiting_activation": is_pending(row) and row.revoked_at is None,
     }
 
 
-def add_device(db, details, cert, replaced=None):
+def is_pending(row):
+    return row.replaces_id is not None and row.activated_at is None
+
+
+def pending_replacement(db, device_id):
+    return db.scalar(select(DeviceCertificate).where(
+        DeviceCertificate.replaces_id == device_id,
+        DeviceCertificate.activated_at.is_(None),
+        DeviceCertificate.revoked_at.is_(None),
+    ).with_for_update())
+
+
+def add_device(db, details, cert, replaces_id=None):
     names = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
     row = DeviceCertificate(
         name=details.name, owner=details.owner, comment=details.comment,
@@ -164,16 +247,15 @@ def add_device(db, details, cert, replaced=None):
         public_key_fingerprint=hashlib.sha256(key_bytes(cert.public_key())).hexdigest(),
         common_name=names[0].value[:255] if names else "",
         serial_number=format(cert.serial_number, "x"),
+        replaces_id=replaces_id,
         expires_at=cert.not_valid_after_utc.replace(tzinfo=None),
     )
     db.add(row)
-    if replaced is not None and replaced.revoked_at is None:
-        replaced.revoked_at = utc_now()
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(409, "Этот сертификат или его ключ уже зарегистрирован. Для перевыпуска создайте новый ключ.") from exc
+        raise HTTPException(409, "Сертификат или его ключ уже зарегистрирован, либо у устройства уже есть ожидающая замена.") from exc
     return public_device(row)
 
 
@@ -195,11 +277,11 @@ def refresh_crl():
     return {"success": True, "message": "Список отозванных сертификатов обновлён"}
 
 
-@router.post("/issue", status_code=201)
-def issue(data: IssueDevice, response: Response, db: Session = Depends(get_db)):
-    cert = issue_certificate(data.pem)
-    response.headers["Cache-Control"] = "no-store"
-    return {"device": add_device(db, data, cert), "certificate": cert.public_bytes(serialization.Encoding.PEM).decode()}
+@router.post("/issue", status_code=201, response_class=Response, include_in_schema=False)
+@router.post("/issue-package", status_code=201, response_class=Response)
+def issue(data: Annotated[IssuePackage, Depends(issue_payload)], db: Session = Depends(get_db)):
+    cert, package, name = encrypted_package(data)
+    return package_response(add_device(db, data, cert)["id"], package, name)
 
 
 @router.post("/register", status_code=201)
@@ -218,30 +300,71 @@ def edit(device_id: int, data: DeviceDetails, db: Session = Depends(get_db)):
 @router.post("/{device_id}/revoke")
 def revoke(device_id: int, db: Session = Depends(get_db)):
     row = find_device(db, device_id)
+    if is_pending(row):
+        raise HTTPException(409, "Ожидающий сертификат отменяется через исходное устройство")
     if row.revoked_at is None:
         row.revoked_at = utc_now()
-        db.commit()
+        if pending := pending_replacement(db, device_id):
+            pending.revoked_at = row.revoked_at
+    db.commit()
     refresh_device_crl()
     return public_device(row)
 
 
-@router.post("/{device_id}/replace", status_code=201)
-def replace(device_id: int, data: DevicePem, response: Response, db: Session = Depends(get_db)):
+@router.post("/{device_id}/replace", status_code=201, response_class=Response, include_in_schema=False)
+@router.post("/{device_id}/replacements/prepare", status_code=201, response_class=Response)
+def replace(device_id: int, data: Annotated[PackagePassword, Depends(replace_payload)], db: Session = Depends(get_db)):
     row = find_device(db, device_id)
-    cert = issue_certificate(data.pem)
-    response.headers["Cache-Control"] = "no-store"
-    device = add_device(db, row, cert, replaced=row)
-    certificate = cert.public_bytes(serialization.Encoding.PEM).decode()
-    try:
+    if row.revoked_at is not None or is_pending(row):
+        raise HTTPException(409, "Этот сертификат нельзя использовать как исходный для замены")
+    if pending_replacement(db, device_id) is not None:
+        raise HTTPException(409, "У устройства уже есть ожидающая замена")
+    cert, package, name = encrypted_package(data)
+    return package_response(add_device(db, row, cert, replaces_id=row.id)["id"], package, name)
+
+
+def replacement_pair(db, device_id, replacement_id):
+    original = find_device(db, device_id)
+    # Check the relationship before locking a potentially unrelated device.
+    replacement = db.scalar(select(DeviceCertificate).where(
+        DeviceCertificate.id == replacement_id, DeviceCertificate.replaces_id == device_id,
+    ).with_for_update())
+    if replacement is None:
+        raise HTTPException(404, "Замена для указанного устройства не найдена")
+    return original, replacement
+
+
+@router.post("/{device_id}/replacements/{replacement_id}/confirm")
+def confirm(device_id: int, replacement_id: int, db: Session = Depends(get_db)):
+    original, replacement = replacement_pair(db, device_id, replacement_id)
+    if replacement.activated_at is None:
+        now = utc_now()
+        if original.revoked_at or replacement.revoked_at or replacement.expires_at <= now:
+            raise HTTPException(409, "Замена отменена, истекла или исходный сертификат заблокирован")
+        replacement.name, replacement.owner, replacement.comment = original.name, original.owner, original.comment
+        replacement.activated_at = original.revoked_at = now
+        replacement.crl_pending = True
+    publish = replacement.crl_pending
+    # Commit the access change before the CRL service reads the revocations.
+    db.commit()
+    if publish:
         refresh_device_crl()
-    except HTTPException:
-        return {
-            "device": device,
-            "certificate": certificate,
-            "crl_updated": False,
-            "warning": "Новый сертификат выдан, но обновление списка отзыва не подтверждено. Обратитесь к администратору.",
-        }
-    return {"device": device, "certificate": certificate, "crl_updated": True}
+        db.execute(update(DeviceCertificate).where(
+            DeviceCertificate.id == replacement_id,
+        ).values(crl_pending=False))
+        db.commit()
+    return public_device(replacement)
+
+
+@router.post("/{device_id}/replacements/{replacement_id}/cancel")
+def cancel(device_id: int, replacement_id: int, db: Session = Depends(get_db)):
+    _, replacement = replacement_pair(db, device_id, replacement_id)
+    if replacement.activated_at is not None:
+        raise HTTPException(409, "Замена уже подтверждена")
+    if replacement.revoked_at is None:
+        replacement.revoked_at = utc_now()
+    db.commit()
+    return public_device(replacement)
 
 
 @proxy_router.get("/verify", status_code=204)
@@ -264,6 +387,7 @@ def verify(request: Request, db: Session = Depends(get_db)):
         DeviceCertificate.fingerprint == digest,
         DeviceCertificate.revoked_at.is_(None),
         DeviceCertificate.expires_at > now,
+        or_(DeviceCertificate.replaces_id.is_(None), DeviceCertificate.activated_at.is_not(None)),
     ))
     if row is None:
         raise HTTPException(403)

@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
 import {
-  Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, LinearProgress,
+  Alert, Box, Button, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, LinearProgress,
   MenuItem, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   TextField, Typography,
 } from "@mui/material";
 import { api, type AccessDevice, type DeviceDetails } from "../api/client";
 
-type Mode = "issue" | "register" | "edit" | "replace" | "revoke";
+type Mode = "issue" | "edit" | "replace" | "revoke" | "confirm" | "cancel";
 const titles: Record<Mode, string> = {
-  issue: "Выпустить сертификат", register: "Зарегистрировать сертификат",
-  edit: "Редактировать устройство", replace: "Перевыпустить сертификат", revoke: "Заблокировать устройство",
+  issue: "Выпустить сертификат", edit: "Редактировать устройство",
+  replace: "Подготовить замену", revoke: "Заблокировать устройство",
+  confirm: "Подтвердить замену", cancel: "Отменить замену",
 };
-const statusLabels = { active: "Активен", revoked: "Заблокирован", expired: "Истёк" };
+const statusLabels = { active: "Активен", revoked: "Заблокирован", expired: "Истёк", pending: "Ожидает активации" };
 const emptyDetails = { name: "", owner: "", comment: "" };
 const dateFormat = new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Moscow" });
 const displayDate = (value: string | null) => value ? dateFormat.format(new Date(value)) : "—";
@@ -19,17 +20,17 @@ const displayDate = (value: string | null) => value ? dateFormat.format(new Date
 export function DeviceAccess() {
   const [devices, setDevices] = useState<AccessDevice[] | null>(null);
   const [listError, setListError] = useState("");
-  const [crlUpdating, setCrlUpdating] = useState(false);
-  const [crlMessage, setCrlMessage] = useState("");
-  const [crlError, setCrlError] = useState("");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [dialog, setDialog] = useState<{ mode: Mode; device?: AccessDevice } | null>(null);
   const [details, setDetails] = useState<DeviceDetails>(emptyDetails);
-  const [pem, setPem] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [installationConfirmed, setInstallationConfirmed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [issued, setIssued] = useState<{ name: string; certificate: string; warning?: string } | null>(null);
+  const [issued, setIssued] = useState<{ file: Blob; filename: string; replacement: boolean } | null>(null);
+  const [downloadStarted, setDownloadStarted] = useState(false);
 
   const load = async () => {
     setListError("");
@@ -42,9 +43,15 @@ export function DeviceAccess() {
 
   useEffect(() => { void load(); }, []);
 
+  const close = () => {
+    setPassword("");
+    setConfirmation("");
+    setDialog(null);
+  };
+
   const open = (mode: Mode, device?: AccessDevice) => {
     setError("");
-    setPem("");
+    setInstallationConfirmed(false);
     setDetails(device ? { name: device.name, owner: device.owner, comment: device.comment } : emptyDetails);
     setDialog({ mode, device });
   };
@@ -52,51 +59,43 @@ export function DeviceAccess() {
   const save = async () => {
     if (!dialog) return;
     const { mode, device } = dialog;
-    const action = mode === "edit" ? String(device?.id)
-      : mode === "replace" || mode === "revoke" ? `${device?.id}/${mode}` : mode;
-    const data = mode === "revoke" ? undefined : mode === "edit" ? details
-      : mode === "replace" ? { pem } : { ...details, pem };
     setSaving(true);
     setError("");
     try {
-      const result = await api.saveAccessDevice(action, data, mode === "edit" ? "PATCH" : "POST");
-      if ("certificate" in result) {
-        setIssued({ name: result.device.common_name, certificate: result.certificate, warning: result.warning });
-        setDevices((current) => [result.device, ...(current ?? []).map((item) =>
-          item.id === device?.id ? { ...item, status: "revoked" as const } : item)]);
+      if (mode === "issue" || mode === "replace") {
+        const credentials = { password, password_confirmation: confirmation };
+        const result = await api.downloadDevicePackage(
+          mode === "issue" ? "issue-package" : `${device?.id}/replacements/prepare`,
+          mode === "issue" ? { ...details, ...credentials } : credentials,
+        );
+        setDownloadStarted(false);
+        setIssued({ ...result, replacement: mode === "replace" });
+      } else if (mode === "edit") {
+        await api.saveAccessDevice(String(device?.id), details, "PATCH");
       } else {
-        setDevices((current) => [result, ...(current ?? []).filter((item) => item.id !== result.id)]);
+        const action = mode === "revoke" ? `${device?.id}/revoke`
+          : `${device?.replaces_id}/replacements/${device?.id}/${mode}`;
+        await api.saveAccessDevice(action);
       }
-      setPem("");
-      setDialog(null);
+      close();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Не удалось сохранить изменения");
+      setPassword("");
+      setConfirmation("");
     } finally {
       setSaving(false);
-    }
-  };
-
-  const updateCrl = async () => {
-    setCrlUpdating(true);
-    setCrlMessage("");
-    setCrlError("");
-    try {
-      const result = await api.refreshAccessCrl();
-      setCrlMessage(result.message);
-    } catch (failure) {
-      setCrlError(failure instanceof Error ? failure.message : "Не удалось обновить CRL");
-    } finally {
-      setCrlUpdating(false);
+      void load();
     }
   };
 
   const download = () => {
     if (!issued) return;
-    const url = URL.createObjectURL(new Blob([issued.certificate], { type: "application/x-pem-file" }));
+    const url = URL.createObjectURL(issued.file);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${issued.name}.crt`;
+    link.download = issued.filename;
     link.click();
+    setDownloadStarted(true);
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
@@ -104,22 +103,19 @@ export function DeviceAccess() {
   const visible = (devices ?? []).filter((device) =>
     (!status || device.status === status) &&
     [device.name, device.owner, device.common_name, device.fingerprint].some((value) => value.toLocaleLowerCase("ru-RU").includes(term)));
-  const needsPem = dialog && ["issue", "register", "replace"].includes(dialog.mode);
-  const needsDetails = dialog && ["issue", "register", "edit"].includes(dialog.mode);
+  const needsPassword = dialog?.mode === "issue" || dialog?.mode === "replace";
+  const needsDetails = dialog?.mode === "issue" || dialog?.mode === "edit";
+  const validPassword = [...password].length >= 12 && new TextEncoder().encode(password).length <= 127
+    && Boolean(password.trim()) && !password.includes("\x00") && password === confirmation;
+  const pendingOriginalIds = new Set(devices?.filter((device) => device.awaiting_activation).map((device) => device.replaces_id));
 
   return <Stack spacing={2}>
     <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" gap={2}>
       <Box><Typography variant="h6">Доступы устройств</Typography><Typography color="text.secondary" variant="body2">Клиентские сертификаты VR Catalog</Typography></Box>
       <Stack direction={{ xs: "column", sm: "row" }} gap={1}>
-        <Button variant="outlined" onClick={updateCrl} disabled={crlUpdating}>
-          {crlUpdating ? "Обновляем CRL…" : "Обновить CRL"}
-        </Button>
-        <Button variant="outlined" onClick={() => open("register")}>{titles.register}</Button>
         <Button variant="contained" onClick={() => open("issue")}>{titles.issue}</Button>
       </Stack>
     </Stack>
-    {crlMessage && <Alert severity="success" onClose={() => setCrlMessage("")}>{crlMessage}</Alert>}
-    {crlError && <Alert severity="error" onClose={() => setCrlError("")}>{crlError}</Alert>}
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack direction={{ xs: "column", sm: "row" }} gap={2}>
         <TextField size="small" label="Устройство, владелец или сертификат" value={search} onChange={(event) => setSearch(event.target.value)} sx={{ minWidth: { sm: 300 } }} />
@@ -144,47 +140,66 @@ export function DeviceAccess() {
               <TableCell><Chip size="small" color={device.status === "active" ? "success" : "default"} label={statusLabels[device.status]} /></TableCell>
               <TableCell>{displayDate(device.last_seen_at)}</TableCell>
               <TableCell><Stack direction="row" flexWrap="wrap" gap={0.5}>
-                <Button size="small" onClick={() => open("edit", device)}>Редактировать</Button>
-                <Button size="small" onClick={() => open("replace", device)}>Перевыпустить</Button>
-                {device.status === "active" && <Button size="small" color="error" onClick={() => open("revoke", device)}>Заблокировать</Button>}
+                {device.awaiting_activation ? <>
+                  {device.status === "pending" &&
+                    <Button size="small" onClick={() => open("confirm", device)}>Подтвердить замену</Button>}
+                  <Button size="small" color="error" onClick={() => open("cancel", device)}>Отменить замену</Button>
+                </> : <>
+                  <Button size="small" onClick={() => open("edit", device)}>Редактировать</Button>
+                  {device.status !== "revoked" && <Button size="small" disabled={pendingOriginalIds.has(device.id)} onClick={() => open("replace", device)}>Перевыпустить</Button>}
+                  {device.status !== "revoked" && <Button size="small" color="error" onClick={() => open("revoke", device)}>Заблокировать</Button>}
+                </>}
+                {device.crl_pending && <Button size="small" onClick={() => open("confirm", device)}>Повторить подтверждение</Button>}
               </Stack></TableCell>
             </TableRow>)}
           </TableBody>
         </Table>
       </TableContainer>}
-    <Dialog open={!!dialog} onClose={saving ? undefined : () => setDialog(null)} fullWidth maxWidth="sm">
+    <Dialog open={!!dialog} onClose={saving ? undefined : close} fullWidth maxWidth="sm">
       <DialogTitle>{dialog && titles[dialog.mode]}</DialogTitle>
       <DialogContent><Stack spacing={2} sx={{ pt: 1 }}>
         {error && <Alert severity="error">{error}</Alert>}
         {dialog?.mode === "revoke" && <Typography>Заблокировать доступ для «{dialog.device?.name}»? Для восстановления доступа потребуется новый сертификат.</Typography>}
-        {dialog?.mode === "replace" && <Alert severity="warning">При выпуске старый сертификат сразу блокируется. Если заменяете сертификат текущего устройства, убедитесь, что запрос с новым ключом создан на этом устройстве.</Alert>}
+        {dialog?.mode === "replace" && <Alert severity="info">Старый сертификат сохранит доступ, пока вы явно не подтвердите замену.</Alert>}
+        {dialog?.mode === "cancel" && <Typography>Отменённый сертификат больше нельзя активировать. Исходный сертификат сохранит свой статус.</Typography>}
+        {dialog?.mode === "confirm" && (dialog.device?.crl_pending
+          ? <Alert severity="warning">Замена уже применена. Повтор подтвердит публикацию списка отзыва.</Alert>
+          : <><Alert severity="warning">Установите новый сертификат и проверьте, что он доступен в Windows и браузере. До активации он не открывает каталог. Подтвердите замену со второго разрешённого устройства.</Alert>
+            <FormControlLabel label="Новый сертификат установлен и проверен в хранилище устройства" control={<Checkbox checked={installationConfirmed} onChange={(_, checked) => setInstallationConfirmed(checked)} />} /></>)}
         {needsDetails && <>
           <TextField required label="Устройство" value={details.name} onChange={(event) => setDetails({ ...details, name: event.target.value })} inputProps={{ maxLength: 160 }} />
           <TextField required label="Владелец" value={details.owner} onChange={(event) => setDetails({ ...details, owner: event.target.value })} inputProps={{ maxLength: 160 }} />
           <TextField multiline label="Комментарий" value={details.comment} onChange={(event) => setDetails({ ...details, comment: event.target.value })} inputProps={{ maxLength: 500 }} />
         </>}
-        {needsPem && <TextField required multiline minRows={5}
-          label={dialog?.mode === "register" ? "Клиентский сертификат (PEM)" : "Запрос на сертификат (CSR в PEM)"}
-          value={pem} onChange={(event) => setPem(event.target.value)} inputProps={{ maxLength: 16384 }}
-          helperText={dialog?.mode === "register" ? "Сертификат должен быть подписан центром VR Catalog." : "Сгенерируйте запрос на устройстве владельца. Закрытый ключ оставьте на этом устройстве."}
-        />}
+        {needsPassword && <>
+          <TextField required type="password" autoComplete="new-password" label="Пароль для сертификата"
+            value={password} onChange={(event) => setPassword(event.target.value)} inputProps={{ maxLength: 127 }}
+            helperText="Минимум 12 символов, не более 127 байт" />
+          <TextField required type="password" autoComplete="new-password" label="Подтверждение пароля"
+            value={confirmation} onChange={(event) => setConfirmation(event.target.value)} inputProps={{ maxLength: 127 }}
+            error={!!confirmation && password !== confirmation} helperText={confirmation && password !== confirmation ? "Пароли не совпадают" : undefined} />
+        </>}
       </Stack></DialogContent>
       <DialogActions>
-        <Button disabled={saving} onClick={() => setDialog(null)}>Отмена</Button>
+        <Button disabled={saving} onClick={close}>Отмена</Button>
         <Button variant="contained" color={dialog?.mode === "revoke" ? "error" : "primary"} onClick={save}
-          disabled={saving || Boolean(needsDetails && (!details.name.trim() || !details.owner.trim())) || Boolean(needsPem && !pem.trim())}
+          disabled={saving || Boolean(needsDetails && (!details.name.trim() || !details.owner.trim())) || (needsPassword && !validPassword) || (dialog?.mode === "confirm" && !dialog.device?.crl_pending && !installationConfirmed)}
         >{saving ? "Сохраняем…" : dialog?.mode === "edit" ? "Сохранить" : dialog && titles[dialog.mode]}</Button>
       </DialogActions>
     </Dialog>
-    <Dialog open={!!issued} onClose={() => setIssued(null)} fullWidth maxWidth="xs">
-      <DialogTitle>Сертификат выпущен</DialogTitle>
+    <Dialog open={!!issued} disableEscapeKeyDown fullWidth maxWidth="sm">
+      <DialogTitle>{issued?.replacement ? "Замена подготовлена" : "Сертификат выпущен"}</DialogTitle>
       <DialogContent>
         <Stack spacing={2}>
-          {issued?.warning && <Alert severity="warning">{issued.warning}</Alert>}
-          <Typography>Скачайте сертификат и установите его на устройство вместе с закрытым ключом, созданным при подготовке запроса.</Typography>
+          <Alert severity="warning">Сохраните файл .p12. Повторно скачать этот закрытый ключ невозможно. Храните файл и пароль раздельно.</Alert>
+          <Typography>В Windows откройте .p12, выберите «Текущий пользователь», введите пароль и импортируйте в хранилище «Личное». Оставьте параметр экспорта закрытого ключа выключенным. Перезапустите браузер и выберите сертификат при подключении.</Typography>
+          {issued?.replacement && <Typography>Проверьте наличие сертификата в хранилище Windows. Затем подтвердите замену в списке устройств со второго разрешённого устройства.</Typography>}
         </Stack>
       </DialogContent>
-      <DialogActions><Button onClick={() => setIssued(null)}>Закрыть</Button><Button variant="contained" onClick={download}>Скачать сертификат</Button></DialogActions>
+      <DialogActions>
+        <Button disabled={!downloadStarted} onClick={() => setIssued(null)}>Готово</Button>
+        <Button variant="contained" onClick={download}>Скачать .p12</Button>
+      </DialogActions>
     </Dialog>
   </Stack>;
 }

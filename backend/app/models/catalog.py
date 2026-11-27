@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -451,6 +451,19 @@ class UnneededFolderSnapshot(Base):
 
 class DeviceCertificate(Base):
     __tablename__ = "device_certificates"
+    __table_args__ = (
+        CheckConstraint("replaces_id <> id", name="ck_device_replacement_not_self"),
+        CheckConstraint(
+            "replaces_id IS NOT NULL OR (activated_at IS NULL AND NOT crl_pending)",
+            name="ck_device_replacement_state",
+        ),
+        CheckConstraint("NOT crl_pending OR activated_at IS NOT NULL", name="ck_device_replacement_crl"),
+        Index(
+            "uq_device_pending_replacement", "replaces_id", unique=True,
+            postgresql_where=text("replaces_id IS NOT NULL AND activated_at IS NULL AND revoked_at IS NULL"),
+            sqlite_where=text("replaces_id IS NOT NULL AND activated_at IS NULL AND revoked_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(160))
@@ -463,3 +476,6 @@ class DeviceCertificate(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime)
+    replaces_id: Mapped[int | None] = mapped_column(ForeignKey("device_certificates.id", name="fk_device_replacement_original"))
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    crl_pending: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
